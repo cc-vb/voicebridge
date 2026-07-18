@@ -65,6 +65,29 @@ bin/vb log              debug log
 `vb on` targets your most recently active session automatically. Optional:
 add `~/voicebridge/bin` to your PATH to just type `vb`.
 
+### Agent mode - hands-free continuous conversation
+
+Tap once, then just talk. No button between turns.
+
+```
+vb converse        # start agent mode (say "stop" to end, or Ctrl-C)
+```
+
+It listens, transcribes locally, injects into the **focused** Claude window,
+waits for the reply, speaks it, and listens again, in a loop. Run it in a
+spare terminal, then click your Claude window so the paste lands there (the
+mic doesn't need focus, only the paste does).
+
+**Use headphones.** On speakers the mic hears Claude's reply and the loop
+derails. While converse runs it silences the transcript watcher (it speaks
+replies itself, blocking, so it never records over its own voice) and
+restores it on exit.
+
+Best for conversational back-and-forth; on long multi-tool turns it may
+resume listening a little early. This is the free, local version of the
+"tap once and just talk" call feel; the phone version of the same is Vapi
+(`mobile/vapi/`).
+
 ### Language & conversation tone
 
 Make the agent talk to you in your language, with a spoken back-and-forth

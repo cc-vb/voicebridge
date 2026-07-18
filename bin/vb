@@ -8,6 +8,9 @@ Usage:
   vb test                    speak a short test line
   vb say TEXT                speak arbitrary text now
   vb log                     show the debug log
+  vb converse [PATH]         hands-free "agent mode": tap once, then just
+                             talk; it listens, injects, speaks the reply, and
+                             listens again. Say "stop" to end. Headphones!
   vb lang [NAME]             set response language + voice (e.g. english,
                              hinglish, hindi, or anything). No arg shows it;
                              "off" clears it.
@@ -121,6 +124,11 @@ def main(argv) -> int:
     elif cmd == "log":
         print(core.LOG_FILE.read_text() if core.LOG_FILE.exists()
               else "(no log yet)")
+
+    elif cmd == "converse":
+        from vb import converse
+        pos = [a for a in rest if not a.startswith("--")]
+        return converse.run(pos[0] if pos else "")
 
     elif cmd == "lang":
         if not rest:

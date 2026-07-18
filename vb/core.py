@@ -170,8 +170,9 @@ def _recently_spoken(cleaned: str) -> bool:
     return False
 
 
-def speak(text: str) -> None:
-    """Speak text without blocking the hook. New speech cuts off old speech."""
+def speak(text: str, blocking: bool = False) -> None:
+    """Speak text. Non-blocking by default (hooks); blocking for converse mode
+    so we finish talking before we listen again. New speech cuts off old."""
     text = clean_for_speech(text)
     if not text:
         return
@@ -189,12 +190,16 @@ def speak(text: str) -> None:
         cmd += ["-v", voice]
     cmd.append(text)
     try:
-        subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,  # survive the hook process exiting
-        )
+        if blocking:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,  # survive the hook process exiting
+            )
     except Exception as e:
         log(f"say failed: {e}")
 
