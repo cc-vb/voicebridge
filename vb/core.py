@@ -23,6 +23,8 @@ LOG_FILE = STATE_DIR / "log"
 LAST_SPOKEN = STATE_DIR / "last_spoken"
 WATCH_PID = STATE_DIR / "watch.pid"
 LANG_FILE = STATE_DIR / "lang"
+RATE_FILE = STATE_DIR / "rate"
+VOICE_FILE = STATE_DIR / "voice"
 
 # Map a chosen language to the best-fitting macOS `say` voice. Latin-script
 # languages (incl. Hinglish) sound best with the Indian-accent English voice;
@@ -36,10 +38,27 @@ VOICE_MAP = {
 # transcript watcher and the Stop hook coexist without double-speaking.
 DEDUP_WINDOW_S = 20.0
 
-# Config via env, with sane defaults. Override in your shell profile.
-VOICE = os.environ.get("VOICEBRIDGE_VOICE", "")           # "" = system default
-RATE = os.environ.get("VOICEBRIDGE_RATE", "200")          # words per minute
+# Config: env wins, then a saved value (vb rate / vb voice), then default.
+# ~175 wpm is a natural, human pace (a touch above macOS default).
+DEFAULT_RATE = "175"
 MAX_CHARS = int(os.environ.get("VOICEBRIDGE_MAXCHARS", "700"))
+
+
+def _read(path, default=""):
+    try:
+        return path.read_text().strip() or default
+    except Exception:
+        return default
+
+
+def get_rate() -> str:
+    return os.environ.get("VOICEBRIDGE_RATE") or _read(RATE_FILE) or DEFAULT_RATE
+
+
+def get_voice() -> str:
+    """Explicit voice (env or `vb voice`) wins; else the language's voice."""
+    return (os.environ.get("VOICEBRIDGE_VOICE") or _read(VOICE_FILE)
+            or voice_for_lang(get_lang()))
 
 
 def is_enabled() -> bool:
@@ -183,9 +202,8 @@ def speak(text: str, blocking: bool = False) -> None:
         subprocess.run(["pkill", "-x", "say"], capture_output=True)
     except Exception:
         pass
-    # Env override wins; otherwise pick a voice for the chosen language.
-    voice = VOICE or voice_for_lang(get_lang())
-    cmd = ["say", "-r", RATE]
+    voice = get_voice()
+    cmd = ["say", "-r", get_rate()]
     if voice:
         cmd += ["-v", voice]
     cmd.append(text)

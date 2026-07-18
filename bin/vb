@@ -14,6 +14,9 @@ Usage:
   vb lang [NAME]             set response language + voice (e.g. english,
                              hinglish, hindi, or anything). No arg shows it;
                              "off" clears it.
+  vb rate [WPM]              set speaking pace (default 175). No arg shows it.
+  vb voice [NAME]            set the voice (e.g. Samantha). "off" clears it;
+                             list all with: say -v '?'
   vb stt                     show speech-to-text readiness
   vb listen [--send] [--delay=N]
                              record you, transcribe locally (whisper.cpp),
@@ -103,8 +106,9 @@ def main(argv) -> int:
     elif cmd == "status":
         print(f"enabled : {core.is_enabled()}")
         print(f"watcher : {'running' if core.watcher_alive() else 'stopped'}")
-        print(f"voice   : {core.VOICE or '(system default)'}")
-        print(f"rate    : {core.RATE} wpm")
+        print(f"language: {core.get_lang() or '(default English)'}")
+        print(f"voice   : {core.get_voice() or '(system default)'}")
+        print(f"rate    : {core.get_rate()} wpm")
         print(f"maxchars: {core.MAX_CHARS}")
         print(f"state   : {core.STATE_DIR}")
 
@@ -124,6 +128,33 @@ def main(argv) -> int:
     elif cmd == "log":
         print(core.LOG_FILE.read_text() if core.LOG_FILE.exists()
               else "(no log yet)")
+
+    elif cmd == "rate":
+        if not rest:
+            print(f"rate: {core.get_rate()} wpm  (set: vb rate 175)")
+            return 0
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        core.RATE_FILE.write_text(rest[0].strip() + "\n")
+        print(f"rate: {core.get_rate()} wpm")
+        core.speak("This is my speaking pace now. Better?")
+
+    elif cmd == "voice":
+        if not rest:
+            print(f"voice: {core.get_voice() or '(system default)'}")
+            print("list all: say -v '?'    set: vb voice Samantha    clear: vb voice off")
+            return 0
+        name = " ".join(rest).strip()
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if name.lower() in ("off", "default", "none", "clear"):
+            try:
+                core.VOICE_FILE.unlink()
+            except FileNotFoundError:
+                pass
+            print("voice: (system default / language default)")
+        else:
+            core.VOICE_FILE.write_text(name + "\n")
+            print(f"voice: {name}")
+        core.speak("Hi, this is how I sound now.")
 
     elif cmd == "converse":
         from vb import converse
@@ -196,8 +227,13 @@ def main(argv) -> int:
             import time
             time.sleep(delay)
         wav = str(core.STATE_DIR / "rec.wav")
-        print("listening (speak, then pause to end)...")
-        beep("/System/Library/Sounds/Tink.aiff")   # start cue
+        # Always cue the start so you know when to talk (and don't clip word 1).
+        import time as _t
+        subprocess.Popen(["afplay", "/System/Library/Sounds/Tink.aiff"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        _t.sleep(0.4)
+        print("listening now (speak, then pause)...")
         if not stt.record(wav):
             print("recording failed (mic permission? sox installed?)")
             beep("/System/Library/Sounds/Basso.aiff")
