@@ -67,28 +67,31 @@ add `~/voicebridge/bin` to your PATH to just type `vb`.
 
 ### Agent mode - hands-free continuous conversation
 
-Tap once, then just talk. No button between turns.
+Tap once, then just talk. No button between turns, no window focus.
 
 ```
-vb converse        # start agent mode (say "stop" to end, or Ctrl-C)
+cd ~/my/project        # converse talks to Claude here
+vb converse            # or: vb converse ~/my/project   ("stop" ends it)
 ```
 
-It listens, transcribes locally, injects into the **focused** Claude window,
-waits for the reply, speaks it, and listens again, in a loop. Run it in a
-spare terminal, then click your Claude window so the paste lands there (the
-mic doesn't need focus, only the paste does).
+It listens, transcribes locally, asks Claude headless (`claude -p
+--continue`) in that directory, speaks the answer, and listens again. Each
+reply takes a few seconds (a real model call). Replies inherit your
+`vb lang` language/tone.
+
+Why headless instead of driving your open TUI: reading the reply straight
+off `claude -p` is far more robust than typing into a window and scraping
+its transcript, no focus to get wrong, and it can never hang waiting on a
+reply, so "stop" always works between turns.
 
 **Headphones recommended but not required.** converse is half-duplex: it
-never records while Claude is talking (it speaks the reply blocking, then
-listens), and it waits for you to start speaking before capturing, so on
-speakers it won't hear itself the way a full talk-over-it system would. Keep
-speaker volume moderate. While converse runs it silences the transcript
-watcher (it speaks replies itself) and restores it on exit.
+never records while Claude is talking, and waits for you to start speaking
+before capturing, so on speakers it won't hear itself. Keep volume moderate.
+While it runs it silences the transcript watcher (it speaks replies itself)
+and restores it on exit.
 
-Best for conversational back-and-forth; on long multi-tool turns it may
-resume listening a little early. This is the free, local version of the
-"tap once and just talk" call feel; the phone version of the same is Vapi
-(`mobile/vapi/`).
+This is the free, local version of the "tap once and just talk" call feel;
+the phone version is Vapi (`mobile/vapi/`).
 
 ### Language & conversation tone
 
