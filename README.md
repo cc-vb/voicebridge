@@ -15,26 +15,24 @@ macOS only for now (uses `say`, `osascript`, and CoreAudio via sox).
 
 ```bash
 git clone https://github.com/KrishOjha1810/voicebridge ~/voicebridge
-brew install whisper-cpp sox ffmpeg          # STT, mic capture, audio codecs
-curl -fSL -o ~/.voicebridge/models/ggml-small.en.bin --create-dirs \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
-ln -s ~/voicebridge/bin/vb /opt/homebrew/bin/vb
-cp ~/voicebridge/commands/voice-on.md ~/voicebridge/commands/voice-off.md \
-  ~/.claude/commands/
+~/voicebridge/install.sh
 ```
 
-Then register the hooks in `~/.claude/settings.json` (see `hooks/`: add
-`on_stop.py` to `Stop`, `on_notify.py` to `Notification`, `on_prompt.py` to
-`UserPromptSubmit`), and grant two one-time macOS permissions when prompted:
-**Microphone** and **Accessibility** for your terminal app (System Settings
--> Privacy & Security). Without Accessibility, speech is transcribed but
-never typed into the session, that's the most common setup miss.
+The installer is idempotent and handles everything: brew packages
+(whisper-cpp, sox, ffmpeg), the whisper model download, the `vb` command,
+the /voice-on and /voice-off slash commands, and hook registration in
+`~/.claude/settings.json` (append-only; your existing hooks are untouched).
+It finishes with `vb doctor`, a 9-point health check.
 
-Note: a few docs and example `.mcp.json` files contain absolute paths from
-the author's machine; adjust them to your own paths where noted.
+Two one-time macOS permissions are yours to grant when prompted, both for
+your terminal app under System Settings -> Privacy & Security:
+**Microphone** and **Accessibility**. Without Accessibility your speech is
+transcribed but never typed into the session, that's the most common setup
+miss, and `vb doctor` calls it out explicitly.
 
 Quick check: `vb test` (should speak), then `/voice-on` inside any Claude
-Code session.
+Code session. Note: a few docs and example `.mcp.json` files contain
+absolute paths from the author's machine; adjust where noted.
 
 ## Why this and not the others
 

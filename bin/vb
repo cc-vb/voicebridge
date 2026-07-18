@@ -25,6 +25,8 @@ Usage:
   vb rate [WPM]              set speaking pace (default 175). No arg shows it.
   vb voice [NAME]            set the voice (e.g. Samantha). "off" clears it;
                              list all with: say -v '?'
+  vb doctor                  full health check: deps, model, hooks, commands,
+                             mic + Accessibility permissions, with fixes
   vb stt                     show speech-to-text readiness
   vb listen [--send] [--delay=N]
                              record you, transcribe locally (whisper.cpp),
@@ -259,6 +261,62 @@ def main(argv) -> int:
         print("note: response-language takes effect in your NEXT Claude Code "
               "session (hook loads at startup); this session, just ask me to "
               "switch. The voice switches immediately.")
+
+    elif cmd == "doctor":
+        import json as _json
+        import os as _os
+        from vb import stt as _stt
+        results = []
+
+        def check(name, ok, hint=""):
+            results.append((name, ok, hint))
+            print(f"  {'PASS' if ok else 'FAIL':4}  {name}" +
+                  ("" if ok else f"  -> {hint}"))
+
+        print("voicebridge doctor")
+        deps = _stt.have_deps()
+        check("whisper-cli", bool(deps["whisper"]), "brew install whisper-cpp")
+        check("sox / rec", bool(deps["rec"]), "brew install sox")
+        check("ffmpeg", bool(_stt._find("ffmpeg")), "brew install ffmpeg")
+        check("whisper model", bool(deps["model"]),
+              "run install.sh (downloads ggml-small.en.bin)")
+        check("say (macOS TTS)", _os.path.exists("/usr/bin/say"),
+              "macOS only")
+        cmds = Path.home() / ".claude" / "commands"
+        check("/voice-on command", (cmds / "voice-on.md").exists(),
+              "run install.sh (copies slash commands)")
+        sj = Path.home() / ".claude" / "settings.json"
+        hooked = False
+        try:
+            hooked = "voicebridge" in sj.read_text()
+        except Exception:
+            pass
+        check("hooks registered", hooked, "run install.sh (registers hooks)")
+        # Accessibility: can osascript send keystrokes from this context?
+        r = subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to keystroke ""'],
+            capture_output=True, text=True)
+        check("Accessibility (typing)", r.returncode == 0,
+              "System Settings -> Privacy & Security -> Accessibility: "
+              "enable your terminal app")
+        # Microphone: try a very short capture.
+        wav = str(core.STATE_DIR / "doctor.wav")
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        mic_ok = False
+        if deps["rec"]:
+            rr = subprocess.run(
+                [deps["rec"], "-q", "-c", "1", "-r", "16000", wav,
+                 "trim", "0", "0.3"],
+                capture_output=True, timeout=10)
+            mic_ok = rr.returncode == 0 and _os.path.exists(wav)
+        check("Microphone (capture)", mic_ok,
+              "System Settings -> Privacy & Security -> Microphone: "
+              "enable your terminal app")
+        bad = [n for n, ok, _ in results if not ok]
+        print("all good, run /voice-on inside a Claude session" if not bad
+              else f"{len(bad)} issue(s) above")
+        return 0 if not bad else 1
 
     elif cmd == "stt":
         from vb import stt
