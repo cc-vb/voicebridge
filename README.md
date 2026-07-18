@@ -284,7 +284,31 @@ and **Accessibility** (for the paste keystroke). See [SETUP.md](SETUP.md).
 
 List voices with `say -v '?'`.
 
-## Mobile
+## Use it on your phone (free, hands-free)
+
+Your Mac stays home running the session; your phone becomes the call.
+
+1. On the Mac, in the project you want to talk about:
+   ```
+   claude                              # keep this session open and focused
+   VB_CALL_SECRET=pick-a-secret vb call on
+   vb call tunnel                      # prints your PHONE URL (free)
+   ```
+2. On the phone, open the printed URL with `?k=pick-a-secret`, then use the
+   browser's **Add to Home Screen**, voicebridge becomes an app icon that
+   opens fullscreen.
+3. Tap **Start call** once. Then just talk: your speech reaches the live
+   session, and the phone speaks Claude's replies with its own neural
+   voice. Say "end call" to hang up.
+
+Keep the Mac awake while away (`caffeinate -dims`). The free tunnel URL
+changes each time you restart it; re-run `vb call tunnel` for a fresh one.
+
+Prefer chat? `vb remote on` bridges a Telegram bot instead: send text or a
+voice note, get the reply back as text plus a spoken voice note
+(`mobile/TELEGRAM_NATIVE.md` covers the official text-only plugin too).
+
+## Mobile internals
 
 Voice and chat on your phone, driving your live session. See `mobile/`:
 

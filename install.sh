@@ -86,7 +86,37 @@ if changed:
     print("  settings.json updated")
 PY
 
-say_step "6/6 Health check"
+say_step "6/7 Kokoro neural voice (recommended, ~800MB one time)"
+KOKORO_VENV="$STATE_DIR/kokoro-venv"
+KOKORO_MODEL="$STATE_DIR/models/kokoro-v1.0.onnx"
+WANT_KOKORO="${VB_KOKORO:-}"
+if [ -z "$WANT_KOKORO" ] && [ -t 0 ]; then
+  read -r -p "  Install the Kokoro natural voice now? [Y/n] " ans
+  case "$ans" in n|N|no|NO) WANT_KOKORO=0;; *) WANT_KOKORO=1;; esac
+fi
+if [ "${WANT_KOKORO:-1}" = "1" ]; then
+  if ! [ -x /opt/homebrew/bin/python3.10 ] && ! [ -x /opt/homebrew/bin/python3.12 ]; then
+    brew install python@3.12
+  fi
+  PYBIN=$(ls /opt/homebrew/bin/python3.1[0-9] 2>/dev/null | head -1)
+  if [ ! -f "$KOKORO_VENV/bin/python" ]; then
+    "$PYBIN" -m venv "$KOKORO_VENV"
+    "$KOKORO_VENV/bin/pip" -q install --upgrade pip
+    "$KOKORO_VENV/bin/pip" -q install kokoro-onnx soundfile
+  fi
+  [ -f "$KOKORO_MODEL" ] || curl -fSL -o "$KOKORO_MODEL" --create-dirs \
+    https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
+  [ -f "$STATE_DIR/models/voices-v1.0.bin" ] || curl -fSL \
+    -o "$STATE_DIR/models/voices-v1.0.bin" \
+    https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
+  "$BIN_DIR/vb" engine kokoro
+  "$BIN_DIR/vb" voice af_heart >/dev/null || true
+  echo "  Kokoro installed and set as the voice engine (voice: af_heart)"
+else
+  echo "  skipped (enable later per README 'Better voice: Kokoro')"
+fi
+
+say_step "7/7 Health check"
 "$BIN_DIR/vb" doctor || true
 
 cat <<'EOF'
