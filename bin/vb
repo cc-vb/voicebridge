@@ -8,6 +8,11 @@ Usage:
   vb test                    speak a short test line
   vb say TEXT                speak arbitrary text now
   vb log                     show the debug log
+  vb remote on|off|status    phone bridge (Telegram, no Channels needed):
+                             text/voice-note your bot from anywhere; it types
+                             into your open session and replies with text +
+                             a spoken voice note. Mac must stay awake with
+                             the session focused.
   vb talkd on|off|status     per-session voice mode backend. Inside a Claude
                              session, use /voice-on and /voice-off instead
                              (they bind voice to THAT session, like
@@ -138,6 +143,21 @@ def main(argv) -> int:
     elif cmd == "log":
         print(core.LOG_FILE.read_text() if core.LOG_FILE.exists()
               else "(no log yet)")
+
+    elif cmd == "remote":
+        from vb import remote
+        sub = rest[0] if rest else "status"
+        if sub == "on":
+            print(remote.on())
+        elif sub == "off":
+            print(remote.off())
+        elif sub == "status":
+            print(remote.status())
+        elif sub == "__run__":
+            return remote.run_daemon()
+        else:
+            print("usage: vb remote on|off|status")
+            return 1
 
     elif cmd == "talkd":
         from vb import talkd
