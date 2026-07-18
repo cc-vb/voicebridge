@@ -78,10 +78,12 @@ waits for the reply, speaks it, and listens again, in a loop. Run it in a
 spare terminal, then click your Claude window so the paste lands there (the
 mic doesn't need focus, only the paste does).
 
-**Use headphones.** On speakers the mic hears Claude's reply and the loop
-derails. While converse runs it silences the transcript watcher (it speaks
-replies itself, blocking, so it never records over its own voice) and
-restores it on exit.
+**Headphones recommended but not required.** converse is half-duplex: it
+never records while Claude is talking (it speaks the reply blocking, then
+listens), and it waits for you to start speaking before capturing, so on
+speakers it won't hear itself the way a full talk-over-it system would. Keep
+speaker volume moderate. While converse runs it silences the transcript
+watcher (it speaks replies itself) and restores it on exit.
 
 Best for conversational back-and-forth; on long multi-tool turns it may
 resume listening a little early. This is the free, local version of the

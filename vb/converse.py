@@ -99,6 +99,7 @@ def run(transcript: str = "") -> int:
             reply = _wait_for_reply(transcript, prev)
             if reply:
                 core.speak(reply, blocking=True)  # blocking so we don't record over it
+                time.sleep(0.4)  # let speaker audio settle before listening (no-headphones safety)
             else:
                 _beep(NADA)
                 core.speak("I didn't get a reply, still listening.",
