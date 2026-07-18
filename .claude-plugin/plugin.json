@@ -1,0 +1,15 @@
+{
+  "name": "voicebridge",
+  "displayName": "voicebridge",
+  "version": "1.0.0",
+  "description": "Talk to Claude Code like a teammate: hands-free voice conversations with your live session, on your Mac or from your phone. Local whisper STT + Kokoro neural TTS.",
+  "author": {
+    "name": "Krish Ojha",
+    "url": "https://github.com/KrishOjha1810"
+  },
+  "homepage": "https://github.com/KrishOjha1810/voicebridge",
+  "repository": "https://github.com/KrishOjha1810/voicebridge",
+  "license": "MIT",
+  "keywords": ["voice", "speech", "tts", "whisper", "hands-free", "macos"],
+  "hooks": "./hooks/hooks.json"
+}

@@ -47,7 +47,10 @@ for f in voice-on.md voice-off.md; do
 done
 echo "  installed to $CLAUDE_DIR/commands/"
 
-say_step "5/6 Hooks in ~/.claude/settings.json"
+say_step "5/7 Hooks in ~/.claude/settings.json"
+if [ "${VB_SKIP_HOOKS:-}" = "1" ]; then
+  echo "  skipped (plugin install provides hooks via hooks.json)"
+else
 python3 - "$REPO_DIR" "$CLAUDE_DIR/settings.json" <<'PY'
 import json, os, sys
 
@@ -85,6 +88,7 @@ if changed:
         json.dump(settings, f, indent=2)
     print("  settings.json updated")
 PY
+fi
 
 say_step "6/7 Kokoro neural voice (recommended, ~800MB one time)"
 KOKORO_VENV="$STATE_DIR/kokoro-venv"

@@ -27,21 +27,36 @@ voice services, no per-minute fees.
 - Smart capture: thinking pauses don't split your prompt, mic noise is
   filtered, and it never hears its own voice (echo guard).
 
-## Quickstart (3 steps)
+## Quickstart
+
+**As a Claude Code plugin (easiest).** Inside any Claude Code session:
+
+```
+/plugin marketplace add KrishOjha1810/voicebridge
+/plugin install voicebridge@voicebridge
+/voicebridge:setup
+```
+
+Setup installs the speech stack (brew packages + local models, one time,
+5-10 min) and runs a health check. Grant the two macOS prompts (Microphone
++ Accessibility for your terminal app), then:
+
+```
+/voicebridge:voice-on
+```
+
+Speak. That's it. (`/voicebridge:voice-wake` for hey-Claude-only mode,
+`/voicebridge:voice-off` to stop.)
+
+**Or clone it directly:**
 
 ```bash
 git clone https://github.com/KrishOjha1810/voicebridge ~/voicebridge
 ~/voicebridge/install.sh        # deps, model, hooks, commands, health check
 ```
 
-Grant the two macOS prompts (Microphone + Accessibility for your terminal),
-then inside any Claude Code session:
-
-```
-/voice-on
-```
-
-Speak. That's it.
+Then use `/voice-on`, `/voice-wake`, `/voice-agent`, `/voice-off` (no
+namespace prefix).
 
 ## Install (fresh Mac)
 
