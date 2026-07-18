@@ -262,4 +262,10 @@ def main(argv) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        # Never dump a traceback on Ctrl-C; hush any speech and exit clean.
+        subprocess.run(["pkill", "-x", "say"], capture_output=True)
+        print("\n(interrupted)")
+        sys.exit(130)

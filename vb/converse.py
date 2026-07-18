@@ -30,6 +30,30 @@ EXIT_WORDS = {
     "were done", "done for now",
 }
 
+# Filler that can surround an exit word without changing intent
+_EXIT_VOCAB = {
+    "stop", "exit", "quit", "bye", "goodbye", "end", "done", "please",
+    "it", "now", "ok", "okay", "thanks", "thank", "you", "agent", "mode",
+    "the", "that's", "thats", "all",
+}
+
+
+def _is_exit(text: str) -> bool:
+    """True for 'stop', 'stop stop stop', 'please stop now', etc.
+
+    A real instruction like 'stop the research and fix the bug' keeps going,
+    because it contains words outside the exit vocabulary.
+    """
+    t = text.lower().strip(" .,!?")
+    if t in EXIT_WORDS:
+        return True
+    toks = [w.strip(" .,!?") for w in t.split()]
+    toks = [w for w in toks if w]
+    if not toks or not any(w in ("stop", "exit", "quit", "goodbye", "bye")
+                           for w in toks):
+        return False
+    return all(w in _EXIT_VOCAB for w in toks)
+
 START_TINK = "/System/Library/Sounds/Tink.aiff"
 STOP_POP = "/System/Library/Sounds/Pop.aiff"
 THINK = "/System/Library/Sounds/Morse.aiff"
@@ -48,18 +72,39 @@ def _claude_bin() -> str:
     return shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
 
 
-def _ask(text: str, first: bool, cwd: str) -> str:
-    """Ask Claude headless and return the reply text. --continue keeps context."""
+def _ask(text: str, first: bool, cwd: str, max_wait: float = 600.0) -> str:
+    """Ask Claude headless and return the reply. --continue keeps context.
+
+    Long turns (research, multi-tool work) are normal, so we wait up to
+    max_wait but keep the user in the loop: a soft tick every ~10s and a
+    spoken heads-up at 30s / 2min so silence never reads as 'it died'.
+    """
     args = [_claude_bin(), "-p", text]
     if not first:
         args.append("--continue")
     try:
-        r = subprocess.run(args, capture_output=True, text=True,
-                           timeout=180, cwd=cwd)
-        return (r.stdout or "").strip()
+        p = subprocess.Popen(args, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, cwd=cwd)
     except Exception as e:
-        core.log(f"converse: claude call failed: {e}")
+        core.log(f"converse: claude spawn failed: {e}")
         return ""
+    waited = 0.0
+    while True:
+        try:
+            out, _ = p.communicate(timeout=10)
+            return (out or "").strip()
+        except subprocess.TimeoutExpired:
+            waited += 10
+            _beep(THINK)
+            if waited == 30:
+                core.speak("Still working on it, hang tight.", blocking=True)
+            elif waited == 120:
+                core.speak("This one's taking a while. I'll speak up the "
+                           "moment it's done.", blocking=True)
+            elif waited >= max_wait:
+                p.kill()
+                core.log("converse: turn exceeded max_wait")
+                return ""
 
 
 def run(project_dir: str = "") -> int:
@@ -101,7 +146,7 @@ def run(project_dir: str = "") -> int:
                 continue
             empties = 0
 
-            if text.lower().strip(" .,!?") in EXIT_WORDS:
+            if _is_exit(text):
                 core.speak("Okay, ending agent mode.", blocking=True)
                 break
 
@@ -110,6 +155,7 @@ def run(project_dir: str = "") -> int:
             reply = _ask(text, first, cwd)
             first = False
             if reply:
+                print(f"claude: {reply}")
                 core.speak(reply, blocking=True)  # blocking so we don't record over it
                 time.sleep(0.4)
             else:
@@ -117,7 +163,7 @@ def run(project_dir: str = "") -> int:
                 core.speak("Sorry, I didn't get an answer. Still listening.",
                            blocking=True)
     except KeyboardInterrupt:
-        core.speak("Agent mode off.", blocking=True)
+        print("\n(interrupted)")
     finally:
         if was_enabled:
             core.ENABLED_FLAG.touch()   # restore the watcher
