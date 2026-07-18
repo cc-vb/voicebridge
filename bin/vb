@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""vb: control voicebridge from the terminal.
+
+Usage:
+  vb on          turn spoken output on (creates the enable flag)
+  vb off         turn spoken output off
+  vb status      show whether voice is on and current config
+  vb test        speak a short test line
+  vb say TEXT    speak arbitrary text now
+  vb log         show the last lines of the debug log
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from vb import core  # noqa: E402
+
+
+def main(argv) -> int:
+    cmd = argv[0] if argv else "status"
+
+    if cmd == "on":
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        core.ENABLED_FLAG.touch()
+        print("voicebridge: ON")
+        core.speak("Voice bridge on.")
+    elif cmd == "off":
+        try:
+            core.ENABLED_FLAG.unlink()
+        except FileNotFoundError:
+            pass
+        import subprocess
+        subprocess.run(["pkill", "-x", "say"], capture_output=True)
+        print("voicebridge: OFF")
+    elif cmd == "status":
+        print(f"enabled : {core.is_enabled()}")
+        print(f"voice   : {core.VOICE or '(system default)'}")
+        print(f"rate    : {core.RATE} wpm")
+        print(f"maxchars: {core.MAX_CHARS}")
+        print(f"state   : {core.STATE_DIR}")
+    elif cmd == "test":
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        core.speak("Voice bridge is working. I will narrate what I do and "
+                   "ask you when I need a decision.")
+        print("spoke test line")
+    elif cmd == "say":
+        text = " ".join(argv[1:])
+        if not text:
+            print("usage: vb say TEXT")
+            return 1
+        core.speak(text)
+    elif cmd == "log":
+        if core.LOG_FILE.exists():
+            print(core.LOG_FILE.read_text())
+        else:
+            print("(no log yet)")
+    else:
+        print(__doc__)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
