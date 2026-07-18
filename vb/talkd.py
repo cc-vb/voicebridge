@@ -43,17 +43,23 @@ MODE = STATE / "mode"   # "all" (default): every utterance goes in
 # Whisper renders "Claude" many ways. A bare strict name can wake it;
 # loose homophones (cloud/clod/...) need a greeting so ordinary sentences
 # like "cloud computing is..." never trigger.
-_GREET = r"(?:hey|ok|okay|yo|hi)"
-_STRICT = r"(?:claude|claud|klaude?)"
-_LOOSE = r"(?:cloud|clod|clawed|clot|claw)"
+_GREET = r"(?:hey|ok|okay|yo|hi|hai|he)"
+_STRICT = r"(?:claude|claud|klaude?|clyde)"
+_LOOSE = r"(?:cloud|clod|clawed|clot|claw|glod|glaud|clown|clued|klaud)"
 WAKE_RE = re.compile(
     rf"^\s*(?:{_GREET}[,!\s]+(?:{_STRICT}|{_LOOSE})|{_STRICT})\b[,!.\s]*(.*)$",
     re.IGNORECASE | re.DOTALL)
 
-TO_WAKE_RE = re.compile(r"^\s*(switch to )?wake( word)? mode[.!\s]*$",
-                        re.IGNORECASE)
-TO_ALL_RE = re.compile(r"^\s*(switch to )?(agent|continuous) mode[.!\s]*$",
-                       re.IGNORECASE)
+# Voice toggles are heard imperfectly ("weak word mode", "wait word mode"),
+# so accept the homophones. Typed /voice-wake and /voice-agent are the
+# deterministic way to switch.
+TO_WAKE_RE = re.compile(
+    r"^\s*(switch to )?(wake|weak|wait|week|work)([- ]?word)? ?mode[.!\s]*$",
+    re.IGNORECASE)
+TO_ALL_RE = re.compile(
+    r"^\s*(switch to )?(agent|agentic|asian|urgent|continuous|normal)"
+    r" ?mode[.!\s]*$",
+    re.IGNORECASE)
 
 
 def get_mode() -> str:
@@ -237,6 +243,30 @@ def _stitch_more(wav: str, pause: float) -> str:
     return " ".join(parts)
 
 
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _is_echo(text: str, window_s: float = 45.0) -> bool:
+    """True if `text` is (mostly) the system's own recent speech.
+
+    Guards against the mic hearing our own TTS through speakers: if most of
+    the captured words appear in what we spoke in the last `window_s`
+    seconds, it's an echo, drop it instead of injecting it."""
+    try:
+        rec = json.loads(
+            (core.STATE_DIR / "last_spoken_text").read_text())
+        if time.time() - float(rec.get("ts", 0)) > window_s:
+            return False
+        spoken = set(_WORD_RE.findall(rec.get("text", "").lower()))
+    except Exception:
+        return False
+    heard = _WORD_RE.findall(text.lower())
+    if len(heard) < 3 or not spoken:
+        return False
+    overlap = sum(1 for w in heard if w in spoken) / len(heard)
+    return overlap >= 0.6
+
+
 def _any_speech_playing() -> bool:
     """True while ANY `say` is talking (ours, a hook's, a stale watcher's)."""
     return subprocess.run(["pgrep", "-x", "say"],
@@ -322,6 +352,9 @@ def run_daemon() -> int:
             continue
         text = stt.transcribe(wav)
         if not text or is_noise(text):
+            continue
+        if _is_echo(text):
+            core.log(f"talkd echo dropped: {text[:80]}")
             continue
 
         # Mode switching by voice, from either mode.

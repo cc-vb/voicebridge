@@ -156,6 +156,9 @@ def main(argv) -> int:
         from vb import talkd as _td
         if rest and rest[0] in ("wake", "all"):
             _td.set_mode(rest[0])
+            core.speak("Wake word mode. Say hey Claude when you need me."
+                       if rest[0] == "wake"
+                       else "Agent mode. I'm taking everything now.")
         print(f"mode : {_td.get_mode()}")
         print("  all  = agent mode, every utterance goes to Claude")
         print("  wake = ambient; only 'hey Claude ...' is sent")

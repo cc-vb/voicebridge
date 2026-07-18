@@ -224,6 +224,14 @@ def speak(text: str, blocking: bool = False) -> None:
         subprocess.run(["pkill", "-x", "say"], capture_output=True)
     except Exception:
         pass
+    # Record what we're about to say, so listeners can drop the echo of our
+    # own voice if the mic picks it up (see talkd's echo guard).
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (STATE_DIR / "last_spoken_text").write_text(
+            json.dumps({"text": text, "ts": time.time()}))
+    except Exception:
+        pass
     voice = get_voice()
     cmd = ["say", "-r", get_rate()]
     if voice:
