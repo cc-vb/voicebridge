@@ -12,11 +12,23 @@ from pathlib import Path
 from . import core
 
 MODEL_DIR = core.STATE_DIR / "models"
-MODEL = MODEL_DIR / "ggml-base.en.bin"
+# Prefer the more accurate model when present; fall back to base.
+_MODEL_PREFERENCE = ["ggml-small.en.bin", "ggml-base.en.bin"]
 MODEL_URL = (
     "https://huggingface.co/ggerganov/whisper.cpp/"
     "resolve/main/ggml-base.en.bin"
 )
+
+
+def _best_model():
+    for name in _MODEL_PREFERENCE:
+        p = MODEL_DIR / name
+        if p.exists():
+            return p
+    return MODEL_DIR / "ggml-base.en.bin"
+
+
+MODEL = _best_model()
 
 
 # Hotkey daemons (skhd) run with a minimal PATH that often lacks Homebrew,
@@ -78,12 +90,13 @@ def record(wav: str, max_secs: int = 30,
     if not rec:
         core.log("record: sox `rec` not found")
         return False
-    # Start only after ~0.3s of real sound (ignores clicks/blips), stop after
-    # `silence_stop` seconds of quiet. 2% stop threshold tolerates soft tails.
+    # More sensitive start (1.5%, 0.2s) so normal-volume speech isn't clipped
+    # or missed; `norm` normalizes the level so you don't have to be loud.
     cmd = [
         rec, "-q", "-c", "1", "-r", "16000", "-b", "16", wav,
         "trim", "0", str(max_secs),
-        "silence", "1", "0.3", "3%", "1", str(silence_stop), "2%",
+        "silence", "1", "0.2", "1.5%", "1", str(silence_stop), "1.5%",
+        "norm", "-1",
     ]
     try:
         subprocess.run(cmd, check=True,
