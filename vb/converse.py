@@ -75,7 +75,8 @@ def run(transcript: str = "") -> int:
     try:
         while True:
             _beep(START_TINK)
-            ok = stt.record(wav, silence_stop=1.5)
+            time.sleep(0.35)  # let the Tink finish so it isn't recorded as your first word
+            ok = stt.record(wav, silence_stop=2.0)
             _beep(STOP_POP)
             if not ok:
                 continue

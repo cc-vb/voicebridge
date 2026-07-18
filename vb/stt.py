@@ -78,10 +78,12 @@ def record(wav: str, max_secs: int = 30,
     if not rec:
         core.log("record: sox `rec` not found")
         return False
+    # Start only after ~0.3s of real sound (ignores clicks/blips), stop after
+    # `silence_stop` seconds of quiet. 2% stop threshold tolerates soft tails.
     cmd = [
         rec, "-q", "-c", "1", "-r", "16000", "-b", "16", wav,
         "trim", "0", str(max_secs),
-        "silence", "1", "0.1", "3%", "1", str(silence_stop), "3%",
+        "silence", "1", "0.3", "3%", "1", str(silence_stop), "2%",
     ]
     try:
         subprocess.run(cmd, check=True,
