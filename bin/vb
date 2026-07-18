@@ -8,10 +8,13 @@ Usage:
   vb test                    speak a short test line
   vb say TEXT                speak arbitrary text now
   vb log                     show the debug log
-  vb converse [DIR]          hands-free "agent mode": tap once, then just
-                             talk; it listens, asks Claude (headless, in DIR
-                             or the current dir), speaks the reply, and
-                             listens again. No window focus needed. "stop" ends.
+  vb session [DIR]           THE agent mode: start a Claude Code session with
+                             the voicemode channel + mic on. Talk hands-free
+                             inside the real session (your files, your
+                             context). Say "stop listening" to mute.
+  vb mic on|off              toggle the in-session mic (voicemode channel)
+  vb converse [DIR]          lighter side-chat: talk to a headless Claude in
+                             DIR (or cwd). No session UI. "stop" ends.
   vb lang [NAME]             set response language + voice (e.g. english,
                              hinglish, hindi, or anything). No arg shows it;
                              "off" clears it.
@@ -129,6 +132,39 @@ def main(argv) -> int:
     elif cmd == "log":
         print(core.LOG_FILE.read_text() if core.LOG_FILE.exists()
               else "(no log yet)")
+
+    elif cmd == "session":
+        import os
+        pos = [a for a in rest if not a.startswith("--")]
+        d = str(Path(pos[0]).expanduser().resolve()) if pos else os.getcwd()
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (core.STATE_DIR / "mic_on").touch()
+        print(f"voice session in {d}")
+        print('mic is ON. Say "stop listening" to mute; vb mic on to unmute.')
+        os.chdir(d)
+        os.execvp("claude", [
+            "claude", "--dangerously-load-development-channels",
+            "server:voicemode",
+        ])
+
+    elif cmd == "mic":
+        mic = core.STATE_DIR / "mic_on"
+        arg = rest[0].lower() if rest else "status"
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if arg == "on":
+            mic.touch()
+            print("mic: ON (voicemode channel will start listening)")
+        elif arg == "off":
+            try:
+                mic.unlink()
+            except FileNotFoundError:
+                pass
+            subprocess.run(["pkill", "-x", "say"], capture_output=True)
+            print("mic: OFF")
+        else:
+            print(f"mic: {'ON' if mic.exists() else 'OFF'}")
+            print("note: only has effect inside a `vb session` "
+                  "(voicemode channel running)")
 
     elif cmd == "rate":
         if not rest:

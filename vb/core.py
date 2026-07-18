@@ -25,6 +25,12 @@ WATCH_PID = STATE_DIR / "watch.pid"
 LANG_FILE = STATE_DIR / "lang"
 RATE_FILE = STATE_DIR / "rate"
 VOICE_FILE = STATE_DIR / "voice"
+MIC_FLAG = STATE_DIR / "mic_on"
+
+
+def mic_active() -> bool:
+    """True while the voicemode channel owns the conversation's voice."""
+    return MIC_FLAG.exists()
 
 # Map a chosen language to the best-fitting macOS `say` voice. Latin-script
 # languages (incl. Hinglish) sound best with the Indian-accent English voice;
@@ -300,7 +306,8 @@ def watch_transcript(path: str = "", narrate: bool = False,
             except Exception:
                 continue
             say_text = _speakable_from_record(rec, narrate)
-            if say_text:
+            if say_text and not mic_active():
+                # voicemode's reply tool speaks for the session; stay quiet.
                 speak(say_text)
     except KeyboardInterrupt:
         pass

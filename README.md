@@ -65,33 +65,44 @@ bin/vb log              debug log
 `vb on` targets your most recently active session automatically. Optional:
 add `~/voicebridge/bin` to your PATH to just type `vb`.
 
-### Agent mode - hands-free continuous conversation
+### Agent mode - voice INSIDE your live session (`vb session`)
 
-Tap once, then just talk. No button between turns, no window focus.
+The flagship. One command starts a real Claude Code session with your mic
+wired into it:
 
 ```
-cd ~/my/project        # converse talks to Claude here
-vb converse            # or: vb converse ~/my/project   ("stop" ends it)
+cd ~/my/project
+vb session          # or: vb session ~/my/project
 ```
 
-It listens, transcribes locally, asks Claude headless (`claude -p
---continue`) in that directory, speaks the answer, and listens again. Each
-reply takes a few seconds (a real model call). Replies inherit your
-`vb lang` language/tone.
+Accept the dev-channel dialog once, then just talk. Your speech is
+transcribed locally and injected into the LIVE session (your files, your
+context, your tools); Claude answers by speaking aloud. Continuous, no
+buttons, no window focus. It's the same session you can also type into.
 
-Why headless instead of driving your open TUI: reading the reply straight
-off `claude -p` is far more robust than typing into a window and scraping
-its transcript, no focus to get wrong, and it can never hang waiting on a
-reply, so "stop" always works between turns.
+- Say **"stop listening"** to mute the mic (session keeps running); unmute
+  with `vb mic on` from any terminal.
+- **Permission prompts are spoken**: "I need permission to run Bash...
+  say yes or no", and your voice answers them.
+- Cues: Tink = listening, Pop = heard you, Morse tick = sent/thinking.
+- While the mic is on, the Stop hook and watcher stay silent (the channel
+  owns the voice), so nothing is ever spoken twice.
+- Implementation: `channel/voicemode.ts`, a custom Claude Code channel
+  (research preview, hence the `--dangerously-load-development-channels`
+  flag that `vb session` passes for you). Registered user-scope via
+  `claude mcp add`, so it works from any project directory.
 
-**Headphones recommended but not required.** converse is half-duplex: it
-never records while Claude is talking, and waits for you to start speaking
-before capturing, so on speakers it won't hear itself. Keep volume moderate.
-While it runs it silences the transcript watcher (it speaks replies itself)
-and restores it on exit.
+**Headphones recommended but not required**: half-duplex, it never records
+while speaking. Keep speaker volume moderate.
 
-This is the free, local version of the "tap once and just talk" call feel;
-the phone version is Vapi (`mobile/vapi/`).
+### Side-chat mode (`vb converse`)
+
+A lighter alternative when you don't need a full session UI: talks to a
+headless Claude (`claude -p --continue`) in the current directory and speaks
+answers. Long turns get soft ticks and spoken "still working" updates.
+Say "stop" (even "stop stop stop") to end; Ctrl-C is always clean.
+
+The phone version of the call feel is Vapi (`mobile/vapi/`).
 
 ### Language & conversation tone
 

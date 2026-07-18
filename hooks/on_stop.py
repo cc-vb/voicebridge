@@ -13,7 +13,8 @@ from vb import core  # noqa: E402
 
 
 def main() -> int:
-    if not core.is_enabled():
+    if not core.is_enabled() or core.mic_active():
+        # mic_active: the voicemode channel speaks replies itself
         return 0
     data = core.read_hook_input()
     transcript = data.get("transcript_path", "")

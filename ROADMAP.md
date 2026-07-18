@@ -33,13 +33,21 @@ You talk back, hands-free, for direction and approval only.
 - [ ] optional review-before-send UI (currently: not auto-sent unless
       `--send`, so you can eyeball and press Enter)
 
-## M3 - Barge-in
+## M3 - Continuous agent mode - DONE (2026-07-19)
 
-Interrupt like a real conversation.
-
+- [x] `vb session`: voicemode channel wires the mic INTO the live session;
+      continuous hands-free loop, spoken replies via reply tool, spoken
+      permission relay (say yes/no), "stop listening" to mute
+- [x] `vb converse`: headless side-chat variant (claude -p --continue)
 - [x] press-to-interrupt: `vb listen` hushes `say` the moment you talk
-- [ ] VAD full-duplex (hard; echo/self-cutoff; needs headphones or AEC)
-- [ ] target: sub-800ms turn feel; measure and log latency
+- [x] STT quality: small.en model auto-preferred; first-word capture fixed;
+      norm leveling (no shouting)
+- [x] human pace/voice: vb rate (175 default), vb voice, vb lang
+- [ ] VAD full-duplex barge-in DURING speech (hard; echo/self-cutoff;
+      needs AEC) - the one deliberate gap
+- [ ] Enhanced/Premium voice: manual download via System Settings ->
+      Accessibility -> Spoken Content (can't be scripted), then
+      `vb voice "Ava (Enhanced)"`
 
 ## M4 - Decision-moment voice (the trust win)
 

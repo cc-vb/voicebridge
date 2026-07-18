@@ -1,0 +1,11 @@
+{
+  "name": "voicebridge-voicemode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "In-session voice channel for Claude Code: mic -> live session -> spoken reply, all local",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  }
+}
