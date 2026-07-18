@@ -57,7 +57,7 @@ Change the key by editing `~/.skhdrc` then restarting the service.
 ### Alternatives (no skhd)
 
 - **macOS Shortcuts:** new shortcut -> Run Shell Script ->
-  `/Users/krishojha/voicebridge/bin/vb listen --send --cue`, assign a key.
+  `~/voicebridge/bin/vb listen --send --cue`, assign a key.
 - **Raycast / Alfred:** a Script Command running the same line.
 
 ## The loop, day to day

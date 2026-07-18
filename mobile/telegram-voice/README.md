@@ -17,7 +17,7 @@ don't do. It handles text too, so use it instead of the native plugin
 
 1. **Deps** (once):
    ```
-   cd /Users/krishojha/voicebridge/mobile/telegram-voice
+   cd ~/voicebridge/mobile/telegram-voice
    bun install
    ```
    Needs `whisper-cli`, `ffmpeg`, `say` (all installed during the build) and

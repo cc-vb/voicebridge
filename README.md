@@ -32,7 +32,7 @@ voice services, no per-minute fees.
 **As a Claude Code plugin (easiest).** Inside any Claude Code session:
 
 ```
-/plugin marketplace add KrishOjha1810/voicebridge
+/plugin marketplace add voicebridgehq/voicebridge
 /plugin install voicebridge@voicebridge
 /voicebridge:setup
 ```
@@ -51,7 +51,7 @@ Speak. That's it. (`/voicebridge:voice-wake` for hey-Claude-only mode,
 **Or clone it directly:**
 
 ```bash
-git clone https://github.com/KrishOjha1810/voicebridge ~/voicebridge
+git clone https://github.com/voicebridgehq/voicebridge ~/voicebridge
 ~/voicebridge/install.sh        # deps, model, hooks, commands, health check
 ```
 
@@ -63,7 +63,7 @@ namespace prefix).
 macOS only for now (uses `say`, `osascript`, and CoreAudio via sox).
 
 ```bash
-git clone https://github.com/KrishOjha1810/voicebridge ~/voicebridge
+git clone https://github.com/voicebridgehq/voicebridge ~/voicebridge
 ~/voicebridge/install.sh
 ```
 
@@ -337,6 +337,6 @@ Voice and chat on your phone, driving your live session. See `mobile/`:
 See [ROADMAP.md](ROADMAP.md) for the full phased plan (STT input,
 barge-in, decision-moment voice, mobile diff summary).
 
-## Author
+## License
 
-Krish Ojha
+MIT

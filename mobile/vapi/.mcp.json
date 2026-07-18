@@ -2,7 +2,7 @@
   "mcpServers": {
     "vapi-relay": {
       "command": "bun",
-      "args": ["/Users/krishojha/voicebridge/mobile/vapi/relay.ts"]
+      "args": ["~/voicebridge/mobile/vapi/relay.ts"]
     }
   }
 }

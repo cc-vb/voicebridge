@@ -38,7 +38,7 @@ Claude's reply (via the channel `reply` tool) is returned for Vapi to speak.
 
 1. **Deps:**
    ```
-   cd /Users/krishojha/voicebridge/mobile/vapi && bun install
+   cd ~/voicebridge/mobile/vapi && bun install
    ```
 
 2. **Start Claude Code with the relay channel** (from a dir with this

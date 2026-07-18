@@ -2,8 +2,8 @@
   "name": "voicebridge",
   "description": "Voice for Claude Code: talk to your live session hands-free and hear replies in a natural neural voice, at your desk or from your phone.",
   "owner": {
-    "name": "Krish Ojha",
-    "url": "https://github.com/KrishOjha1810"
+    "name": "voicebridge",
+    "url": "https://github.com/voicebridgehq"
   },
   "plugins": [
     {
@@ -11,7 +11,7 @@
       "source": "./",
       "description": "Hands-free voice conversations with your live Claude Code session: /voicebridge:voice-on to talk and hear replies, wake-word mode, barge-in, natural Kokoro voice, free phone call page. macOS.",
       "version": "1.0.0",
-      "author": { "name": "Krish Ojha" }
+      "author": { "name": "voicebridge" }
     }
   ]
 }
