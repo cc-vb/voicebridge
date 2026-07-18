@@ -119,11 +119,12 @@ def record_start(wav: str, max_secs: int = 30,
     if not rec:
         core.log("record_start: sox `rec` not found")
         return None
+    # No `norm` here: it buffers the whole file until the end, which breaks
+    # mid-recording did-speech-start checks that poll the wav's size.
     cmd = [
         rec, "-q", "-c", "1", "-r", "16000", "-b", "16", wav,
         "trim", "0", str(max_secs),
         "silence", "1", "0.05", "0.3%", "1", str(silence_stop), "1.5%",
-        "norm", "-1",
     ]
     try:
         return subprocess.Popen(cmd, stdout=subprocess.DEVNULL,

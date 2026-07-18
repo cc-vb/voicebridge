@@ -8,6 +8,11 @@ Usage:
   vb test                    speak a short test line
   vb say TEXT                speak arbitrary text now
   vb log                     show the debug log
+  vb mode [wake|all]         all = agent mode (takes everything); wake =
+                             ambient, only "hey Claude ..." is sent. Voice
+                             switch: say "wake word mode" / "agent mode".
+  vb pause [SECONDS]         silence that ends an utterance (default 2.5);
+                             thinking pauses are stitched into one prompt.
   vb call on|off|status      TRUE hands-free mobile: a real phone call with
                              your live session via Vapi (no taps; needs a
                              Vapi account + tunnel; channels-free relay).
@@ -146,6 +151,24 @@ def main(argv) -> int:
     elif cmd == "log":
         print(core.LOG_FILE.read_text() if core.LOG_FILE.exists()
               else "(no log yet)")
+
+    elif cmd == "mode":
+        from vb import talkd as _td
+        if rest and rest[0] in ("wake", "all"):
+            _td.set_mode(rest[0])
+        print(f"mode : {_td.get_mode()}")
+        print("  all  = agent mode, every utterance goes to Claude")
+        print("  wake = ambient; only 'hey Claude ...' is sent")
+        print("(switch by voice too: say 'wake word mode' / 'agent mode')")
+
+    elif cmd == "pause":
+        from vb import talkd as _td
+        if rest:
+            _td.STATE.mkdir(parents=True, exist_ok=True)
+            _td.PAUSE.write_text(rest[0])
+        print(f"pause : {_td.get_pause()}s of silence ends an utterance")
+        print("(thinking pauses are stitched: if you resume within ~3.5s "
+              "it's one prompt)")
 
     elif cmd == "call":
         from vb import call

@@ -37,6 +37,45 @@ MUTE_RE = re.compile(
     r"^\s*(stop listening|mic off|mute|go to sleep|stop the mic)[.!\s]*$",
     re.IGNORECASE)
 
+MODE = STATE / "mode"   # "all" (default): every utterance goes in
+                        # "wake": only utterances addressed to the wake word
+
+# Whisper renders "Claude" many ways. A bare strict name can wake it;
+# loose homophones (cloud/clod/...) need a greeting so ordinary sentences
+# like "cloud computing is..." never trigger.
+_GREET = r"(?:hey|ok|okay|yo|hi)"
+_STRICT = r"(?:claude|claud|klaude?)"
+_LOOSE = r"(?:cloud|clod|clawed|clot|claw)"
+WAKE_RE = re.compile(
+    rf"^\s*(?:{_GREET}[,!\s]+(?:{_STRICT}|{_LOOSE})|{_STRICT})\b[,!.\s]*(.*)$",
+    re.IGNORECASE | re.DOTALL)
+
+TO_WAKE_RE = re.compile(r"^\s*(switch to )?wake( word)? mode[.!\s]*$",
+                        re.IGNORECASE)
+TO_ALL_RE = re.compile(r"^\s*(switch to )?(agent|continuous) mode[.!\s]*$",
+                       re.IGNORECASE)
+
+
+def get_mode() -> str:
+    try:
+        m = MODE.read_text().strip()
+        return m if m in ("all", "wake") else "all"
+    except Exception:
+        return "all"
+
+
+def set_mode(mode: str) -> None:
+    STATE.mkdir(parents=True, exist_ok=True)
+    MODE.write_text(mode)
+
+
+def wake_match(text: str) -> "tuple[bool, str]":
+    """(addressed?, prompt-with-wake-word-stripped)."""
+    m = WAKE_RE.match(text)
+    if not m:
+        return False, ""
+    return True, m.group(1).strip()
+
 # Whisper renders non-speech as bracketed/parenthesized tags: "(air
 # whooshing)", "[BLANK_AUDIO]", "(wind blowing)". Never treat those as words.
 NOISE_RE = re.compile(r"^[\s\(\[][^\)\]]*[\)\]][.!\s]*$|^[\s.,!?]*$")
@@ -153,6 +192,51 @@ def status() -> str:
 
 # ---------- the daemon --------------------------------------------------------
 
+PAUSE = STATE / "pause"
+
+
+def get_pause() -> float:
+    """Seconds of silence that end an utterance (default 2.5)."""
+    try:
+        return max(1.0, min(6.0, float(PAUSE.read_text().strip())))
+    except Exception:
+        return 2.5
+
+
+def _stitch_more(wav: str, pause: float) -> str:
+    """After a capture, briefly keep listening: if the speaker resumes
+    (they paused to think), capture the continuation(s) and return them.
+    A follow-up window with no speech within ~3.5s ends the prompt."""
+    parts = []
+    while True:
+        try:
+            os.remove(wav)
+        except FileNotFoundError:
+            pass
+        p = stt.record_start(wav, silence_stop=pause)
+        if p is None:
+            break
+        t0 = time.time()
+        started = False
+        while p.poll() is None:
+            time.sleep(0.25)
+            try:
+                started = started or os.path.getsize(wav) > 4000
+            except OSError:
+                pass
+            if not started and time.time() - t0 > 3.5:
+                p.terminate()
+                p.wait()
+                break
+        if not started:
+            break
+        more = stt.transcribe(wav)
+        if not more or is_noise(more):
+            break
+        parts.append(more)
+    return " ".join(parts)
+
+
 def _any_speech_playing() -> bool:
     """True while ANY `say` is talking (ours, a hook's, a stale watcher's)."""
     return subprocess.run(["pgrep", "-x", "say"],
@@ -171,6 +255,7 @@ def run_daemon() -> int:
     wav = str(STATE / "talkd.wav")
     prev: dict = {}
     announced: set = set()
+    follow_until = 0.0   # wake mode: window after "hey Claude" alone
     while True:
         active = _read_json(ACTIVE)
         if not active or not (VOICED / active["session_id"]).exists():
@@ -192,14 +277,18 @@ def run_daemon() -> int:
             continue
 
         # 2) Listen; abandon the wait early if a reply lands or focus moves.
+        mode = get_mode()
+        pause = get_pause()
+        in_follow = time.time() < follow_until
         _wait_for_silence()   # never record while ANY speech is playing
-        _beep(START_TINK)
-        time.sleep(0.35)
+        if mode == "all" or in_follow:
+            _beep(START_TINK)   # wake mode listens silently (ambient)
+            time.sleep(0.35)
         try:
             os.remove(wav)
         except FileNotFoundError:
             pass
-        p = stt.record_start(wav)
+        p = stt.record_start(wav, silence_stop=pause)
         if p is None:
             time.sleep(1)
             continue
@@ -220,7 +309,8 @@ def run_daemon() -> int:
                     p.wait()
                     cut = True
                     break
-        _beep(STOP_POP)
+        if mode == "all" or in_follow:
+            _beep(STOP_POP)
         if cut:
             continue
 
@@ -233,6 +323,36 @@ def run_daemon() -> int:
         text = stt.transcribe(wav)
         if not text or is_noise(text):
             continue
+
+        # Mode switching by voice, from either mode.
+        if TO_WAKE_RE.match(text):
+            set_mode("wake")
+            core.speak("Wake word mode. Say hey Claude when you need me.",
+                       blocking=True)
+            continue
+        if TO_ALL_RE.match(text):
+            set_mode("all")
+            core.speak("Agent mode. I'm taking everything now.",
+                       blocking=True)
+            continue
+
+        # Wake mode: ignore everything not addressed to the wake word.
+        if mode == "wake" and not in_follow:
+            addressed, prompt = wake_match(text)
+            if not addressed:
+                continue   # ambient chatter, drop silently
+            if not prompt:
+                core.speak("Yes?", blocking=True)
+                follow_until = time.time() + 12   # next utterance is the prompt
+                continue
+            text = prompt
+        follow_until = 0.0
+
+        # The speaker may have paused to think; stitch continuations.
+        more = _stitch_more(wav, pause)
+        if more:
+            text = f"{text} {more}"
+
         if _is_exit(text) or MUTE_RE.match(text):
             try:
                 (VOICED / sid).unlink()
