@@ -71,11 +71,23 @@ drives the live session, no build. Tradeoff: no spoken output on device.
 See MOBILE.md. Telegram (walkie-talkie) and Vapi (true call) considered
 and deferred.
 
-### Later - mobile voice out (only if native's silence bugs us)
+### Mobile voice out - BUILT (2026-07-18), ready to wire
 
-- Telegram companion: Channels + whisper (in) + TTS voice note (out). Free.
-- Vapi/Twilio true call: real-time, but paid + tunnel + needs a relay to
-  steer the live session (a call otherwise reads the repo, not the session).
+Reversed the "native only" call once push notifications proved not
+agent-like. Three paths now in `mobile/`:
+
+- **Telegram native text** (`mobile/TELEGRAM_NATIVE.md`): official plugin,
+  drives live session, permission relay. Zero code. Text only. Needs a bot
+  token + Bun. Fastest agent-like phone win.
+- **Telegram voice channel** (`mobile/telegram-voice/`): custom Bun channel,
+  voice note in (whisper) + spoken voice note out (say), text too,
+  permission relay. Bundles clean; media round-trip verified. Needs a bot
+  token to run live.
+- **Vapi true call** (`mobile/vapi/`): OpenAI-compatible relay + channel;
+  real-time call bridged to the live session. HTTP layer + injection
+  verified; full call path needs a Vapi account + tunnel.
+
+Deps installed: Bun, ffmpeg (opus), whisper.cpp, sox.
 
 ## Open decisions (revisit as we build)
 

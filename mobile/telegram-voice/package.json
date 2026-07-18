@@ -1,0 +1,11 @@
+{
+  "name": "voicebridge-telegram-voice",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Custom Claude Code channel: Telegram voice <-> live session (local whisper STT + say TTS)",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  }
+}

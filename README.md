@@ -108,8 +108,12 @@ List voices with `say -v '?'`.
 
 ## Mobile
 
-Mobile uses the native stack (Claude app + Remote Control + push
-notifications), no build. See [MOBILE.md](MOBILE.md).
+Voice and chat on your phone, driving your live session. See `mobile/`:
+
+- **Telegram, text** (native, zero code): [mobile/TELEGRAM_NATIVE.md](mobile/TELEGRAM_NATIVE.md)
+- **Telegram, voice** (hear Claude back): [mobile/telegram-voice/](mobile/telegram-voice/)
+- **Vapi true call** (real-time): [mobile/vapi/](mobile/vapi/)
+- Notifications-only baseline (Claude app + Remote Control): [MOBILE.md](MOBILE.md)
 
 ## Roadmap
 
