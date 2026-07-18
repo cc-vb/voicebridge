@@ -64,8 +64,19 @@ Fix what Happy gets wrong: speak the real question, take a spoken answer.
   beyond what Remote Control already syncs.
 - Config surface stays tiny; sensible defaults over knobs.
 
+## Mobile - DECIDED (2026-07-18): native
+
+Use the Claude app + Remote Control + push notifications. Free, private,
+drives the live session, no build. Tradeoff: no spoken output on device.
+See MOBILE.md. Telegram (walkie-talkie) and Vapi (true call) considered
+and deferred.
+
+### Later - mobile voice out (only if native's silence bugs us)
+
+- Telegram companion: Channels + whisper (in) + TTS voice note (out). Free.
+- Vapi/Twilio true call: real-time, but paid + tunnel + needs a relay to
+  steer the live session (a call otherwise reads the repo, not the session).
+
 ## Open decisions (revisit as we build)
 
-- Relay for voice IN: lean on Remote Control's paired device, or run our
-  own Telegram `channel` for a true "text/voice from anywhere" bot?
-- TTS engine: `say` now; evaluate Kokoro (local, nicer voice) at M2.
+- TTS engine: `say` now; evaluate Kokoro (local, nicer voice) later.

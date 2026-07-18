@@ -106,6 +106,11 @@ and **Accessibility** (for the paste keystroke). See [SETUP.md](SETUP.md).
 
 List voices with `say -v '?'`.
 
+## Mobile
+
+Mobile uses the native stack (Claude app + Remote Control + push
+notifications), no build. See [MOBILE.md](MOBILE.md).
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the full phased plan (STT input,
