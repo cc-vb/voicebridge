@@ -5,5 +5,5 @@ allowed-tools: Bash(vb talkd:*), Bash(/opt/homebrew/bin/vb talkd:*)
 
 Run `/opt/homebrew/bin/vb talkd off` with the Bash tool now.
 
-Then confirm to the user in one short sentence what the command printed
-(voice mode off for this session, and whether other voiced sessions remain).
+Then reply with exactly: "Voice off." (add one short clause only if other
+voiced sessions remain, per the command output).

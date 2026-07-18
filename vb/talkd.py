@@ -153,6 +153,19 @@ def status() -> str:
 
 # ---------- the daemon --------------------------------------------------------
 
+def _any_speech_playing() -> bool:
+    """True while ANY `say` is talking (ours, a hook's, a stale watcher's)."""
+    return subprocess.run(["pgrep", "-x", "say"],
+                          capture_output=True).returncode == 0
+
+
+def _wait_for_silence(max_wait: float = 60.0) -> None:
+    t0 = time.time()
+    while _any_speech_playing() and time.time() - t0 < max_wait:
+        time.sleep(0.25)
+    time.sleep(0.3)   # let speaker audio settle before the mic opens
+
+
 def run_daemon() -> int:
     core.log("talkd: started")
     wav = str(STATE / "talkd.wav")
@@ -165,9 +178,9 @@ def run_daemon() -> int:
             continue
         sid, tp = active["session_id"], active["transcript_path"]
         if sid not in announced:
+            # No spoken announce: the assistant's own short confirmation is
+            # spoken via the reply path; a second announcement is noise.
             prev[tp] = core.last_assistant_text(tp)
-            core.speak("Voice mode on for this session. Keep this window "
-                       "focused and talk to me.", blocking=True)
             announced.add(sid)
 
         # 1) Speak any new reply in the active session.
@@ -179,6 +192,7 @@ def run_daemon() -> int:
             continue
 
         # 2) Listen; abandon the wait early if a reply lands or focus moves.
+        _wait_for_silence()   # never record while ANY speech is playing
         _beep(START_TINK)
         time.sleep(0.35)
         try:

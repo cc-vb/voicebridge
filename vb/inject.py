@@ -31,16 +31,32 @@ def _pbcopy(text: str) -> None:
 
 def _osa(script: str) -> None:
     try:
-        subprocess.run(["osascript", "-e", script],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = subprocess.run(["osascript", "-e", script],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            core.log(f"osascript rc={r.returncode}: {r.stderr.strip()}")
     except Exception as e:
         core.log(f"osascript failed: {e}")
+
+
+def frontmost_app() -> str:
+    """Name of the app that will receive the paste; logged for diagnosis."""
+    try:
+        r = subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to get name of first '
+             'application process whose frontmost is true'],
+            capture_output=True, text=True)
+        return r.stdout.strip()
+    except Exception:
+        return ""
 
 
 def paste_text(text: str, send: bool = False) -> None:
     """Paste text into the focused app; optionally press Return to send."""
     if not text:
         return
+    core.log(f"paste -> frontmost app: {frontmost_app() or 'unknown'}")
     saved = _pbpaste()
     _pbcopy(text)
     time.sleep(0.05)
