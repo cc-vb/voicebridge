@@ -156,10 +156,33 @@ def main(argv) -> int:
             print(call.off())
         elif sub == "status":
             print(call.status())
+        elif sub == "tunnel":
+            # Free public URL for the relay (Cloudflare quick tunnel).
+            import os as _os
+            port = _os.environ.get("VB_CALL_PORT", "8790")
+            cf = "/opt/homebrew/bin/cloudflared"
+            if not Path(cf).exists():
+                print("cloudflared missing: brew install cloudflared")
+                return 1
+            print(f"tunneling 127.0.0.1:{port} ... (Ctrl-C to stop)")
+            p = subprocess.Popen([cf, "tunnel", "--url",
+                                  f"http://127.0.0.1:{port}"],
+                                 stderr=subprocess.PIPE, text=True)
+            try:
+                for line in p.stderr:
+                    if "trycloudflare.com" in line and "https://" in line:
+                        url = "https://" + \
+                            line.split("https://", 1)[1].split()[0].strip("|")
+                        print(f"\n  PHONE URL: {url}/"
+                              f"{'?k=<your VB_CALL_SECRET>' if _os.environ.get('VB_CALL_SECRET') else ''}")
+                        print("  open it on your phone, tap Start call\n")
+                p.wait()
+            except KeyboardInterrupt:
+                p.terminate()
         elif sub == "__run__":
             return call.run_daemon()
         else:
-            print("usage: vb call on|off|status")
+            print("usage: vb call on|off|status|tunnel")
             return 1
 
     elif cmd == "remote":

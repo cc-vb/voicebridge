@@ -33,6 +33,9 @@ from . import core, inject
 from .talkd import ACTIVE, _read_json
 
 PID = core.STATE_DIR / "call.pid"
+FFMPEG = "/opt/homebrew/bin/ffmpeg"
+if not os.path.exists(FFMPEG):
+    FFMPEG = "/usr/local/bin/ffmpeg"
 PORT = int(os.environ.get("VB_CALL_PORT", "8790"))
 SECRET = os.environ.get("VB_CALL_SECRET", "")
 TIMEOUT = float(os.environ.get("VB_CALL_TIMEOUT", "90"))
@@ -109,6 +112,107 @@ def _sse(text: str) -> bytes:
             f"data: {json.dumps(done)}\n\ndata: [DONE]\n\n").encode()
 
 
+PAGE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>voicebridge call</title>
+<style>
+ body{font-family:-apple-system,system-ui,sans-serif;background:#0e1116;color:#e6e9ef;
+      margin:0;padding:24px;display:flex;flex-direction:column;min-height:92vh}
+ h1{font-size:20px;margin:0 0 4px} .sub{color:#8b93a3;font-size:13px;margin-bottom:20px}
+ #btn{font-size:22px;padding:22px;border-radius:16px;border:0;background:#2f6df6;
+      color:#fff;width:100%;font-weight:600}
+ #btn.live{background:#d64545}
+ #state{margin:18px 0;font-size:16px;color:#9fd39f;min-height:22px}
+ #log{flex:1;overflow-y:auto;font-size:14px;line-height:1.5}
+ .you{color:#8ab4ff}.bot{color:#e6e9ef;margin-bottom:10px}
+</style></head><body>
+<h1>voicebridge</h1>
+<div class="sub">hands-free call with your Claude session</div>
+<button id="btn">Start call</button>
+<div id="state"></div><div id="log"></div>
+<script>
+const K = new URLSearchParams(location.search).get('k') || '';
+const btn=document.getElementById('btn'), state=document.getElementById('state'),
+      log=document.getElementById('log');
+let live=false, rec=null, media=null, audioCtx=null;
+
+function say(text, cb){
+  const u=new SpeechSynthesisUtterance(text);
+  const vs=speechSynthesis.getVoices().filter(v=>v.lang.startsWith('en'));
+  const best=vs.find(v=>/siri|premium|enhanced|natural/i.test(v.name))||vs[0];
+  if(best)u.voice=best; u.rate=1.0; u.onend=()=>cb&&cb();
+  speechSynthesis.speak(u);
+}
+function add(cls,t){const d=document.createElement('div');d.className=cls;
+  d.textContent=(cls==='you'?'you: ':'')+t;log.prepend(d);}
+async function ask(text){
+  add('you',text); state.textContent='thinking...';
+  try{
+    const r=await fetch('/ask?k='+encodeURIComponent(K),{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    const j=await r.json(); add('bot',j.reply);
+    state.textContent='speaking...';
+    say(j.reply,()=>{ if(live) setTimeout(listen,350); });
+  }catch(e){ state.textContent='connection error'; if(live) setTimeout(listen,1500); }
+}
+// Path A: native speech recognition (Chrome/Android, iOS Safari 14.5+)
+const SR = window.SpeechRecognition||window.webkitSpeechRecognition;
+function listenSR(){
+  rec=new SR(); rec.lang='en-US'; rec.interimResults=false; rec.maxAlternatives=1;
+  state.textContent='listening... (speak)';
+  rec.onresult=e=>{const t=e.results[0][0].transcript.trim();
+    if(/^(stop listening|end call|hang up)[.!]?$/i.test(t)){stop();return;}
+    if(t)ask(t); else if(live)listen();};
+  rec.onerror=()=>{ if(live) setTimeout(listen,800); };
+  rec.onend=()=>{ if(live && state.textContent.startsWith('listening')) setTimeout(listen,400); };
+  rec.start();
+}
+// Path B: record with silence detection, server-side whisper
+async function listenWhisper(){
+  state.textContent='listening... (speak)';
+  const stream=media||(media=await navigator.mediaDevices.getUserMedia({audio:true}));
+  audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+  const src=audioCtx.createMediaStreamSource(stream), an=audioCtx.createAnalyser();
+  an.fftSize=2048; src.connect(an);
+  const buf=new Float32Array(an.fftSize);
+  const mr=new MediaRecorder(stream); const chunks=[];
+  mr.ondataavailable=e=>chunks.push(e.data);
+  let spoke=false, quiet=0;
+  const iv=setInterval(()=>{
+    an.getFloatTimeDomainData(buf);
+    let s=0; for(const v of buf) s+=v*v; const rms=Math.sqrt(s/buf.length);
+    if(rms>0.02){spoke=true;quiet=0;} else if(spoke){quiet+=1;}
+    if((spoke&&quiet>=8)||(!spoke&&iv._n++>150)){clearInterval(iv);mr.stop();}
+  },250); iv._n=0;
+  mr.onstop=async()=>{
+    src.disconnect();
+    if(!spoke){ if(live)listen(); return; }
+    state.textContent='transcribing...';
+    const blob=new Blob(chunks,{type:mr.mimeType||'audio/webm'});
+    try{
+      const r=await fetch('/stt?k='+encodeURIComponent(K),{method:'POST',body:blob});
+      const j=await r.json();
+      const t=(j.text||'').trim();
+      if(/^(stop listening|end call|hang up)[.!]?$/i.test(t)){stop();return;}
+      if(t)ask(t); else if(live)listen();
+    }catch(e){ if(live) setTimeout(listen,1500); }
+  };
+  mr.start();
+}
+function listen(){ if(!live)return; (SR?listenSR:listenWhisper)(); }
+function stop(){ live=false; try{rec&&rec.stop()}catch(e){}
+  speechSynthesis.cancel(); btn.textContent='Start call'; btn.classList.remove('live');
+  state.textContent='call ended'; }
+btn.onclick=()=>{
+  if(live){stop();return;}
+  live=true; btn.textContent='End call'; btn.classList.add('live');
+  speechSynthesis.getVoices();
+  say('Connected. Talk to me.',()=>listen());
+};
+</script></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # keep the daemon quiet
         core.log("call http: " + fmt % args)
@@ -120,36 +224,91 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authed(self) -> bool:
+        if not SECRET:
+            return True
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        if q.get("k", [""])[0] == SECRET:
+            return True
+        got = (self.headers.get("x-vapi-secret", "")
+               or self.headers.get("Authorization", "")
+               .removeprefix("Bearer ").strip())
+        return got == SECRET
+
     def do_GET(self):
-        if self.path == "/health":
+        path = self.path.split("?")[0]
+        if path == "/health":
             self._reply(200, b"ok", "text/plain")
+        elif path == "/":
+            if not self._authed():
+                self._reply(401, b"add ?k=<secret> to the URL", "text/plain")
+                return
+            self._reply(200, PAGE.encode(), "text/html; charset=utf-8")
         else:
             self._reply(404, b"not found", "text/plain")
 
     def do_POST(self):
-        if not self.path.rstrip("/").endswith("chat/completions"):
-            self._reply(404, b"not found", "text/plain")
+        path = self.path.split("?")[0].rstrip("/")
+        if not self._authed():
+            self._reply(401, b"unauthorized", "text/plain")
             return
-        if SECRET:
-            got = (self.headers.get("x-vapi-secret", "")
-                   or self.headers.get("Authorization", "")
-                   .removeprefix("Bearer ").strip())
-            if got != SECRET:
-                self._reply(401, b"unauthorized", "text/plain")
+        n = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(n) if n else b""
+
+        if path == "/ask":  # web-call page: {"text": ...} -> {"reply": ...}
+            try:
+                text = (json.loads(raw or b"{}").get("text") or "").strip()
+            except Exception:
+                self._reply(400, b"bad request", "text/plain")
                 return
-        try:
-            n = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(n) or b"{}")
-        except Exception:
-            self._reply(400, b"bad request", "text/plain")
+            answer = (_ask_session(text) if text
+                      else "Sorry, I didn't catch that.")
+            self._reply(200, json.dumps({"reply": answer}).encode(),
+                        "application/json")
             return
-        text = _extract_user_text(body)
-        answer = (_ask_session(text) if text
-                  else "Sorry, I didn't catch that.")
-        if body.get("stream"):
-            self._reply(200, _sse(answer), "text/event-stream")
-        else:
-            self._reply(200, _openai_json(answer), "application/json")
+
+        if path == "/stt":  # web-call fallback: audio blob -> {"text": ...}
+            from . import stt as _stt
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".webm",
+                                             delete=False) as f:
+                f.write(raw)
+                src = f.name
+            wav = src + ".wav"
+            text = ""
+            try:
+                r = subprocess.run([FFMPEG, "-y", "-i", src, "-ar", "16000",
+                                    "-ac", "1", wav],
+                                   capture_output=True, timeout=120)
+                if r.returncode == 0:
+                    text = _stt.transcribe(wav)
+            finally:
+                for p in (src, wav):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+            self._reply(200, json.dumps({"text": text}).encode(),
+                        "application/json")
+            return
+
+        if path.endswith("chat/completions"):  # Vapi custom-LLM endpoint
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                self._reply(400, b"bad request", "text/plain")
+                return
+            text = _extract_user_text(body)
+            answer = (_ask_session(text) if text
+                      else "Sorry, I didn't catch that.")
+            if body.get("stream"):
+                self._reply(200, _sse(answer), "text/event-stream")
+            else:
+                self._reply(200, _openai_json(answer), "application/json")
+            return
+
+        self._reply(404, b"not found", "text/plain")
 
 
 def run_daemon() -> int:
