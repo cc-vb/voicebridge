@@ -222,9 +222,29 @@ def get_engine() -> str:
         return "say"
 
 
-def _kokoro_wav(text: str) -> str:
+def split_speech_chunks(text: str, max_chars: int = 300,
+                        first_max: int = 120) -> list:
+    """Split a reply into sentence-ish chunks so playback can start after
+    the FIRST sentence synthesizes instead of after the whole reply. The
+    first chunk is kept small so the voice starts as fast as possible."""
+    sents = re.split(r"(?<=[.!?])\s+", text)
+    chunks, cur = [], ""
+    for s in sents:
+        cap = first_max if not chunks else max_chars
+        if len(cur) + len(s) + 1 <= cap:
+            cur = f"{cur} {s}".strip()
+        else:
+            if cur:
+                chunks.append(cur)
+            cur = s
+    if cur:
+        chunks.append(cur)
+    return chunks or [text]
+
+
+def _kokoro_wav(text: str, out: str = "") -> str:
     """Synthesize via the local Kokoro server; '' if unavailable."""
-    wav = str(STATE_DIR / "speech.wav")
+    wav = out or str(STATE_DIR / "speech.wav")
     voice = get_voice()
     if not _KOKORO_VOICE_RE.match(voice or ""):
         voice = "af_heart"
@@ -249,52 +269,79 @@ def _kokoro_wav(text: str) -> str:
 
 
 def hush() -> None:
-    """Stop whatever speech is playing (any engine)."""
+    """Stop whatever speech is playing (any engine), including the chunked
+    speaker's afplay children (killed via the process group)."""
     subprocess.run(["pkill", "-x", "say"], capture_output=True)
     try:
-        os.kill(int(SPEECH_PID.read_text().strip()), 15)
+        pid = int(SPEECH_PID.read_text().strip())
+        try:
+            os.killpg(pid, 15)   # wrapper started its own session: pgid == pid
+        except Exception:
+            os.kill(pid, 15)
     except Exception:
         pass
 
 
-def start_speech(text: str):
-    """Start speaking cleaned text; returns the player Popen (or None).
+def speak_chunks_blocking(text: str) -> None:
+    """The chunked-speech worker (runs inside `vb __speak__`).
 
-    Engine 'kokoro' synthesizes on the local server and plays the wav;
-    anything failing falls back to macOS `say`. Every utterance is recorded
-    for the echo guard, so the mic never mistakes our voice for the user."""
+    Kokoro path: synthesize sentence chunks, PLAY chunk N while chunk N+1
+    synthesizes, so the first words come out after one small synth instead
+    of after the whole reply. Falls back to `say` when the server is down."""
+    if get_engine() == "kokoro":
+        chunks = split_speech_chunks(text)
+        slots = [str(STATE_DIR / f"speech-{i}.wav") for i in (0, 1)]
+        cur = _kokoro_wav(chunks[0], out=slots[0])
+        if cur:
+            i = 0
+            while i < len(chunks):
+                player = subprocess.Popen(
+                    ["afplay", cur],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                nxt = ""
+                if i + 1 < len(chunks):
+                    nxt = _kokoro_wav(chunks[i + 1],
+                                      out=slots[(i + 1) % 2])
+                player.wait()
+                if i + 1 < len(chunks) and not nxt:
+                    break   # server died mid-reply; stop cleanly
+                cur = nxt
+                i += 1
+            return
+    voice = get_voice()
+    if _KOKORO_VOICE_RE.match(voice or ""):
+        voice = ""   # say can't use kokoro voice names
+    cmd = ["say", "-r", get_rate()]
+    if voice:
+        cmd += ["-v", voice]
+    cmd.append(text)
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def start_speech(text: str):
+    """Start speaking cleaned text; returns the speaker Popen (or None).
+
+    Spawns the chunked-speech worker in its own process group so hush()
+    and terminate take the audio down with it. Every utterance is recorded
+    for the echo guard first."""
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         (STATE_DIR / "last_spoken_text").write_text(
             json.dumps({"text": text, "ts": time.time()}))
+        (STATE_DIR / "speech.txt").write_text(text)
     except Exception:
-        pass
-    p = None
-    if get_engine() == "kokoro":
-        wav = _kokoro_wav(text)
-        if wav:
-            try:
-                p = subprocess.Popen(["afplay", wav],
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL,
-                                     start_new_session=True)
-            except Exception as e:
-                log(f"afplay failed: {e}")
-    if p is None:
-        voice = get_voice()
-        if _KOKORO_VOICE_RE.match(voice or ""):
-            voice = ""   # say can't use kokoro voice names
-        cmd = ["say", "-r", get_rate()]
-        if voice:
-            cmd += ["-v", voice]
-        cmd.append(text)
-        try:
-            p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
-        except Exception as e:
-            log(f"say failed: {e}")
-            return None
+        return None
+    vb = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "bin", "vb")
+    try:
+        import sys as _sys
+        p = subprocess.Popen(
+            [_sys.executable, vb, "__speak__"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except Exception as e:
+        log(f"start_speech failed: {e}")
+        return None
     try:
         SPEECH_PID.write_text(str(p.pid))
     except Exception:

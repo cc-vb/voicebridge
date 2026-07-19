@@ -214,6 +214,15 @@ def main(argv) -> int:
             print("voice  : set a kokoro voice, e.g. vb voice af_heart")
             print("         (list: curl -s localhost:8798/voices)")
 
+    elif cmd == "__speak__":
+        # Internal: chunked-speech worker spawned by core.start_speech.
+        try:
+            text = (core.STATE_DIR / "speech.txt").read_text()
+        except Exception:
+            return 1
+        core.speak_chunks_blocking(text)
+        return 0
+
     elif cmd == "sens":
         from vb import talkd as _td
         if rest and rest[0] in ("relaxed", "normal", "strict"):

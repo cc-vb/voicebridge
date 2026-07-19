@@ -387,6 +387,34 @@ def _is_echo(text: str, window_s: float = 45.0) -> bool:
     return overlap >= 0.6
 
 
+ATTENTION_RE = re.compile(
+    r"\b(wait|stop|listen|hold on|hey|claude|pause|excuse me|one second|"
+    r"hang on)\b", re.IGNORECASE)
+
+
+def echo_residue(text: str, window_s: float = 90.0) -> "tuple[str, float]":
+    """Split a capture into (what the USER said, echo overlap 0..1).
+
+    While we talk on speakers, the mic hears our TTS mixed with the user.
+    Subtracting our recently spoken words leaves the user's words, so a
+    barge-in is recognized on the FIRST try instead of being dropped as
+    echo until they repeat themselves."""
+    heard = _WORD_RE.findall(text.lower())
+    if not heard:
+        return "", 1.0
+    try:
+        rec = json.loads(
+            (core.STATE_DIR / "last_spoken_text").read_text())
+        if time.time() - float(rec.get("ts", 0)) > window_s:
+            return text, 0.0
+        spoken = set(_WORD_RE.findall(rec.get("text", "").lower()))
+    except Exception:
+        return text, 0.0
+    residue = [w for w in heard if w not in spoken]
+    overlap = 1.0 - len(residue) / len(heard)
+    return " ".join(residue), overlap
+
+
 def _speak_interruptible(text: str) -> str:
     """Speak a reply, but listen WHILE speaking: if the user talks over it
     out loud, cut the speech and return their words as the next prompt.
@@ -407,7 +435,9 @@ def _speak_interruptible(text: str) -> str:
                 os.remove(wav)
             except FileNotFoundError:
                 pass
-            rec = stt.record_start(wav, max_secs=20, silence_stop=1.2)
+            # Short capture windows so barge-ins are judged quickly even
+            # while our own audio keeps the room from ever going silent.
+            rec = stt.record_start(wav, max_secs=8, silence_stop=1.0)
             if rec is None:
                 say.wait()
                 break
@@ -423,13 +453,20 @@ def _speak_interruptible(text: str) -> str:
             except OSError:
                 continue
             heard = stt.transcribe(wav)
-            if not heard or is_noise(heard) or _is_echo(heard, 90):
-                continue                # our own voice or noise; keep talking
+            if not heard or is_noise(heard):
+                continue
+            residue, overlap = echo_residue(heard)
+            if overlap < 0.55:
+                barge = heard           # clearly the user, take it whole
+            elif ATTENTION_RE.search(residue) or len(residue.split()) >= 3:
+                barge = residue         # user talking OVER us; keep their words
+            else:
+                continue                # just our own voice; keep talking
             say.terminate()
             core.hush()
             say.wait()
-            core.log(f"talkd barge-in: {heard[:80]}")
-            return heard
+            core.log(f"talkd barge-in ({overlap:.2f} echo): {barge[:80]}")
+            return barge
     except Exception as e:
         core.log(f"speak_interruptible: {e}")
     return ""
