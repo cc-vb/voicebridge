@@ -3,7 +3,7 @@
   "description": "Voice for Claude Code: talk to your live session hands-free and hear replies in a natural neural voice, at your desk or from your phone.",
   "owner": {
     "name": "voicebridge",
-    "url": "https://github.com/voicebridgehq"
+    "url": "https://github.com/cc-vb"
   },
   "plugins": [
     {

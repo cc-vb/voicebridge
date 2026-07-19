@@ -5,10 +5,10 @@
   "description": "Talk to Claude Code like a teammate: hands-free voice conversations with your live session, on your Mac or from your phone. Local whisper STT + Kokoro neural TTS.",
   "author": {
     "name": "voicebridge",
-    "url": "https://github.com/voicebridgehq"
+    "url": "https://github.com/cc-vb"
   },
-  "homepage": "https://github.com/voicebridgehq/voicebridge",
-  "repository": "https://github.com/voicebridgehq/voicebridge",
+  "homepage": "https://github.com/cc-vb/voicebridge",
+  "repository": "https://github.com/cc-vb/voicebridge",
   "license": "MIT",
   "keywords": ["voice", "speech", "tts", "whisper", "hands-free", "macos"],
   "hooks": "./hooks/hooks.json"
