@@ -503,13 +503,24 @@ def _wait_for_silence(max_wait: float = 60.0) -> None:
 
 
 def run_daemon() -> int:
-    core.log("talkd: started")
+    core.log(f"talkd: started (pid {os.getpid()})")
+    try:
+        PID.write_text(str(os.getpid()))   # claim singleton ownership
+    except Exception:
+        pass
     wav = str(STATE / "talkd.wav")
     prev: dict = {}
     announced: set = set()
     follow_until = 0.0   # wake mode: window after "hey Claude" alone
     queued = ""          # barge-in captured while a reply was speaking
     while True:
+        # Singleton: if another daemon claimed the pid file, this one exits.
+        try:
+            if PID.read_text().strip() != str(os.getpid()):
+                core.log(f"talkd: superseded, exiting (pid {os.getpid()})")
+                return 0
+        except Exception:
+            pass
         active = _read_json(ACTIVE)
         if not active or not (VOICED / active["session_id"]).exists():
             time.sleep(0.5)

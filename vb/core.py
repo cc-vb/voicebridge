@@ -404,6 +404,8 @@ def start_speech(text: str):
         return None
     vb = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "bin", "vb")
+    log(f"start_speech by pid {os.getpid()} engine={get_engine()}: "
+        f"{text[:60]!r}")
     try:
         import sys as _sys
         p = subprocess.Popen(
