@@ -204,16 +204,29 @@ PAUSE = STATE / "pause"
 CUES = STATE / "cues"
 
 
-def cues_on() -> bool:
-    """Listening beeps (Tink/Pop/Morse). 'off' silences them entirely."""
+def get_cues() -> str:
+    """Cue sounds: 'on' = every listen cycle, 'once' = a single ding when
+    voice mode activates (default), 'off' = fully silent."""
     try:
-        return CUES.read_text().strip() != "off"
+        v = CUES.read_text().strip()
+        return v if v in ("on", "once", "off") else "once"
     except Exception:
-        return True
+        return "once"
+
+
+def cues_on() -> bool:
+    return get_cues() != "off"
 
 
 def _cue(sound: str) -> None:
-    if cues_on():
+    """Per-cycle cue: only in 'on' mode."""
+    if get_cues() == "on":
+        _beep(sound)
+
+
+def _cue_event(sound: str) -> None:
+    """One-time event cue (mode activation): 'on' and 'once' modes."""
+    if get_cues() != "off":
         _beep(sound)
 
 
@@ -369,6 +382,7 @@ def run_daemon() -> int:
             # spoken via the reply path; a second announcement is noise.
             prev[tp] = core.last_assistant_text(tp)
             announced.add(sid)
+            _cue_event(START_TINK)   # single "voice mode is live" ding
 
         # 1) Speak any new reply, listening for a barge-in while talking.
         cur = core.last_assistant_text(tp)

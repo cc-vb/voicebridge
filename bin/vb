@@ -216,11 +216,13 @@ def main(argv) -> int:
 
     elif cmd == "cues":
         from vb import talkd as _td
-        if rest and rest[0] in ("on", "off"):
+        if rest and rest[0] in ("on", "once", "off"):
             _td.STATE.mkdir(parents=True, exist_ok=True)
             _td.CUES.write_text(rest[0])
-        print(f"cues : {'on' if _td.cues_on() else 'off'} "
-              "(listening beeps; vb cues on|off)")
+        print(f"cues : {_td.get_cues()}")
+        print("  on   = beep every listen cycle")
+        print("  once = single ding when voice mode activates (default)")
+        print("  off  = fully silent")
 
     elif cmd == "mode":
         from vb import talkd as _td
