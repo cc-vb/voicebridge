@@ -4,7 +4,9 @@ Nothing about your code leaves the machine. Recording uses sox (`rec`)
 with silence auto-stop, so you press to talk, speak, and it ends itself.
 """
 
+import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -136,20 +138,61 @@ def record_start(wav: str, max_secs: int = 30,
 
 def transcribe(wav: str) -> str:
     """Run whisper.cpp on a wav and return cleaned text."""
+    return transcribe_ex(wav)[0]
+
+
+def transcribe_ex(wav: str) -> "tuple[str, float]":
+    """Transcribe and also return whisper's confidence (mean token
+    probability, 0..1). Real directed speech scores ~0.7+; background
+    chatter, mumble, and noise score low, which lets callers drop them."""
     wb = whisper_bin()
     if not wb or not MODEL.exists():
         core.log("transcribe: missing whisper binary or model")
-        return ""
-    cmd = [wb, "-m", str(MODEL), "-f", wav, "-nt", "-np", "-l", "en"]
+        return "", 0.0
+    base = wav + ".vbout"
+    cmd = [wb, "-m", str(MODEL), "-f", wav, "-nt", "-np", "-l", "en",
+           "-ojf", "-of", base]   # -ojf: full JSON includes token probabilities
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except Exception as e:
         core.log(f"transcribe failed: {e}")
-        return ""
+        return "", 0.0
     text = (out.stdout or "").strip()
-    # whisper.cpp sometimes emits bracketed non-speech tags; drop them.
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     cleaned = " ".join(lines)
     for tag in ("[BLANK_AUDIO]", "(blank audio)", "[ Silence ]", "[silence]"):
         cleaned = cleaned.replace(tag, "")
-    return cleaned.strip()
+    conf = 0.0
+    jpath = base + ".json"
+    try:
+        with open(jpath) as f:
+            data = json.load(f)
+        probs = [t.get("p", 0.0)
+                 for seg in data.get("transcription", [])
+                 for t in seg.get("tokens", [])
+                 if not t.get("text", "").startswith("[_")]
+        if probs:
+            conf = sum(probs) / len(probs)
+    except Exception:
+        pass
+    finally:
+        try:
+            os.remove(jpath)
+        except OSError:
+            pass
+    return cleaned.strip(), conf
+
+
+def loudness(wav: str) -> float:
+    """RMS amplitude of the capture (0..1). Directed out-loud speech near
+    the mic is loud; background conversation and whispers are quiet."""
+    sox = _find("sox")
+    if not sox:
+        return -1.0
+    try:
+        r = subprocess.run([sox, wav, "-n", "stat"], capture_output=True,
+                           text=True, timeout=30)
+        m = re.search(r"RMS\s+amplitude:\s+([0-9.]+)", r.stderr)
+        return float(m.group(1)) if m else -1.0
+    except Exception:
+        return -1.0

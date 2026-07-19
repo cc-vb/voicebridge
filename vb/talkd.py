@@ -230,6 +230,89 @@ def _cue_event(sound: str) -> None:
         _beep(sound)
 
 
+SENS = STATE / "sens"
+
+# (min whisper confidence, min RMS loudness) per sensitivity level.
+# strict = only clear, close, confident speech gets through.
+_SENS_TH = {
+    "relaxed": (0.30, 0.005),
+    "normal": (0.42, 0.012),
+    "strict": (0.55, 0.030),
+}
+
+
+def get_sens() -> str:
+    try:
+        v = SENS.read_text().strip()
+        return v if v in _SENS_TH else "normal"
+    except Exception:
+        return "normal"
+
+
+def accept_capture(text: str, conf: float, loud: float) -> "tuple[bool, str]":
+    """Is this capture really the user talking to Claude, or noise/chatter?"""
+    min_conf, min_rms = _SENS_TH[get_sens()]
+    if conf and conf < min_conf:
+        return False, f"low-confidence ({conf:.2f})"
+    if 0 <= loud < min_rms:
+        return False, f"too-quiet ({loud:.3f})"
+    return True, ""
+
+
+_DIRECTED_STARTS = {
+    "can", "could", "would", "please", "run", "show", "fix", "what", "how",
+    "why", "when", "where", "which", "who", "list", "open", "close", "stop",
+    "yes", "no", "okay", "ok", "yeah", "nope", "do", "don't", "make", "add",
+    "create", "tell", "explain", "give", "check", "try", "go", "continue",
+    "wait", "let's", "lets", "hey", "search", "find", "read", "write",
+    "delete", "commit", "push", "test", "build", "install", "help",
+}
+
+
+def looks_directed(text: str) -> bool:
+    """For SHORT utterances in agent mode: is this aimed at Claude, or a
+    stray remark? Long utterances pass automatically; short ones need a
+    command/question shape, or to be an answer to a question we just asked."""
+    words = text.lower().strip(" .,!?").split()
+    if len(words) >= 4:
+        return True
+    if not words:
+        return False
+    if text.rstrip().endswith("?") or words[0] in _DIRECTED_STARTS:
+        return True
+    try:
+        last = json.loads(
+            (core.STATE_DIR / "last_spoken_text").read_text())["text"]
+        if last.rstrip().endswith("?"):
+            return True   # we asked; a short answer is expected
+    except Exception:
+        pass
+    return False
+
+
+_TRAILING_INCOMPLETE = {
+    "and", "or", "but", "so", "like", "because", "then", "also", "plus",
+    "with", "to", "the", "a", "an", "of", "for", "in", "on", "at", "is",
+    "are", "was", "i", "we", "you", "it", "that", "this", "my", "your",
+}
+
+
+def followup_window(text: str) -> float:
+    """How long to keep the mic open for a continuation, judged from how
+    finished the words sound. Trailing conjunctions mean they're mid-thought."""
+    t = text.rstrip()
+    if not t:
+        return 3.5
+    if t.endswith((",", ";", ":", "-")):
+        return 6.0
+    lastword = t.strip(".!?, ").split()[-1].lower() if t.strip(".!?, ") else ""
+    if lastword in _TRAILING_INCOMPLETE:
+        return 6.0
+    if t.endswith(("?", "!", ".")):
+        return 2.0
+    return 3.5
+
+
 def get_pause() -> float:
     """Seconds of silence that end an utterance (default 2.5)."""
     try:
@@ -238,12 +321,16 @@ def get_pause() -> float:
         return 2.5
 
 
-def _stitch_more(wav: str, pause: float) -> str:
+def _stitch_more(wav: str, pause: float, so_far: str = "") -> str:
     """After a capture, briefly keep listening: if the speaker resumes
     (they paused to think), capture the continuation(s) and return them.
-    A follow-up window with no speech within ~3.5s ends the prompt."""
+
+    The follow-up window adapts to how finished the words sound: a trailing
+    'and...' holds the mic ~6s, a finished question only ~2s."""
     parts = []
+    text_so_far = so_far
     while True:
+        window = followup_window(text_so_far)
         try:
             os.remove(wav)
         except FileNotFoundError:
@@ -259,16 +346,20 @@ def _stitch_more(wav: str, pause: float) -> str:
                 started = started or os.path.getsize(wav) > 4000
             except OSError:
                 pass
-            if not started and time.time() - t0 > 3.5:
+            if not started and time.time() - t0 > window:
                 p.terminate()
                 p.wait()
                 break
         if not started:
             break
-        more = stt.transcribe(wav)
+        more, conf = stt.transcribe_ex(wav)
         if not more or is_noise(more):
             break
+        min_conf, _ = _SENS_TH[get_sens()]
+        if conf and conf < min_conf:
+            break
         parts.append(more)
+        text_so_far = f"{text_so_far} {more}"
     return " ".join(parts)
 
 
@@ -437,17 +528,24 @@ def run_daemon() -> int:
             if cut:
                 continue
 
-            # 3) Handle speech.
+            # 3) Handle speech: is this really the user talking to Claude?
             try:
                 if os.path.getsize(wav) < 2000:
                     continue
             except OSError:
                 continue
-            text = stt.transcribe(wav)
+            text, conf = stt.transcribe_ex(wav)
             if not text or is_noise(text):
                 continue
             if _is_echo(text):
                 core.log(f"talkd echo dropped: {text[:80]}")
+                continue
+            ok, why = accept_capture(text, conf, stt.loudness(wav))
+            if not ok:
+                core.log(f"talkd dropped ({why}): {text[:80]}")
+                continue
+            if mode == "all" and not looks_directed(text):
+                core.log(f"talkd dropped (not directed): {text[:80]}")
                 continue
 
         # Mode switching by voice, from either mode.
@@ -475,7 +573,7 @@ def run_daemon() -> int:
         follow_until = 0.0
 
         # The speaker may have paused to think; stitch continuations.
-        more = _stitch_more(wav, pause)
+        more = _stitch_more(wav, pause, text)
         if more:
             text = f"{text} {more}"
 

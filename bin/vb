@@ -214,6 +214,16 @@ def main(argv) -> int:
             print("voice  : set a kokoro voice, e.g. vb voice af_heart")
             print("         (list: curl -s localhost:8798/voices)")
 
+    elif cmd == "sens":
+        from vb import talkd as _td
+        if rest and rest[0] in ("relaxed", "normal", "strict"):
+            _td.STATE.mkdir(parents=True, exist_ok=True)
+            _td.SENS.write_text(rest[0])
+        print(f"sensitivity : {_td.get_sens()}")
+        print("  relaxed = let more through (quiet rooms, soft speakers)")
+        print("  normal  = balanced (default)")
+        print("  strict  = only clear, close, confident speech (noisy rooms)")
+
     elif cmd == "cues":
         from vb import talkd as _td
         if rest and rest[0] in ("on", "once", "off"):
