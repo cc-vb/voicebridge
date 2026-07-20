@@ -230,6 +230,34 @@ def main(argv) -> int:
             print("voice  : set a kokoro voice, e.g. vb voice af_heart")
             print("         (list: curl -s localhost:8798/voices)")
 
+    elif cmd == "__install_hooks__":
+        # Register the three hooks in settings.json (cross-platform; used by
+        # install.sh and install.ps1). Args: <repo_dir> <settings_path>
+        import json as _json
+        import os as _os
+        repo, path = rest[0], rest[1]
+        settings = {}
+        if _os.path.exists(path):
+            settings = _json.loads(open(path).read() or "{}")
+        hooks = settings.setdefault("hooks", {})
+        wanted = {"Stop": "on_stop.py", "Notification": "on_notify.py",
+                  "UserPromptSubmit": "on_prompt.py"}
+        changed = False
+        for ev, script in wanted.items():
+            entries = hooks.setdefault(ev, [])
+            if "voicebridge" in _json.dumps(entries):
+                continue
+            hookpath = _os.path.join(repo, "hooks", script)
+            entries.append({"matcher": "", "hooks": [{
+                "type": "command",
+                "command": f'python3 "{hookpath}" # voicebridge',
+                "timeout": 5}]})
+            changed = True
+        if changed:
+            with open(path, "w") as f:
+                _json.dump(settings, f, indent=2)
+        print("hooks registered" if changed else "hooks already present")
+
     elif cmd == "__speak__":
         # Internal: chunked-speech worker spawned by core.start_speech.
         try:
@@ -240,15 +268,53 @@ def main(argv) -> int:
         return 0
 
     elif cmd == "phone":
-        # One command: start the relay + tunnel + show the QR to scan.
+        # One command: relay + tunnel + QR, non-blocking (slash-command safe).
         import os as _os
+        import time as _t
         secret = (_os.environ.get("VB_CALL_SECRET", "")
                   or core._read(core.STATE_DIR / "call_secret")
                   or "vb-" + str(abs(hash(str(core.STATE_DIR))))[:8])
         _os.environ["VB_CALL_SECRET"] = secret
         from vb import call as _call
         print(_call.on())
-        return main(["call", "tunnel"])
+        saved = core._read(core.STATE_DIR / "public_url")
+        if saved:
+            return main(["call", "tunnel"])   # permanent link: instant, no wait
+        cf = "/opt/homebrew/bin/cloudflared"
+        port = _os.environ.get("VB_CALL_PORT", "8790")
+        logf = core.STATE_DIR / "tunnel.log"
+        if not Path(cf).exists():
+            print("cloudflared missing: brew install cloudflared")
+            return 1
+        with open(logf, "w") as lf:
+            subprocess.Popen([cf, "tunnel", "--url", f"http://127.0.0.1:{port}"],
+                             stdout=lf, stderr=lf, start_new_session=True)
+        url = ""
+        for _ in range(60):
+            _t.sleep(0.5)
+            try:
+                import re as _re
+                m = _re.search(r"https://[a-z0-9-]+\.trycloudflare\.com",
+                               logf.read_text())
+                if m:
+                    url = m.group(0)
+                    break
+            except Exception:
+                pass
+        if not url:
+            print("tunnel didn't come up; try again or check network")
+            return 1
+        full = f"{url}/?k={secret}"
+        print(f"\n  PHONE URL: {full}\n")
+        try:
+            import qrcode
+            qr = qrcode.QRCode(border=1)
+            qr.add_data(full)
+            qr.make()
+            qr.print_ascii(invert=True)
+        except Exception:
+            pass
+        print("  scan the QR or open the URL on your phone, tap Start call")
 
     elif cmd == "barge":
         from vb import talkd as _td
