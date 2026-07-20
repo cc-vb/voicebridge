@@ -226,9 +226,9 @@ def get_barge() -> str:
     the reliable interrupts are typing a new prompt or the hush hotkey."""
     try:
         v = BARGE.read_text().strip()
-        return v if v in ("on", "off") else "off"
+        return v if v in ("on", "off") else "on"
     except Exception:
-        return "off"
+        return "on"
 
 
 def get_cues() -> str:
@@ -535,12 +535,14 @@ def _speak_interruptible(text: str) -> str:
             if not heard or is_noise(heard) or _is_assistant_echo(heard):
                 continue
             residue, overlap = echo_residue(heard)
-            if overlap < 0.55:
-                barge = heard           # clearly the user, take it whole
-            elif ATTENTION_RE.search(residue) or len(residue.split()) >= 3:
-                barge = residue         # user talking OVER us; keep their words
+            if overlap < 0.35:
+                barge = heard           # clearly new speech, not our echo
+            elif ATTENTION_RE.search(residue):
+                barge = residue         # a stop/attention word cuts through
+            elif overlap < 0.6 and len(residue.split()) >= 4:
+                barge = residue         # a real phrase over the top of us
             else:
-                continue                # just our own voice; keep talking
+                continue                # mostly our own voice; keep talking
             say.terminate()
             core.hush()
             say.wait()

@@ -36,23 +36,10 @@ MODEL = _best_model()
 
 
 def stt_lang_mode() -> "tuple":
-    """(model_path, whisper -l arg) based on the user's vb lang setting.
-
-    Default is AUTO: the multilingual model detects the language per
-    utterance, so you can switch between English, Hindi, and Hinglish
-    mid-conversation without touching anything. Explicit settings:
-    'english' pins the English-only model (slightly more accurate for pure
-    English), 'hindi' forces Devanagari transcripts."""
-    lang = core.get_lang().lower()
-    multi = _best_model(_MULTI_MODELS)
-    if lang in ("hindi", "हिंदी") and multi.exists():
-        return multi, "hi"
-    if lang == "english":
-        return _best_model(), "en"
-    # "", "auto", "hinglish", or anything else -> detect per utterance
-    if multi.exists():
-        return multi, "auto"
-    return _best_model(), "en"
+    """(model_path, whisper -l arg). English-only for now: the English model
+    is the most accurate for English and avoids mis-detecting English speech
+    as another language. (Multilingual support is parked; see git history.)"""
+    return _best_model(_EN_MODELS), "en"
 
 
 # Hotkey daemons (skhd) run with a minimal PATH that often lacks Homebrew,

@@ -34,6 +34,12 @@ def directive(lang: str) -> str:
     return f"[voicebridge] {how} {tone}"
 
 
+TONE = ("[voicebridge] Keep replies in a warm, natural, spoken "
+        "conversational tone, as if talking out loud: first person, concise, "
+        "and end with a short follow-up question when it fits. Style note for "
+        "prose only; do not let it change code, commands, or file contents.")
+
+
 def main() -> int:
     # A new prompt means the user has moved on: stop any speech mid-sentence
     # so the voice never talks over the next exchange.
@@ -48,9 +54,13 @@ def main() -> int:
         from vb import talkd
         talkd.record_prompt(sid, tp)
 
-    lang = core.get_lang()
-    if lang:
+    lang = core.get_lang().lower()
+    # English-only now: only inject a non-English directive if the user
+    # explicitly pinned one; otherwise just the spoken-tone note.
+    if lang and lang not in ("english", "auto", "en"):
         print(directive(lang))
+    else:
+        print(TONE)
     return 0
 
 
