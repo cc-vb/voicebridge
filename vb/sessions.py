@@ -16,15 +16,48 @@ from . import core
 PROJECTS = Path(os.path.expanduser("~/.claude/projects"))
 
 
+_HOMEISH = {"home", "", "documents", "desktop", "downloads"}
+
+
 def _label(transcript_path: str) -> str:
-    """Human name for a session from its encoded project dir.
-    .../projects/-Users-me-jobhunt/<uuid>.jsonl  ->  'jobhunt'."""
+    """Human name for a session from its encoded project dir. Falls back to
+    the session's first user prompt when the dir is a generic home folder,
+    so two sessions in ~ don't both read as your username."""
     try:
         d = Path(transcript_path).parent.name  # -Users-me-jobhunt
         seg = [s for s in d.split("-") if s]
-        return seg[-1] if seg else "home"
+        name = seg[-1] if seg else "home"
+        # Home-ish dir (or your username) -> use the first prompt instead.
+        low = name.lower()
+        if low in _HOMEISH or (len(seg) >= 2 and low == seg[-1] and
+                               name == Path.home().name):
+            snip = _first_prompt(transcript_path)
+            if snip:
+                return snip
+        return name
     except Exception:
         return "session"
+
+
+def _first_prompt(path: str, words: int = 4) -> str:
+    """First few words of the session's first user message, as a label."""
+    try:
+        for ln in Path(path).read_text(errors="ignore").splitlines():
+            try:
+                rec = json.loads(ln)
+            except Exception:
+                continue
+            if rec.get("type") == "user":
+                c = rec.get("message", {}).get("content", "")
+                if isinstance(c, list):
+                    c = " ".join(b.get("text", "") for b in c
+                                 if isinstance(b, dict))
+                c = str(c).strip().replace("\n", " ")
+                if c and not c.startswith("<"):
+                    return " ".join(c.split()[:words]).lower()
+    except Exception:
+        pass
+    return ""
 
 
 def _last_records(path: str, n: int = 12) -> list:
@@ -135,6 +168,30 @@ def find(query: str):
         if q in r["label"].lower() or r["label"].lower() in q:
             return r
     return None
+
+
+def read_last(query: str) -> str:
+    """Speak a named session's most recent assistant reply."""
+    r = find(query)
+    if not r:
+        return f"No session matching '{query}'."
+    reply = core.last_assistant_text(r["path"])
+    if not reply:
+        return f"{r['label']} has no reply yet."
+    return f"{r['label']} said: {reply}"
+
+
+def newly_idle(prev: dict) -> "tuple[list, dict]":
+    """Given prior {sid: state}, return (labels that just went idle, new map).
+    Used by the daemon to announce 'X is ready for you' when an agent
+    finishes, the fleet-supervision payoff."""
+    now = {}
+    freshly = []
+    for r in roster():
+        now[r["sid"]] = r["state"]
+        if r["state"] == "idle" and prev.get(r["sid"]) == "working":
+            freshly.append(r["label"])
+    return freshly, now
 
 
 def switch(query: str) -> str:

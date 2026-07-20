@@ -97,6 +97,18 @@ ROSTER_RE = re.compile(
 SWITCH_RE = re.compile(
     r"^\s*(?:switch|go|move|jump) (?:to|over to|into) (?:the )?"
     r"([a-z0-9 _-]+?)(?: session| project)?[.!?\s]*$", re.IGNORECASE)
+READLAST_RE = re.compile(
+    r"^\s*(?:read|what did|tell me what) (?:me )?(?:out )?(?:the )?"
+    r"([a-z0-9 _-]+?)(?:'s)?(?: session| project)?(?: last| latest)?"
+    r"(?: reply| say| said| output)[.!?\s]*$", re.IGNORECASE)
+ALERTS = STATE / "alerts"   # "on" (default): announce agents that go idle
+
+
+def alerts_on() -> bool:
+    try:
+        return ALERTS.read_text().strip() != "off"
+    except Exception:
+        return True
 
 TO_WAKE_RE = re.compile(
     r"^\s*(switch to )?(wake|weak|wait|week|work)([- ]?word)? ?mode[.!\s]*$",
@@ -702,6 +714,9 @@ def run_daemon() -> int:
     announced: set = set()
     follow_until = 0.0   # wake mode: window after "hey Claude" alone
     queued = ""          # barge-in captured while a reply was speaking
+    fleet_states = {}    # sid -> state, for idle alerts
+    fleet_next = 0.0     # next fleet-check time
+    first_fleet = True   # skip alerts on the very first scan (no baseline)
     unfocused_since = 0.0   # when the bound app lost focus (0.0 = focused)
     while True:
         # Singleton: if another daemon claimed the pid file, this one exits.
@@ -743,6 +758,21 @@ def run_daemon() -> int:
             prev[tp] = core.last_assistant_text(tp)
             announced.add(sid)
             _cue_event(START_TINK)   # single "voice mode is live" ding
+
+        # 0) Fleet alerts: every ~12s, announce any OTHER agent that just
+        # finished (working -> idle), so you hear "jobhunt is ready" without
+        # watching terminals. Skipped while speaking.
+        if alerts_on() and time.time() >= fleet_next and not _any_speech_playing():
+            from . import sessions as _sess
+            fresh, fleet_states = _sess.newly_idle(fleet_states)
+            fleet_next = time.time() + 12
+            others = [n for n in fresh if n]  # labels only
+            if fleet_states and others and not first_fleet:
+                names = ", ".join(others[:4])
+                core.speak(f"Heads up: {names} "
+                           f"{'is' if len(others) == 1 else 'are'} ready for "
+                           f"you.", blocking=True)
+            first_fleet = False
 
         # 1) Speak any new reply, listening for a barge-in while talking.
         cur = core.last_assistant_text(tp)
@@ -821,6 +851,11 @@ def run_daemon() -> int:
         if ROSTER_RE.match(text):
             from . import sessions as _sess
             core.speak(_sess.speak_roster(), blocking=True)
+            continue
+        m_rl = READLAST_RE.match(text)
+        if m_rl:
+            from . import sessions as _sess
+            core.speak(_sess.read_last(m_rl.group(1)), blocking=True)
             continue
         m_sw = SWITCH_RE.match(text)
         if m_sw and not m_sw.group(1).rstrip().endswith("mode"):

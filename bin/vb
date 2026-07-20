@@ -380,6 +380,14 @@ def main(argv) -> int:
         from vb import sessions as _s
         print(_s.switch(" ".join(rest)) if rest else "usage: vb switch <name>")
 
+    elif cmd == "alerts":
+        from vb import talkd as _td
+        if rest and rest[0] in ("on", "off"):
+            _td.STATE.mkdir(parents=True, exist_ok=True)
+            _td.ALERTS.write_text(rest[0])
+        print(f"fleet alerts : {'on' if _td.alerts_on() else 'off'}")
+        print("  spoken 'X is ready for you' when any other session goes idle")
+
     elif cmd == "mode":
         from vb import talkd as _td
         if rest and rest[0] in ("wake", "all", "full"):
