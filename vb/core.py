@@ -26,6 +26,7 @@ LANG_FILE = STATE_DIR / "lang"
 RATE_FILE = STATE_DIR / "rate"
 VOICE_FILE = STATE_DIR / "voice"
 MIC_FLAG = STATE_DIR / "mic_on"
+REMAINDER = STATE_DIR / "speech_remainder"   # what the cap cut off, for `vb continue`
 
 
 def mic_active() -> bool:
@@ -59,7 +60,7 @@ DEDUP_WINDOW_S = 20.0
 # Config: env wins, then a saved value (vb rate / vb voice), then default.
 # ~175 wpm is a natural, human pace (a touch above macOS default).
 DEFAULT_RATE = "175"
-MAX_CHARS = int(os.environ.get("VOICEBRIDGE_MAXCHARS", "700"))
+MAX_CHARS = int(os.environ.get("VOICEBRIDGE_MAXCHARS", "6000"))
 
 
 def _read(path, default=""):
@@ -124,22 +125,76 @@ def clean_for_speech(text: str, max_chars: int = 0) -> str:
     """
     if not text:
         return ""
-    cap = max_chars or MAX_CHARS
+    head, rest = _cap_at_sentence(_strip_for_speech(text),
+                                  max_chars or MAX_CHARS)
+    return head if not rest else head + "..."
+
+
+def _strip_for_speech(text: str) -> str:
+    """Markdown/code stripping, shared by the capped and stashing paths."""
     t = _FENCE.sub(" (code block) ", text)
     t = _LINK.sub(r"\1", t)
     t = _URL.sub(" a link ", t)
     t = _INLINE_CODE.sub(r"\1", t)
     t = _LIST_BULLET.sub("", t)
     t = _MD_TOKENS.sub("", t)
-    t = _WS.sub(" ", t).strip()
+    return _WS.sub(" ", t).strip()
+
+
+def _cap_at_sentence(t: str, cap: int):
+    """Split at the last sentence end before cap: returns (spoken, leftover)."""
     if len(t) <= cap:
-        return t
-    # Cut at the last sentence end before the cap so it doesn't trail off.
+        return t, ""
     cut = t[:cap]
     m = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
     if m > cap // 2:
-        return cut[: m + 1]
-    return cut.rstrip() + "..."
+        return cut[: m + 1], t[m + 1:].lstrip()
+    return cut.rstrip(), t[len(cut):].lstrip()
+
+
+CAP_NOTICE = " That's the character cap. Say continue to hear the rest."
+
+
+def clean_and_stash(text: str, max_chars: int = 0) -> str:
+    """Cap speech, but stash the leftover and SAY so, rather than trailing off.
+
+    Silent truncation is indistinguishable from a finished answer, so the
+    listener can't tell they missed anything. The leftover waits in
+    REMAINDER for `vb continue` (or saying "continue") to pick it up.
+    """
+    if not text:
+        return ""
+    head, rest = _cap_at_sentence(_strip_for_speech(text),
+                                  max_chars or MAX_CHARS)
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if rest:
+            REMAINDER.write_text(rest)
+        elif REMAINDER.exists():
+            REMAINDER.unlink()
+    except Exception:
+        pass
+    return head + CAP_NOTICE if rest else head
+
+
+def speak_remainder() -> bool:
+    """Speak what the last cap cut off. False if nothing is pending.
+
+    Chains: speak() re-stashes anything still over the cap, so repeated
+    "continue" walks through a long answer a chunk at a time.
+    """
+    try:
+        rest = REMAINDER.read_text().strip()
+    except Exception:
+        return False
+    if not rest:
+        return False
+    try:
+        REMAINDER.unlink()
+    except Exception:
+        pass
+    speak(rest, blocking=True)
+    return True
 
 
 def _blocks_to_text(content) -> str:
@@ -428,7 +483,7 @@ def speak(text: str, blocking: bool = False) -> None:
 
     Blocking speech (a live conversation reply) reads the WHOLE reply, not a
     capped preview: cutting off mid-answer breaks the conversation."""
-    text = clean_for_speech(text, max_chars=6000 if blocking else 0)
+    text = clean_and_stash(text, max_chars=6000 if blocking else 0)
     if not text:
         return
     if _recently_spoken(text):

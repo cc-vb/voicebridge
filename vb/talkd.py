@@ -61,6 +61,14 @@ TO_ALL_RE = re.compile(
     r" ?mode[.!\s]*$",
     re.IGNORECASE)
 
+# "continue" resumes a reply the character cap cut short. Kept to bare
+# resume phrasings so an ordinary sentence starting "continue with..."
+# still reaches Claude as a prompt.
+CONTINUE_RE = re.compile(
+    r"^\s*(please |ok |okay )?(continue|carry on|go on|keep going|"
+    r"(read |say )?the rest)( reading| from there| please)?[.!\s]*$",
+    re.IGNORECASE)
+
 
 def get_mode() -> str:
     try:
@@ -690,6 +698,14 @@ def run_daemon() -> int:
             set_mode("all")
             core.speak("Agent mode. I'm taking everything now.",
                        blocking=True)
+            continue
+
+        # "continue" picks up a reply the cap cut short, without
+        # round-tripping through Claude.
+        if CONTINUE_RE.match(text):
+            if not core.speak_remainder():
+                core.speak("Nothing pending. That was the whole reply.",
+                           blocking=True)
             continue
 
         # Wake mode: ignore everything not addressed to the wake word.

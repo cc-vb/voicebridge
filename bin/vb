@@ -244,6 +244,12 @@ def main(argv) -> int:
         print("                  hotkey (Cmd+Alt+Ctrl+X); reliable")
         print("  on            = talking over the voice also interrupts")
 
+    elif cmd == "continue":
+        if core.speak_remainder():
+            print("continuing where the cap cut off")
+        else:
+            print("nothing pending — the last reply was spoken in full")
+
     elif cmd == "hush":
         core.hush()
         print("hushed")
