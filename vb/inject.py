@@ -52,11 +52,20 @@ def frontmost_app() -> str:
         return ""
 
 
-def paste_text(text: str, send: bool = False) -> None:
-    """Paste text into the focused app; optionally press Return to send."""
+def paste_text(text: str, send: bool = False, expect_app: str = "") -> bool:
+    """Paste text into the focused app; optionally press Return to send.
+
+    `expect_app` is the app voice is bound to. If anything else is frontmost
+    we refuse: a paste is a keystroke plus Return into whatever has the
+    cursor, so an unchecked paste can type your speech into a meeting chat,
+    a DM, or a terminal and run it. Returns True if the text was delivered."""
     if not text:
-        return
-    core.log(f"paste -> frontmost app: {frontmost_app() or 'unknown'}")
+        return False
+    front = frontmost_app()
+    if expect_app and front and front.strip().casefold() != expect_app.casefold():
+        core.log(f"paste refused: {front} is frontmost, not {expect_app}")
+        return False
+    core.log(f"paste -> frontmost app: {front or 'unknown'}")
     saved = _pbpaste()
     _pbcopy(text)
     time.sleep(0.05)
@@ -67,3 +76,4 @@ def paste_text(text: str, send: bool = False) -> None:
     # Restore the old clipboard after the paste has landed.
     time.sleep(0.2)
     _pbcopy(saved)
+    return True

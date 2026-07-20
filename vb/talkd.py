@@ -33,6 +33,38 @@ LAST = STATE / "last_prompt.json"
 ACTIVE = STATE / "active.json"
 PID = STATE / "talkd.pid"
 
+APP = STATE / "app"    # the app /voice-on was run in; the ONLY paste target
+
+
+def bind_app(name: str = "") -> str:
+    """Remember which app owns voice. Injection targets it and nothing else.
+
+    Without this, a paste lands in whatever happens to be frontmost, which
+    during a meeting means typing into the meeting and pressing Return."""
+    name = (name or inject.frontmost_app()).strip()
+    if name:
+        STATE.mkdir(parents=True, exist_ok=True)
+        APP.write_text(name)
+    return name
+
+
+def bound_app() -> str:
+    try:
+        return APP.read_text().strip()
+    except Exception:
+        return ""
+
+
+def app_focused(frontmost: str, bound: str) -> bool:
+    """May we record and inject right now?
+
+    Unbound (upgrade from an older version, or an undetectable app) falls
+    back to the previous always-on behaviour rather than going mute."""
+    if not bound or not frontmost:
+        return True
+    return frontmost.strip().casefold() == bound.casefold()
+
+
 MUTE_RE = re.compile(
     r"^\s*(stop listening|mic off|mute|go to sleep|stop the mic)[.!\s]*$",
     re.IGNORECASE)
@@ -146,11 +178,13 @@ def voice_on(ensure: bool = True) -> str:
     VOICED.mkdir(parents=True, exist_ok=True)
     (VOICED / sid).write_text(tp)
     ACTIVE.write_text(json.dumps(last))
+    app = bind_app()
     if ensure:
         ensure_daemon()
     n = len(list(VOICED.iterdir()))
+    where = f" Bound to {app}; ignored elsewhere." if app else ""
     return (f"voice mode ON for session {sid[:8]} ({n} voiced session"
-            f"{'s' if n != 1 else ''}). Mic follows this session now.")
+            f"{'s' if n != 1 else ''}). Mic follows this session now.{where}")
 
 
 def voice_off(ensure: bool = True) -> str:
@@ -213,6 +247,12 @@ def status() -> str:
     lines = [f"daemon : {'running' if daemon_alive() else 'stopped'}"]
     active = _read_json(ACTIVE)
     lines.append(f"active : {active['session_id'][:8] if active else '(none)'}")
+    app = bound_app()
+    lines.append(f"app    : {app or '(unbound - any app, legacy behaviour)'}")
+    if app:
+        front = inject.frontmost_app()
+        state = "listening" if app_focused(front, app) else f"dormant ({front})"
+        lines.append(f"focus  : {state}")
     if VOICED.exists():
         for f in VOICED.iterdir():
             lines.append(f"voiced : {f.name[:8]} -> {f.read_text().strip()}")
@@ -634,6 +674,7 @@ def run_daemon() -> int:
     announced: set = set()
     follow_until = 0.0   # wake mode: window after "hey Claude" alone
     queued = ""          # barge-in captured while a reply was speaking
+    unfocused_since = 0.0   # when the bound app lost focus (0.0 = focused)
     while True:
         # Singleton: if another daemon claimed the pid file, this one exits.
         try:
@@ -647,6 +688,27 @@ def run_daemon() -> int:
             time.sleep(0.5)
             continue
         sid, tp = active["session_id"], active["transcript_path"]
+
+        # Focus gate. While you're in another app we hold no mic at all, so
+        # a meeting or any other recorder gets a free input device, and we
+        # cannot type into whatever has your cursor. We also stay quiet,
+        # since a reply read aloud into a live meeting is its own problem;
+        # `prev` is left untouched, so a reply that lands while you're away
+        # is spoken when you come back rather than lost.
+        bound = bound_app()
+        focused = app_focused(inject.frontmost_app(), bound)
+        if not focused:
+            if not unfocused_since:
+                unfocused_since = time.time()
+                core.log(f"talkd: {bound} not frontmost, mic released")
+            time.sleep(1.0)
+            continue
+        if unfocused_since:
+            core.log(f"talkd: {bound} refocused after "
+                     f"{time.time() - unfocused_since:.0f}s, mic live")
+            unfocused_since = 0.0
+            queued = ""   # anything overheard on the way back isn't a prompt
+
         if sid not in announced:
             # No spoken announce: the assistant's own short confirmation is
             # spoken via the reply path; a second announcement is noise.
@@ -787,7 +849,10 @@ def run_daemon() -> int:
             continue
 
         core.log(f"talkd you: {text}")
-        inject.paste_text(text, send=True)
+        # Re-checked at the moment of the paste: focus can change during the
+        # seconds we spent recording and transcribing.
+        if not inject.paste_text(text, send=True, expect_app=bound):
+            continue
         _cue(THINK)
         time.sleep(1.0)
         prev[tp] = core.last_assistant_text(tp)

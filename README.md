@@ -179,6 +179,14 @@ protection. Backend: `vb talkd on|off|status|stop`; slash commands live in
 Tradeoff: the voiced session's window must stay focused when you speak (the
 text lands at your cursor).
 
+**Voice is bound to one app.** `/voice-on` remembers the app you ran it in,
+and that app is the only place speech is ever injected. Switch to a meeting,
+a browser, or another terminal and voicebridge goes dormant: it releases the
+microphone entirely (so your meeting can have it) and refuses to paste. Come
+back and it resumes; a reply that landed while you were away is spoken then
+rather than lost. `vb talkd status` shows the bound app and whether it's
+listening or dormant right now.
+
 ### Manual voice link (`vb talk`)
 
 Older manual variant: binds to your most recently active session from
