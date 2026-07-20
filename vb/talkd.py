@@ -606,6 +606,7 @@ def _speak_interruptible(text: str) -> str:
             pass
         return ""
     wav = str(STATE / "barge.wav")
+    barge = ""
     try:
         while say.poll() is None:
             try:
@@ -636,10 +637,18 @@ def _speak_interruptible(text: str) -> str:
             say.terminate()
             core.hush()
             say.wait()
-            core.log(f"talkd barge-in ({overlap:.2f} echo): {barge[:80]}")
+            core.log(f"talkd barge-in: {barge[:80]}")
             return barge
     except Exception as e:
-        core.log(f"speak_interruptible: {e}")
+        # Never let a bug in here eat the reply silently. If we already cut
+        # the speech we must still hand back what the user said, otherwise
+        # the reply dies mid-sentence and their words vanish with it.
+        core.log(f"speak_interruptible: {e!r}")
+        try:
+            if say.poll() is not None:
+                return barge
+        except Exception:
+            pass
     return ""
 
 
