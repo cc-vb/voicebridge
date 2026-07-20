@@ -157,10 +157,27 @@ def speak_roster() -> str:
     return " ".join(parts)
 
 
+def all_rows(max_age_h: float = 72) -> list:
+    """Claude sessions plus any registered non-Claude agents (universal)."""
+    from . import adapters
+    import time as _t
+    rows = roster(max_age_h=max_age_h)
+    for a in adapters.discover():
+        rows.append({
+            "label": a["label"], "sid": a["path"], "path": a["path"],
+            "kind": a["kind"], "mtime": a["mtime"],
+            "ago": _ago(_t.time() - a["mtime"]),
+            "state": "working" if _t.time() - a["mtime"] < 15 else "idle",
+            "voiced": False,
+        })
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return rows
+
+
 def find(query: str):
-    """Match a spoken name to a session (fuzzy-ish substring)."""
+    """Match a spoken name to a session or registered agent."""
     q = query.lower().strip()
-    rows = roster(max_age_h=72)
+    rows = all_rows()
     for r in rows:
         if r["label"].lower() == q:
             return r
@@ -175,7 +192,8 @@ def read_last(query: str) -> str:
     r = find(query)
     if not r:
         return f"No session matching '{query}'."
-    reply = core.last_assistant_text(r["path"])
+    from . import adapters
+    reply = adapters.last_reply(r["path"], r.get("kind", "claude"))
     if not reply:
         return f"{r['label']} has no reply yet."
     return f"{r['label']} said: {reply}"

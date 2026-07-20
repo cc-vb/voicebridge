@@ -366,7 +366,7 @@ def main(argv) -> int:
 
     elif cmd == "sessions":
         from vb import sessions as _s
-        rows = _s.roster()
+        rows = _s.all_rows(max_age_h=12)
         if not rows:
             print("no active Claude sessions in the last 12h")
         else:
@@ -379,6 +379,50 @@ def main(argv) -> int:
     elif cmd == "switch":
         from vb import sessions as _s
         print(_s.switch(" ".join(rest)) if rest else "usage: vb switch <name>")
+
+    elif cmd == "agent":
+        # Register / test a non-Claude agent so voicebridge can read ITS
+        # replies too. This is how you make the universal layer real for
+        # Codex/Cursor/etc. and verify it works, on your own machine.
+        import json as _json
+        from vb import adapters, sessions as _s
+        cfgp = core.STATE_DIR / "agents.json"
+        cfg = {}
+        try:
+            cfg = _json.loads(cfgp.read_text())
+        except Exception:
+            pass
+        sub = rest[0] if rest else "list"
+        if sub == "add" and len(rest) >= 3:
+            name, glob = rest[1], rest[2]
+            kind = rest[3] if len(rest) > 3 else "jsonl_text"
+            cfg[name] = {"glob": glob, "kind": kind}
+            core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+            cfgp.write_text(_json.dumps(cfg, indent=2))
+            print(f"registered agent '{name}': {glob} ({kind})")
+            print(f"verify with: vb agent test {name}")
+        elif sub == "remove" and len(rest) >= 2:
+            cfg.pop(rest[1], None); cfgp.write_text(_json.dumps(cfg, indent=2))
+            print(f"removed '{rest[1]}'")
+        elif sub == "test" and len(rest) >= 2:
+            found = [a for a in adapters.discover() if a["label"] == rest[1]]
+            if not found:
+                print(f"no log files matched for '{rest[1]}' "
+                      "(check the glob in vb agent list)")
+            else:
+                a = sorted(found, key=lambda x: x["mtime"])[-1]
+                rep = adapters.last_reply(a["path"], a["kind"])
+                print(f"newest log: {a['path']}")
+                print(f"extracted reply: {rep[:300] or '(nothing, wrong kind?)'}")
+        else:
+            if not cfg:
+                print("no agents registered. Add one:")
+                print("  vb agent add codex '~/.codex/sessions/*.jsonl' jsonl_text")
+                print("  vb agent test codex   # confirm it reads a reply")
+                print("kinds: jsonl_text | lastpara  (claude is built in)")
+            else:
+                for n, c in cfg.items():
+                    print(f"  {n}: {c['glob']} ({c['kind']})")
 
     elif cmd == "alerts":
         from vb import talkd as _td
