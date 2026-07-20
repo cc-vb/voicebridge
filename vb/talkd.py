@@ -311,13 +311,14 @@ def get_barge() -> str:
 
 
 def get_cues() -> str:
-    """Cue sounds: 'on' = every listen cycle, 'once' = a single ding when
-    voice mode activates (default), 'off' = fully silent."""
+    """Cue sounds: 'on' = a soft tick each listen cycle so you always know
+    it's hearing you (default), 'once' = only a ding when voice activates,
+    'off' = fully silent."""
     try:
         v = CUES.read_text().strip()
-        return v if v in ("on", "once", "off") else "once"
+        return v if v in ("on", "once", "off") else "on"
     except Exception:
-        return "once"
+        return "on"
 
 
 def cues_on() -> bool:
@@ -888,6 +889,7 @@ def run_daemon() -> int:
             addressed, prompt = wake_match(text)
             if not addressed:
                 continue   # ambient chatter, drop silently
+            _cue_event(START_TINK)   # heard the wake word, you know it's live
             if not prompt:
                 core.speak("Yes?", blocking=True)
                 follow_until = time.time() + 12   # next utterance is the prompt
