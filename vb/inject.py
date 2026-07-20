@@ -39,6 +39,18 @@ def _osa(script: str) -> None:
         core.log(f"osascript failed: {e}")
 
 
+def press_escape() -> None:
+    """Send Escape to the focused app, Claude Code's own key for stopping
+    the current generation. This is the REAL interrupt: not just muting the
+    voice, but telling Claude to stop thinking, exactly what Esc does when
+    you press it in the TUI yourself."""
+    _osa('tell application "System Events" to key code 53')
+
+
+def press_enter() -> None:
+    _osa('tell application "System Events" to key code 36')
+
+
 def frontmost_app() -> str:
     """Name of the app that will receive the paste; logged for diagnosis."""
     try:

@@ -252,7 +252,15 @@ def main(argv) -> int:
 
     elif cmd == "hush":
         core.hush()
-        print("hushed")
+        print("hushed (voice only)")
+
+    elif cmd == "stop":
+        # Real interrupt: silence the voice AND send Esc to the session so
+        # Claude stops generating (its own stop key), not just pkill say.
+        core.hush()
+        from vb import inject
+        inject.press_escape()
+        print("stopped: voice silenced + Esc sent to the session")
 
     elif cmd == "sens":
         from vb import talkd as _td
