@@ -89,6 +89,15 @@ WAKE_RE = re.compile(
 # Voice toggles are heard imperfectly ("weak word mode", "wait word mode"),
 # so accept the homophones. Typed /voice-wake and /voice-agent are the
 # deterministic way to switch.
+# Fleet voice commands (multi-session control).
+ROSTER_RE = re.compile(
+    r"^\s*(which (agents?|sessions?)( need me)?|list (my )?sessions|"
+    r"(my )?sessions|what('?s| is) running|status of (all )?sessions)"
+    r"[.!?\s]*$", re.IGNORECASE)
+SWITCH_RE = re.compile(
+    r"^\s*(?:switch|go|move|jump) (?:to|over to|into) (?:the )?"
+    r"([a-z0-9 _-]+?)(?: session| project)?[.!?\s]*$", re.IGNORECASE)
+
 TO_WAKE_RE = re.compile(
     r"^\s*(switch to )?(wake|weak|wait|week|work)([- ]?word)? ?mode[.!\s]*$",
     re.IGNORECASE)
@@ -807,6 +816,17 @@ def run_daemon() -> int:
                 if text:
                     core.log(f"talkd dropped ({why}): {text[:80]}")
                 continue
+
+        # Fleet control by voice: roster + switch across all sessions.
+        if ROSTER_RE.match(text):
+            from . import sessions as _sess
+            core.speak(_sess.speak_roster(), blocking=True)
+            continue
+        m_sw = SWITCH_RE.match(text)
+        if m_sw and not m_sw.group(1).rstrip().endswith("mode"):
+            from . import sessions as _sess
+            core.speak(_sess.switch(m_sw.group(1)), blocking=True)
+            continue
 
         # Mode switching by voice, from either mode.
         if TO_WAKE_RE.match(text):

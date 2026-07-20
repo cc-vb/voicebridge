@@ -364,6 +364,22 @@ def main(argv) -> int:
         print("  once = single ding when voice mode activates (default)")
         print("  off  = fully silent")
 
+    elif cmd == "sessions":
+        from vb import sessions as _s
+        rows = _s.roster()
+        if not rows:
+            print("no active Claude sessions in the last 12h")
+        else:
+            for r in rows:
+                mark = "*" if r["voiced"] else " "
+                print(f" {mark} {r['label']:16} {r['state']:8} {r['ago']}")
+            print("\n * = voiced. Switch: vb switch <name>  (or say "
+                  "'switch to <name>')")
+
+    elif cmd == "switch":
+        from vb import sessions as _s
+        print(_s.switch(" ".join(rest)) if rest else "usage: vb switch <name>")
+
     elif cmd == "mode":
         from vb import talkd as _td
         if rest and rest[0] in ("wake", "all", "full"):
