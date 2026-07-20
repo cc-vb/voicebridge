@@ -354,6 +354,8 @@ def on() -> str:
     if _alive():
         return "call relay already running"
     core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if SECRET:   # persist so `vb call tunnel` builds the correct ?k= link
+        (core.STATE_DIR / "call_secret").write_text(SECRET)
     vb = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "bin", "vb")
     env = dict(os.environ)

@@ -108,6 +108,9 @@ if [ "${WANT_KOKORO:-1}" = "1" ]; then
     "$KOKORO_VENV/bin/pip" -q install --upgrade pip
     "$KOKORO_VENV/bin/pip" -q install kokoro-onnx soundfile
   fi
+  pip3 install --quiet --user qrcode 2>/dev/null || true
+  if true; then :
+  fi
   [ -f "$KOKORO_MODEL" ] || curl -fSL -o "$KOKORO_MODEL" --create-dirs \
     https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
   [ -f "$STATE_DIR/models/voices-v1.0.bin" ] || curl -fSL \

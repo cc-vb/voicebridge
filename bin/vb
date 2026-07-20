@@ -288,8 +288,31 @@ def main(argv) -> int:
         elif sub == "status":
             print(call.status())
         elif sub == "tunnel":
-            # Free public URL for the relay (Cloudflare quick tunnel).
             import os as _os
+
+            def show_link(url):
+                secret = _os.environ.get("VB_CALL_SECRET", "") \
+                    or core._read(core.STATE_DIR / "call_secret")
+                full = url.rstrip("/") + ("/?k=" + secret if secret else "/")
+                print(f"\n  PHONE URL: {full}\n")
+                try:
+                    import qrcode
+                    qr = qrcode.QRCode(border=1)
+                    qr.add_data(full)
+                    qr.make()
+                    qr.print_ascii(invert=True)   # scan this with your phone
+                except Exception:
+                    print("  (install `qrcode` for a scannable code: "
+                          "pip3 install qrcode)")
+                print("  scan the code or open the URL, then tap Start call\n")
+
+            # Permanent link if one was saved (vb call link <url>), else a
+            # free Cloudflare quick tunnel (fresh URL each run).
+            saved = core._read(core.STATE_DIR / "public_url")
+            if saved:
+                print(f"using saved permanent link ({saved})")
+                show_link(saved)
+                return 0
             port = _os.environ.get("VB_CALL_PORT", "8790")
             cf = "/opt/homebrew/bin/cloudflared"
             if not Path(cf).exists():
@@ -304,12 +327,29 @@ def main(argv) -> int:
                     if "trycloudflare.com" in line and "https://" in line:
                         url = "https://" + \
                             line.split("https://", 1)[1].split()[0].strip("|")
-                        print(f"\n  PHONE URL: {url}/"
-                              f"{'?k=<your VB_CALL_SECRET>' if _os.environ.get('VB_CALL_SECRET') else ''}")
-                        print("  open it on your phone, tap Start call\n")
+                        show_link(url)
                 p.wait()
             except KeyboardInterrupt:
                 p.terminate()
+        elif sub == "link":
+            # Save a permanent public URL (Tailscale Funnel / named CF tunnel)
+            # so `vb call tunnel` just shows it + QR, same address forever.
+            if len(rest) > 1:
+                core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+                if rest[1] in ("off", "clear", "none"):
+                    try:
+                        (core.STATE_DIR / "public_url").unlink()
+                    except FileNotFoundError:
+                        pass
+                    print("permanent link cleared (back to quick tunnels)")
+                else:
+                    (core.STATE_DIR / "public_url").write_text(rest[1])
+                    print(f"permanent link saved: {rest[1]}")
+            else:
+                cur = core._read(core.STATE_DIR / "public_url")
+                print(f"permanent link: {cur or '(none, using quick tunnels)'}")
+                print("set: vb call link <https://your-stable-url>  "
+                      "(see README for the free Tailscale setup)")
         elif sub == "__run__":
             return call.run_daemon()
         else:

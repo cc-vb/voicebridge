@@ -333,8 +333,19 @@ Your Mac stays home running the session; your phone becomes the call.
    session, and the phone speaks Claude's replies with its own neural
    voice. Say "end call" to hang up.
 
-Keep the Mac awake while away (`caffeinate -dims`). The free tunnel URL
-changes each time you restart it; re-run `vb call tunnel` for a fresh one.
+`vb call tunnel` prints the link **and a scannable QR code**, just point
+your phone camera at the terminal, no typing the URL. Keep the Mac awake
+while away (`caffeinate -dims`).
+
+**Permanent link (optional, free):** the quick tunnel gives a new URL each
+run. For a URL that never changes, use Tailscale Funnel:
+```
+brew install tailscale && tailscale up
+tailscale funnel 8790                 # prints a stable https URL
+vb call link <that-url>               # save it; vb call tunnel now shows it
+```
+After that, `vb call tunnel` just displays your permanent link + QR every
+time. `vb call link off` returns to quick tunnels.
 
 Prefer chat? `vb remote on` bridges a Telegram bot instead: send text or a
 voice note, get the reply back as text plus a spoken voice note
