@@ -45,8 +45,20 @@ Setup installs the speech stack (brew packages + local models, one time,
 /voicebridge:voice-on
 ```
 
-Speak. That's it. (`/voicebridge:voice-wake` for hey-Claude-only mode,
-`/voicebridge:voice-off` to stop.)
+Speak. That's it.
+
+**The commands to know (this is all most people need):**
+
+| Command | What it does |
+|---|---|
+| `/voicebridge:voice-on` | start talking to this session, hear replies |
+| `/voicebridge:voice-wake` | hands-free; only reacts to "hey Claude ..." |
+| `/voicebridge:voice-off` | stop |
+| `vb phone` | use it from your phone (prints a QR to scan) |
+| `vb voice <name>` | change the voice (`vb voice` lists all) |
+
+(Cloned directly instead of the plugin? Same commands without the
+`voicebridge:` prefix.)
 
 **Or clone it directly:**
 

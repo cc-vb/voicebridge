@@ -11,5 +11,6 @@
   "repository": "https://github.com/cc-vb/voicebridge",
   "license": "MIT",
   "keywords": ["voice", "speech", "tts", "whisper", "hands-free", "macos"],
+  "commands": "./commands/",
   "hooks": "./hooks/hooks.json"
 }

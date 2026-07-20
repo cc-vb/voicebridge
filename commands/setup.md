@@ -22,5 +22,14 @@ installer must not also register them in settings.json.
 Afterwards, summarize the doctor results in 2-3 short sentences. If
 Microphone or Accessibility failed, tell the user: System Settings ->
 Privacy & Security -> enable both for their terminal app, then run
-`vb doctor` to re-check. Finish by telling them to run
-/voicebridge:voice-on inside any session and just talk.
+`vb doctor` to re-check.
+
+Then end with EXACTLY this block so they know what to try first:
+
+  ✅ Setup complete. Try this now:
+     /voicebridge:voice-on     ← talk to this session, hear replies
+     /voicebridge:voice-wake   ← hands-free, only reacts to "hey Claude"
+     /voicebridge:voice-off    ← stop
+     vb phone                  ← use it from your phone (shows a QR to scan)
+
+  Change the voice with `vb voice <name>`; see all with `vb voice`.

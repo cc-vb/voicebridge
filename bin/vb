@@ -223,6 +223,17 @@ def main(argv) -> int:
         core.speak_chunks_blocking(text)
         return 0
 
+    elif cmd == "phone":
+        # One command: start the relay + tunnel + show the QR to scan.
+        import os as _os
+        secret = (_os.environ.get("VB_CALL_SECRET", "")
+                  or core._read(core.STATE_DIR / "call_secret")
+                  or "vb-" + str(abs(hash(str(core.STATE_DIR))))[:8])
+        _os.environ["VB_CALL_SECRET"] = secret
+        from vb import call as _call
+        print(_call.on())
+        return main(["call", "tunnel"])
+
     elif cmd == "barge":
         from vb import talkd as _td
         if rest and rest[0] in ("on", "off"):
