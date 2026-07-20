@@ -234,10 +234,13 @@ SENS = STATE / "sens"
 
 # (min whisper confidence, min RMS loudness) per sensitivity level.
 # strict = only clear, close, confident speech gets through.
+# Calibrated against a real MacBook mic: directed speech lands ~0.009-0.03
+# RMS, background TV/chatter ~0.005-0.008. (Synthetic test audio is ~10x
+# hotter; don't calibrate against it.)
 _SENS_TH = {
-    "relaxed": (0.30, 0.005),
-    "normal": (0.42, 0.012),
-    "strict": (0.55, 0.030),
+    "relaxed": (0.30, 0.003),
+    "normal": (0.42, 0.007),
+    "strict": (0.55, 0.015),
 }
 
 
@@ -273,7 +276,8 @@ def looks_directed(text: str) -> bool:
     """For SHORT utterances in agent mode: is this aimed at Claude, or a
     stray remark? Long utterances pass automatically; short ones need a
     command/question shape, or to be an answer to a question we just asked."""
-    words = text.lower().strip(" .,!?").split()
+    words = [w.strip(".,!?'\"") for w in text.lower().split()]
+    words = [w for w in words if w]
     if len(words) >= 4:
         return True
     if not words:
