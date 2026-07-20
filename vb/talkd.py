@@ -88,7 +88,22 @@ NOISE_RE = re.compile(r"^[\s\(\[][^\)\]]*[\)\]][.!\s]*$|^[\s.,!?]*$")
 
 
 def is_noise(text: str) -> bool:
-    return bool(NOISE_RE.match(text.strip()))
+    return bool(NOISE_RE.match(text.strip())) or _foreign_script(text)
+
+
+# voicebridge speakers use Latin (English/Hinglish) or Devanagari (Hindi).
+# A capture dominated by other scripts (Korean/CJK/Cyrillic/...) is almost
+# always background media (e.g. a TV), not the user, so drop it.
+_SUPPORTED = re.compile(r"[A-Za-zऀ-ॿ]")
+_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
+
+
+def _foreign_script(text: str) -> bool:
+    letters = _LETTER.findall(text)
+    if len(letters) < 3:
+        return False
+    supported = len(_SUPPORTED.findall(text))
+    return supported / len(letters) < 0.5
 
 
 # ---------- state helpers (called from the hook and the CLI) -----------------

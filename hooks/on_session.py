@@ -12,11 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from vb import core  # noqa: E402
 
 HINT = """\
-🎙  voicebridge is installed. Talk to this session hands-free:
-    /voice-on        start talking (say "stop listening" to end)
-    /voice-wake      only react to "hey Claude ..."
-    /voice-off       stop
-    vb voice <name>  change voice   |   vb call on + vb phone  = use from your phone
+🎙  voicebridge is ready. Talk to Claude hands-free.
+
+  START      /voice-on        talk to this session, hear replies
+  HEY-CLAUDE /voice-wake      only reacts to "hey Claude ..."
+  STOP       /voice-off       (or say "stop listening")
+  INTERRUPT  just start typing your next message, the voice stops instantly
+  PHONE      vb phone         use it from your phone (shows a QR to scan)
+  VOICE      vb voice <name>  change the voice (vb voice = list all)
 """
 
 

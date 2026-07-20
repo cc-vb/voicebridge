@@ -93,12 +93,9 @@ fi
 say_step "6/7 Kokoro neural voice (recommended, ~800MB one time)"
 KOKORO_VENV="$STATE_DIR/kokoro-venv"
 KOKORO_MODEL="$STATE_DIR/models/kokoro-v1.0.onnx"
-WANT_KOKORO="${VB_KOKORO:-}"
-if [ -z "$WANT_KOKORO" ] && [ -t 0 ]; then
-  read -r -p "  Install the Kokoro natural voice now? [Y/n] " ans
-  case "$ans" in n|N|no|NO) WANT_KOKORO=0;; *) WANT_KOKORO=1;; esac
-fi
-if [ "${WANT_KOKORO:-1}" = "1" ]; then
+# Kokoro is the default voice; set VB_KOKORO=0 only to skip it.
+WANT_KOKORO="${VB_KOKORO:-1}"
+if [ "$WANT_KOKORO" = "1" ]; then
   if ! [ -x /opt/homebrew/bin/python3.10 ] && ! [ -x /opt/homebrew/bin/python3.12 ]; then
     brew install python@3.12
   fi
@@ -118,6 +115,7 @@ if [ "${WANT_KOKORO:-1}" = "1" ]; then
     https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
   "$BIN_DIR/vb" engine kokoro
   "$BIN_DIR/vb" voice af_heart >/dev/null || true
+  "$BIN_DIR/vb" tts on >/dev/null 2>&1 || true   # warm the server now
   echo "  Kokoro installed and set as the voice engine (voice: af_heart)"
 else
   echo "  skipped (enable later per README 'Better voice: Kokoro')"
