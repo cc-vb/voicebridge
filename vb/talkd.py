@@ -229,9 +229,9 @@ BARGE = STATE / "barge"
 
 
 def get_barge() -> str:
-    """Voice barge-in (talking over speech to interrupt). Default OFF:
-    voice-interrupt can't always tell the user from the speaker echo, so
-    the reliable interrupts are typing a new prompt or the hush hotkey."""
+    """Voice barge-in (talking over speech to interrupt). Default ON, gated
+    by barge_decision so speaker echo can't trigger it. Typing a new prompt
+    and the hush hotkey remain the always-reliable interrupts."""
     try:
         v = BARGE.read_text().strip()
         return v if v in ("on", "off") else "on"
@@ -494,6 +494,56 @@ def echo_residue(text: str, window_s: float = 90.0) -> "tuple[str, float]":
     return " ".join(residue), overlap
 
 
+# A barge-in cancels a reply mid-sentence, so the bar is higher than for an
+# ordinary capture: one stray word (a cough transcribed as a word, someone
+# else in the room, a clipped "adios") must never cut Claude off. Attention
+# words are the deliberate exception, since that is how you interrupt.
+BARGE_MIN_WORDS = 3
+
+
+def barge_decision(heard: str, conf: float, loud: float) -> str:
+    """What the user said over the top of our speech, or "" to keep talking.
+
+    Applies the same noise/confidence/loudness gate as an ordinary capture,
+    then requires the leftover words to be substantive. Echo, stray
+    syllables and background chatter all lose to the reply already playing."""
+    if not heard or is_noise(heard) or _is_assistant_echo(heard):
+        return ""
+    ok, _ = accept_capture(heard, conf, loud)
+    if not ok:
+        return ""
+    residue, overlap = echo_residue(heard)
+    if ATTENTION_RE.search(residue):
+        return residue          # "stop"/"wait" cuts through at any length
+    if len(residue.split()) < BARGE_MIN_WORDS:
+        return ""               # too little signal to kill a reply over
+    if overlap < 0.35:
+        return heard            # clearly new speech, not our echo
+    if overlap < 0.6:
+        return residue          # a real phrase over the top of us
+    return ""                   # mostly our own voice; keep talking
+
+
+def screen_capture(text: str, conf: float, loud: float, mode: str) -> str:
+    """Why this capture should be dropped, or "" to accept it.
+
+    Every path that can reach inject.paste_text goes through here, including
+    barge-ins: text captured while we were speaking is the MOST likely to be
+    our own echo, so it needs the guard more than a quiet-room capture does."""
+    if not text or is_noise(text):
+        return "noise"
+    if _is_echo(text):
+        return "echo"
+    if _is_assistant_echo(text):
+        return "assistant-echo"
+    ok, why = accept_capture(text, conf, loud)
+    if not ok:
+        return why
+    if mode == "all" and not looks_directed(text):
+        return "not directed"
+    return ""
+
+
 def _speak_interruptible(text: str) -> str:
     """Speak a reply, but listen WHILE speaking: if the user talks over it
     out loud, cut the speech and return their words as the next prompt.
@@ -539,18 +589,10 @@ def _speak_interruptible(text: str) -> str:
                     continue
             except OSError:
                 continue
-            heard = stt.transcribe(wav)
-            if not heard or is_noise(heard) or _is_assistant_echo(heard):
+            heard, conf = stt.transcribe_ex(wav)
+            barge = barge_decision(heard, conf, stt.loudness(wav))
+            if not barge:
                 continue
-            residue, overlap = echo_residue(heard)
-            if overlap < 0.35:
-                barge = heard           # clearly new speech, not our echo
-            elif ATTENTION_RE.search(residue):
-                barge = residue         # a stop/attention word cuts through
-            elif overlap < 0.6 and len(residue.split()) >= 4:
-                barge = residue         # a real phrase over the top of us
-            else:
-                continue                # mostly our own voice; keep talking
             say.terminate()
             core.hush()
             say.wait()
@@ -628,8 +670,15 @@ def run_daemon() -> int:
         pause = get_pause()
         in_follow = time.time() < follow_until
         if queued:
+            # A barge-in was captured while we spoke. It cleared the barge
+            # bar, but it still has to clear the injection bar: conf/loudness
+            # were already judged against the wav, so pass the skip sentinels.
             text = queued
             queued = ""
+            why = screen_capture(text, 0.0, -1.0, mode)
+            if why:
+                core.log(f"talkd barge dropped ({why}): {text[:80]}")
+                continue
         else:
             _wait_for_silence()   # never record while ANY speech is playing
             if mode == "all" or in_follow:
@@ -672,20 +721,10 @@ def run_daemon() -> int:
             except OSError:
                 continue
             text, conf = stt.transcribe_ex(wav)
-            if not text or is_noise(text):
-                continue
-            if _is_echo(text):
-                core.log(f"talkd echo dropped: {text[:80]}")
-                continue
-            if _is_assistant_echo(text):
-                core.log(f"talkd assistant-echo dropped: {text[:80]}")
-                continue
-            ok, why = accept_capture(text, conf, stt.loudness(wav))
-            if not ok:
-                core.log(f"talkd dropped ({why}): {text[:80]}")
-                continue
-            if mode == "all" and not looks_directed(text):
-                core.log(f"talkd dropped (not directed): {text[:80]}")
+            why = screen_capture(text, conf, stt.loudness(wav), mode)
+            if why:
+                if text:
+                    core.log(f"talkd dropped ({why}): {text[:80]}")
                 continue
 
         # Mode switching by voice, from either mode.
