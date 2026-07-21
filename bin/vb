@@ -128,6 +128,7 @@ VOICE     vb voice <name>         change voice   |   vb speed 1.5  (or say
                                   "speak faster"; or tap F9 faster / F7 slower)
 AGENTS    vb agent add <name> <glob> <kind>      use with Codex/Cursor/etc.
 SETUP     vb doctor               health check   |   see README for install
+DEBUG     vb selftest             not hearing you? this says exactly why
 """
 
 
@@ -773,23 +774,83 @@ def main(argv) -> int:
         check("Accessibility (typing)", r.returncode == 0,
               "System Settings -> Privacy & Security -> Accessibility: "
               "enable your terminal app")
-        # Microphone: try a very short capture.
+        # Microphone: record ~1.5s and check the actual LEVEL, not just that
+        # a file appeared. A muted mic / wrong input device / missing
+        # permission all still write a silent file, the #1 "it doesn't hear
+        # me" cause, so a file-only check gives a false PASS.
         wav = str(core.STATE_DIR / "doctor.wav")
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        mic_ok = False
+        level = -1.0
         if deps["rec"]:
+            print("  (say something for a second for the mic check...)")
             rr = subprocess.run(
                 [deps["rec"], "-q", "-c", "1", "-r", "16000", wav,
-                 "trim", "0", "0.3"],
+                 "trim", "0", "1.5"],
                 capture_output=True, timeout=10)
-            mic_ok = rr.returncode == 0 and _os.path.exists(wav)
-        check("Microphone (capture)", mic_ok,
+            if rr.returncode == 0:
+                from vb import stt as _st
+                level = _st.loudness(wav)
+        check("Microphone (records)", deps["rec"] and level >= 0,
               "System Settings -> Privacy & Security -> Microphone: "
               "enable your terminal app")
+        check(f"Microphone (hears sound, level={level:.3f})", level >= 0.004,
+              "recording SILENCE. Check: mic not muted, correct Input device "
+              "in System Settings -> Sound, and terminal has Mic permission")
         bad = [n for n, ok, _ in results if not ok]
         print("all good, run /voice-on inside a Claude session" if not bad
               else f"{len(bad)} issue(s) above")
         return 0 if not bad else 1
+
+    elif cmd == "selftest":
+        # One command that reproduces the whole capture pipeline and says
+        # exactly where it breaks. For "the agent won't hear/answer me".
+        import time as _t
+        from vb import stt as _st, talkd as _td
+        if not _st.whisper_bin() or not _st.MODEL.exists():
+            print("FAIL: whisper or model missing. Run vb doctor.")
+            return 1
+        wav = str(core.STATE_DIR / "selftest.wav")
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        print("\nSpeak a full sentence now (recording ~4s)...")
+        _t.sleep(0.3)
+        try:
+            _os = __import__("os")
+            _os.remove(wav)
+        except Exception:
+            pass
+        rr = subprocess.run([_st._find("rec"), "-q", "-c", "1", "-r", "16000",
+                             wav, "trim", "0", "4"], capture_output=True)
+        lvl = _st.loudness(wav)
+        text, conf = _st.transcribe_ex(wav)
+        print(f"\n  1. recorded        : {'ok' if rr.returncode == 0 else 'FAILED (mic permission?)'}")
+        print(f"  2. sound level     : {lvl:.3f} " +
+              ("(good)" if lvl >= 0.004 else "SILENT , mic muted / wrong input device / no permission"))
+        print(f"  3. transcribed     : {text!r}")
+        print(f"  4. confidence      : {conf:.2f}")
+        ok, why = _td.accept_capture(text or "x", conf, lvl)
+        print(f"  5. would be sent   : {ok}" + ("" if ok else f"  (dropped: {why})"))
+        print(f"  6. voice engine    : {core.get_engine()} "
+              f"(kokoro up: {core.kokoro_up()})")
+        acc = subprocess.run(["osascript", "-e",
+            'tell application \"System Events\" to keystroke \"\"'],
+            capture_output=True)
+        print(f"  7. can type (Accessibility): {'yes' if acc.returncode == 0 else 'NO , grant Accessibility to your terminal'}")
+        print("\nVerdict:")
+        if lvl < 0.004:
+            print("  Mic is recording SILENCE. That's your problem, fix mic")
+            print("  input/permission, then rerun vb selftest.")
+        elif not text:
+            print("  Heard sound but no words, speak louder/clearer, or the")
+            print("  wrong input device is selected.")
+        elif not ok:
+            print(f"  Heard you but the capture was filtered ({why}). Try:")
+            print("  vb sens relaxed")
+        elif acc.returncode != 0:
+            print("  Capture works, but typing is blocked, grant Accessibility.")
+        else:
+            print("  Full pipeline works. If you still get no reply, make sure")
+            print("  /voice-on is active and this window stays focused.")
+        return 0
 
     elif cmd == "stt":
         from vb import stt
