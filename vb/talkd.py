@@ -20,6 +20,7 @@ State (~/.voicebridge/talk/):
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -206,6 +207,61 @@ def _read_json(path):
         return None
 
 
+# ---------- the silence hotkey ------------------------------------------------
+#
+# Cmd+Alt+Ctrl+X is delivered by skhd, which reads ~/.skhdrc and needs its own
+# Accessibility grant. Installing it as a launchd service means a keyboard
+# hook running at login forever, for a key that only means anything while we
+# are speaking. So voice owns its lifetime instead: up when the first session
+# is voiced, down when the last one leaves.
+
+HOTKEY_PID = STATE / "skhd.pid"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def hotkey_up() -> None:
+    """Start skhd for the duration of voice mode, if it isn't already up.
+
+    An skhd the user runs themselves (for their own bindings) is left alone:
+    we only ever stop one we started, tracked by HOTKEY_PID."""
+    skhd = shutil.which("skhd")
+    if not skhd:
+        return
+    if subprocess.run(["pgrep", "-x", "skhd"],
+                      capture_output=True).returncode == 0:
+        return
+    try:
+        p = subprocess.Popen([skhd], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        HOTKEY_PID.write_text(str(p.pid))
+    except Exception as e:
+        core.log(f"hotkey_up failed: {e}")
+
+
+def hotkey_down() -> None:
+    """Stop the skhd we started. Never touches one that was already running."""
+    try:
+        pid = int(HOTKEY_PID.read_text().strip())
+    except Exception:
+        return
+    if _pid_alive(pid):
+        try:
+            os.kill(pid, 15)
+        except Exception as e:
+            core.log(f"hotkey_down failed: {e}")
+    try:
+        HOTKEY_PID.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def voice_on(ensure: bool = True) -> str:
     last = _read_json(LAST)
     if not last:
@@ -227,6 +283,7 @@ def voice_on(ensure: bool = True) -> str:
     app = bind_app()
     if ensure:
         ensure_daemon()
+        hotkey_up()
     where = f" Bound to {app}; ignored elsewhere." if app else ""
     return (f"voice mode ON for session {sid[:8]}. This session only; any "
             f"other session's voice is now off.{where} Mic is yours here.")
@@ -253,6 +310,39 @@ def voice_off(ensure: bool = True) -> str:
         return f"voice mode OFF for session {sid[:8]}. No voiced sessions left; mic stopped."
     return (f"voice mode OFF for session {sid[:8]}. "
             f"{len(remaining)} voiced session(s) remain.")
+
+
+def voice_off_all() -> str:
+    """Leave voice mode everywhere and release the microphone.
+
+    /voice-off only knows about the session it runs in, and nothing removes a
+    marker for a session that was closed rather than turned off. Those
+    leftovers keep the daemon alive holding the input device, and they cannot
+    be cleared from the window that created them because that window is gone.
+    Deleting the markers by hand does not help either: the daemon only
+    re-reads the directory when it hears a spoken exit phrase. So this is the
+    one command that ends voice for the whole machine, from any terminal."""
+    sids = sorted(f.name for f in VOICED.iterdir()) if VOICED.exists() else []
+    for sid in sids:
+        try:
+            (VOICED / sid).unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        ACTIVE.unlink()
+    except FileNotFoundError:
+        pass
+    if daemon_alive():
+        stop_daemon()
+        freed = "mic released."
+    else:
+        freed = "daemon was already stopped."
+    if not sids:
+        head = "no voiced sessions."
+    else:
+        head = "voice mode OFF for %d session(s): %s." % (
+            len(sids), ", ".join(s[:8] for s in sids))
+    return f"{head} {freed}\n{status()}"
 
 
 def daemon_alive() -> bool:
@@ -286,6 +376,14 @@ def stop_daemon() -> None:
     except FileNotFoundError:
         pass
     subprocess.run(["pkill", "-x", "say"], capture_output=True)
+    # The recorder is a plain child of the daemon, so killing the daemon
+    # orphans it rather than stopping it: it keeps the input device until it
+    # hits its own trim limit, up to 30 seconds. We just told the user the mic
+    # was released. Match on our own wav so an unrelated sox recording of the
+    # user's survives.
+    subprocess.run(["pkill", "-f", str(STATE / "talkd.wav")],
+                   capture_output=True)
+    hotkey_down()
 
 
 def status() -> str:
@@ -777,7 +875,7 @@ def run_daemon() -> int:
         if sid not in announced:
             # No spoken announce: the assistant's own short confirmation is
             # spoken via the reply path; a second announcement is noise.
-            prev[tp] = core.last_assistant_text(tp)
+            prev[tp] = core.latest_assistant_uuid(tp)
             announced.add(sid)
             _cue_event(START_TINK)   # single "voice mode is live" ding
 
@@ -796,13 +894,26 @@ def run_daemon() -> int:
                            f"you.", blocking=True)
             first_fleet = False
 
-        # 1) Speak any new reply, listening for a barge-in while talking.
-        cur = core.last_assistant_text(tp)
-        if cur and cur != prev.get(tp):
-            prev[tp] = cur
-            barge = _speak_interruptible(cur)
-            if barge:
-                queued = barge   # user talked over the reply; that's the prompt
+        # 1) Speak every reply we have not spoken yet, oldest first.
+        #
+        # We can only look here, between recordings, and in agent mode the mic
+        # is open nearly all the time. Asking "is the newest reply different
+        # from the last one I said" loses any reply that landed while we were
+        # listening: the newest moves on and the one in between is never
+        # spoken. The Stop hook cannot cover for us either, it stands down
+        # whenever a session is voiced (core.mic_active). So track what we
+        # have said by uuid and drain the backlog in order.
+        pending = core.assistant_replies_after(tp, prev.get(tp, ""))
+        if pending:
+            if len(pending) > 1:
+                core.log(f"talkd: {len(pending)} replies queued while listening")
+            barge = ""
+            for uid, text in pending:
+                prev[tp] = uid      # marked read before speaking: a crash mid
+                barge = _speak_interruptible(text)   # reply must not loop it
+                if barge:
+                    queued = barge  # talked over the reply; that's the prompt
+                    break
             time.sleep(0.3)
             if not barge:
                 continue
@@ -840,7 +951,8 @@ def run_daemon() -> int:
                 now_active = _read_json(ACTIVE)
                 switched = (not now_active
                             or now_active.get("session_id") != sid)
-                newreply = core.last_assistant_text(tp) != prev.get(tp)
+                newreply = bool(core.assistant_replies_after(tp,
+                                                            prev.get(tp, "")))
                 if switched or newreply:
                     try:
                         size = os.path.getsize(wav)
@@ -963,4 +1075,8 @@ def run_daemon() -> int:
             continue
         _cue(THINK)
         time.sleep(1.0)
-        prev[tp] = core.last_assistant_text(tp)
+        # Nothing is marked read here. This used to re-baseline on the newest
+        # reply after every prompt, which threw away any reply that landed in
+        # the second we just slept. The queue is drained at the top of the
+        # loop, so by now everything spoken is already marked and everything
+        # unmarked still deserves to be said.

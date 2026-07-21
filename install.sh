@@ -127,8 +127,11 @@ if brew list skhd >/dev/null 2>&1 || brew install koekeishiya/formulae/skhd; the
   if ! grep -q "vb hush" "$SKHDRC" 2>/dev/null; then
     printf '\n# voicebridge: silence the voice instantly\ncmd + alt + ctrl - x : %s hush\n# voicebridge: real interrupt (silence + stop generating)\ncmd + alt + ctrl - z : %s stop\n# voicebridge: playback speed (fast-forward / rewind)\nf9 : %s faster\nf7 : %s slower\n' "$BIN_DIR/vb" "$BIN_DIR/vb" "$BIN_DIR/vb" "$BIN_DIR/vb" >> "$SKHDRC"
   fi
-  skhd --restart-service >/dev/null 2>&1 || skhd --start-service >/dev/null 2>&1 || true
-  echo "  hotkey ready: Cmd+Alt+Ctrl+X  (grant skhd Accessibility if asked)"
+  # Deliberately not `skhd --start-service`: that leaves a keyboard hook
+  # running at login forever for a key that only matters while we speak.
+  # voice-on starts skhd, voice-off stops it.
+  echo "  hotkey ready: Cmd+Alt+Ctrl+X  (runs only while voice is on;"
+  echo "  grant skhd Accessibility the first time it starts)"
 else
   echo "  (skhd optional; typing a prompt also interrupts instantly)"
 fi

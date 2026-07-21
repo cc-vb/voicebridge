@@ -587,15 +587,18 @@ def main(argv) -> int:
             print(talkd.voice_on())
         elif sub == "off":
             print(talkd.voice_off())
+        elif sub in ("off-all", "offall"):
+            print(talkd.voice_off_all())
         elif sub == "status":
             print(talkd.status())
         elif sub == "stop":
             talkd.stop_daemon()
             print("talkd stopped")
+            print(talkd.status())
         elif sub == "__run__":
             return talkd.run_daemon()
         else:
-            print("usage: vb talkd on|off|status|stop")
+            print("usage: vb talkd on|off|off-all|status|stop")
             return 1
 
     elif cmd == "talk":
