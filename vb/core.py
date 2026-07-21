@@ -241,6 +241,38 @@ def last_assistant_text(transcript_path: str) -> str:
     return ""
 
 
+def print_qr(url: str) -> bool:
+    """Print a QR a phone camera can actually read. False if it couldn't.
+
+    Two settings decide whether the code scans at all, and both were wrong:
+
+    border is the quiet zone, the blank margin a scanner needs to find the
+    code's edges. The spec asks for 4 modules; at 1 the code sits flush
+    against whatever else is in the terminal and many cameras never lock on.
+
+    Error correction L rather than M keeps the module count down for a long
+    tunnel URL, so each module is drawn bigger in a fixed-width terminal.
+    Redundancy buys nothing here: the "print" is lossless, the failure mode
+    is a camera that cannot resolve tiny modules.
+    """
+    try:
+        import qrcode
+    except Exception:
+        return False
+    try:
+        qr = qrcode.QRCode(border=4,
+                           error_correction=qrcode.constants.ERROR_CORRECT_L)
+        qr.add_data(url)
+        qr.make(fit=True)
+        # Half blocks: terminal cells are about twice as tall as they are
+        # wide, so two rows per character keeps the modules square.
+        qr.print_ascii(invert=True)
+        return True
+    except Exception as e:
+        log(f"print_qr failed: {e}")
+        return False
+
+
 def assistant_replies_after(transcript_path: str, after_uuid: str = ""):
     """Every assistant reply that lands after `after_uuid`, oldest first.
 

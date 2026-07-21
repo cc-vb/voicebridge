@@ -137,3 +137,65 @@ def test_latest_uuid_of_an_empty_session_is_blank(tmp_path):
     p = tmp_path / "empty.jsonl"
     p.write_text("")
     assert core.latest_assistant_uuid(str(p)) == ""
+
+
+# ---------- the phone QR must actually scan ----------------------------------
+
+def test_qr_has_the_quiet_zone_a_scanner_needs(capsys):
+    """border=1 shipped for a long time: below the 4-module quiet zone the
+    spec requires, so cameras could not find the code's edges."""
+    import qrcode
+    captured = {}
+    real = qrcode.QRCode
+
+    def spy(**kw):
+        captured.update(kw)
+        return real(**kw)
+
+    qrcode.QRCode = spy
+    try:
+        assert core.print_qr("https://example.trycloudflare.com/?k=vb-1") is True
+    finally:
+        qrcode.QRCode = real
+    assert captured["border"] >= 4
+
+
+def test_qr_uses_low_error_correction_for_bigger_modules(capsys):
+    """A long tunnel URL at correction M needs more modules, and each one is
+    drawn smaller in a fixed-width terminal. The print is lossless; the
+    failure mode is a camera that cannot resolve tiny modules."""
+    import qrcode
+    captured = {}
+    real = qrcode.QRCode
+
+    def spy(**kw):
+        captured.update(kw)
+        return real(**kw)
+
+    qrcode.QRCode = spy
+    try:
+        core.print_qr("https://example.trycloudflare.com/?k=vb-1")
+    finally:
+        qrcode.QRCode = real
+    assert captured["error_correction"] == qrcode.constants.ERROR_CORRECT_L
+
+
+def test_qr_is_printed(capsys):
+    core.print_qr("https://example.trycloudflare.com/?k=vb-1")
+    out = capsys.readouterr().out
+    assert "█" in out
+    assert max(len(l) for l in out.splitlines()) < 80   # fits a terminal
+
+
+def test_qr_reports_failure_instead_of_raising(monkeypatch, capsys):
+    """No qrcode installed must print the install hint, not a traceback."""
+    import builtins
+    real_import = builtins.__import__
+
+    def no_qrcode(name, *a, **k):
+        if name == "qrcode":
+            raise ImportError("nope")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_qrcode)
+    assert core.print_qr("https://example.com") is False
