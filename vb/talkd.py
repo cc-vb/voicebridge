@@ -724,6 +724,12 @@ def run_daemon() -> int:
         PID.write_text(str(os.getpid()))   # claim singleton ownership
     except Exception:
         pass
+    # Warm the Kokoro server in the background so the FIRST reply doesn't pay
+    # the model-load wait (and never silently drops to the robotic voice).
+    if core.get_engine() == "kokoro":
+        import threading
+        threading.Thread(target=core.ensure_kokoro_server,
+                         daemon=True).start()
     wav = str(STATE / "talkd.wav")
     prev: dict = {}
     announced: set = set()
