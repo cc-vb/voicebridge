@@ -241,6 +241,55 @@ def last_assistant_text(transcript_path: str) -> str:
     return ""
 
 
+def assistant_replies_after(transcript_path: str, after_uuid: str = ""):
+    """Every assistant reply that lands after `after_uuid`, oldest first.
+
+    last_assistant_text answers "what is the newest reply", which is the wrong
+    question for a speaker that can only look between recordings: a reply that
+    arrives while the mic is open is overwritten by the next one and never
+    spoken at all. Replies are a queue, so hand back the whole queue and let
+    the caller mark off what it has said.
+
+    Returns a list of (uuid, text). An unknown after_uuid means the transcript
+    was compacted or replaced under us; the backlog is unknowable then, so
+    only the newest reply is returned rather than re-speaking the session.
+    """
+    p = Path(transcript_path)
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(errors="ignore").splitlines()
+    except Exception as e:
+        log(f"read transcript failed: {e}")
+        return []
+    replies = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if rec.get("type") != "assistant":
+            continue
+        text = _blocks_to_text(rec.get("message", {}).get("content", ""))
+        if text.strip():
+            replies.append((rec.get("uuid") or "", text))
+    if not after_uuid:
+        return replies
+    for i, (uid, _) in enumerate(replies):
+        if uid == after_uuid:
+            return replies[i + 1:]
+    return replies[-1:]
+
+
+def latest_assistant_uuid(transcript_path: str) -> str:
+    """The uuid of the newest reply, for marking a session read on join."""
+    replies = assistant_replies_after(transcript_path)
+    return replies[-1][0] if replies else ""
+
+
 def _recently_spoken(cleaned: str) -> bool:
     """True if this exact text was spoken within the dedup window.
 

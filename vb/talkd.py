@@ -819,17 +819,30 @@ def run_daemon() -> int:
         if sid not in announced:
             # No spoken announce: the assistant's own short confirmation is
             # spoken via the reply path; a second announcement is noise.
-            prev[tp] = core.last_assistant_text(tp)
+            prev[tp] = core.latest_assistant_uuid(tp)
             announced.add(sid)
             _cue_event(START_TINK)   # single "voice mode is live" ding
 
-        # 1) Speak any new reply, listening for a barge-in while talking.
-        cur = core.last_assistant_text(tp)
-        if cur and cur != prev.get(tp):
-            prev[tp] = cur
-            barge = _speak_interruptible(cur)
-            if barge:
-                queued = barge   # user talked over the reply; that's the prompt
+        # 1) Speak every reply we have not spoken yet, oldest first.
+        #
+        # We can only look here, between recordings, and in agent mode the mic
+        # is open nearly all the time. Asking "is the newest reply different
+        # from the last one I said" loses any reply that landed while we were
+        # listening: the newest moves on and the one in between is never
+        # spoken. The Stop hook cannot cover for us either, it stands down
+        # whenever a session is voiced (core.mic_active). So track what we
+        # have said by uuid and drain the backlog in order.
+        pending = core.assistant_replies_after(tp, prev.get(tp, ""))
+        if pending:
+            if len(pending) > 1:
+                core.log(f"talkd: {len(pending)} replies queued while listening")
+            barge = ""
+            for uid, text in pending:
+                prev[tp] = uid      # marked read before speaking: a crash mid
+                barge = _speak_interruptible(text)   # reply must not loop it
+                if barge:
+                    queued = barge  # talked over the reply; that's the prompt
+                    break
             time.sleep(0.3)
             if not barge:
                 continue
@@ -867,7 +880,8 @@ def run_daemon() -> int:
                 now_active = _read_json(ACTIVE)
                 switched = (not now_active
                             or now_active.get("session_id") != sid)
-                newreply = core.last_assistant_text(tp) != prev.get(tp)
+                newreply = bool(core.assistant_replies_after(tp,
+                                                            prev.get(tp, "")))
                 if switched or newreply:
                     try:
                         size = os.path.getsize(wav)
@@ -962,4 +976,8 @@ def run_daemon() -> int:
             continue
         _cue(THINK)
         time.sleep(1.0)
-        prev[tp] = core.last_assistant_text(tp)
+        # Nothing is marked read here. This used to re-baseline on the newest
+        # reply after every prompt, which threw away any reply that landed in
+        # the second we just slept. The queue is drained at the top of the
+        # loop, so by now everything spoken is already marked and everything
+        # unmarked still deserves to be said.
