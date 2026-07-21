@@ -11,7 +11,7 @@ terminal / Claude Code) the first time. macOS will prompt.
 import subprocess
 import time
 
-from . import core
+from . import core, oslayer
 
 
 def _pbpaste() -> str:
@@ -39,6 +39,24 @@ def _osa(script: str) -> None:
         core.log(f"osascript failed: {e}")
 
 
+def press_escape() -> None:
+    """Send Escape to the focused app, Claude Code's own key for stopping
+    the current generation. This is the REAL interrupt: not just muting the
+    voice, but telling Claude to stop thinking, exactly what Esc does when
+    you press it in the TUI yourself."""
+    if not oslayer.IS_MAC:
+        oslayer.press_escape()
+        return
+    _osa('tell application "System Events" to key code 53')
+
+
+def press_enter() -> None:
+    if not oslayer.IS_MAC:
+        oslayer._win_sendkeys("{ENTER}") if oslayer.IS_WIN else oslayer._xdotool("key", "Return")
+        return
+    _osa('tell application "System Events" to key code 36')
+
+
 def frontmost_app() -> str:
     """Name of the app that will receive the paste; logged for diagnosis."""
     try:
@@ -61,6 +79,9 @@ def paste_text(text: str, send: bool = False, expect_app: str = "") -> bool:
     a DM, or a terminal and run it. Returns True if the text was delivered."""
     if not text:
         return False
+    if not oslayer.IS_MAC:      # Windows/Linux go through the OS layer
+        oslayer.paste_text(text, send)
+        return True
     front = frontmost_app()
     if expect_app and front and front.strip().casefold() != expect_app.casefold():
         core.log(f"paste refused: {front} is frontmost, not {expect_app}")

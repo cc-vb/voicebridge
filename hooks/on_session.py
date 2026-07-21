@@ -12,14 +12,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from vb import core  # noqa: E402
 
 HINT = """\
-🎙  voicebridge is ready. Talk to Claude hands-free.
+🎙  voicebridge is ready. Talk to Claude, hands-free.
 
-  START      /voice-on        talk to this session, hear replies
-  HEY-CLAUDE /voice-wake      only reacts to "hey Claude ..."
-  STOP       /voice-off       (or say "stop listening")
-  🔇 SILENCE  Cmd+Alt+Ctrl+X   hush the voice instantly (or just start typing)
-  PHONE      vb phone         use it from your phone (shows a QR to scan)
-  VOICE      vb voice <name>  change the voice (vb voice = list all)
+  Not sure where to start? Pick by how you want to work:
+
+    /voice-on     Heads-down pairing. Everything you say goes to Claude,
+                  replies spoken back. Headphones recommended.
+    /voice-wake   Multitasking or others around. Stays quiet until you say
+                  "hey Claude ...", ignores everything else.
+
+  New here? Just run /voice-on and start talking.
+
+  To stop, least to most:
+    Cmd+Alt+Ctrl+X   silence the voice now (or just start typing)
+    Cmd+Alt+Ctrl+Z   silence AND stop Claude mid-answer
+    /voice-off       stop listening in this session
+    vb off           stop listening everywhere
+
+  Later: "vb phone" to talk from your phone, "vb voice" to change the voice.
 """
 
 

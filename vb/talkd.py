@@ -73,19 +73,58 @@ MUTE_RE = re.compile(
 MODE = STATE / "mode"   # "all" (default): every utterance goes in
                         # "wake": only utterances addressed to the wake word
 
-# Whisper renders "Claude" many ways. A bare strict name can wake it;
-# loose homophones (cloud/clod/...) need a greeting so ordinary sentences
-# like "cloud computing is..." never trigger.
-_GREET = r"(?:hey|ok|okay|yo|hi|hai|he)"
-_STRICT = r"(?:claude|claud|klaude?|clyde)"
-_LOOSE = r"(?:cloud|clod|clawed|clot|claw|glod|glaud|clown|clued|klaud)"
+# Whisper hears "Claude" a dozen ways. Be generous: an optional greeting
+# then Claude OR any close homophone, at the START of the utterance, wakes
+# it. Users asked for leniency ("hey cloud", "you cloud", "glory" should all
+# work), so bare homophones at the start trigger too. False fires on
+# "cloud computing..." are acceptable in wake mode (it's opt-in) and the
+# real prompt still follows.
+_GREET = r"(?:hey|ok|okay|yo|hi|hai|he|hello|yes|you|a|ay|oi)"
+_STRICT = r"(?:claude|claud|klaude?|clyde|cloudy)"
+_LOOSE = (r"(?:cloud|clod|clawed|clot|claw|glod|glaud|glory|gloria|clown|"
+          r"clued|klaud|crowd|loud|clode|chlo|flow|lord)")
 WAKE_RE = re.compile(
-    rf"^\s*(?:{_GREET}[,!\s]+(?:{_STRICT}|{_LOOSE})|{_STRICT})\b[,!.\s]*(.*)$",
+    rf"^\s*(?:{_GREET}[,!\s]+)?(?:{_STRICT}|{_LOOSE})\b[,!.\s]*(.*)$",
     re.IGNORECASE | re.DOTALL)
 
 # Voice toggles are heard imperfectly ("weak word mode", "wait word mode"),
 # so accept the homophones. Typed /voice-wake and /voice-agent are the
 # deterministic way to switch.
+# Fleet voice commands (multi-session control).
+ROSTER_RE = re.compile(
+    r"^\s*(which (agents?|sessions?)( need me)?|list (my )?sessions|"
+    r"(my )?sessions|what('?s| is) running|status of (all )?sessions)"
+    r"[.!?\s]*$", re.IGNORECASE)
+SWITCH_RE = re.compile(
+    r"^\s*(?:switch|go|move|jump) (?:to|over to|into) (?:the )?"
+    r"([a-z0-9 _-]+?)(?: session| project)?[.!?\s]*$", re.IGNORECASE)
+READLAST_RE = re.compile(
+    r"^\s*(?:read|what did|tell me what) (?:me )?(?:out )?(?:the )?"
+    r"([a-z0-9 _-]+?)(?:'s)?(?: session| project)?(?: last| latest)?"
+    r"(?: reply| say| said| output)[.!?\s]*$", re.IGNORECASE)
+ALERTS = STATE / "alerts"   # "on" (default): announce agents that go idle
+
+FASTER_RE = re.compile(r"^\s*(speak |talk |go )?(faster|speed up|quicker)"
+                       r"[.!\s]*$", re.IGNORECASE)
+SLOWER_RE = re.compile(r"^\s*(speak |talk |go )?(slower|slow down|slow it "
+                       r"down)[.!\s]*$", re.IGNORECASE)
+NORMAL_SPEED_RE = re.compile(r"^\s*(normal|regular|default) speed[.!\s]*$",
+                             re.IGNORECASE)
+
+
+def _adjust_speed(delta: float = 0.0, absolute: float = 0.0) -> str:
+    cur = int(core.get_rate()) / 175.0
+    x = absolute if absolute else max(0.5, min(2.5, cur + delta))
+    core.RATE_FILE.write_text(str(int(round(175.0 * x))))
+    return f"{x:g} times speed"
+
+
+def alerts_on() -> bool:
+    try:
+        return ALERTS.read_text().strip() != "off"
+    except Exception:
+        return True
+
 TO_WAKE_RE = re.compile(
     r"^\s*(switch to )?(wake|weak|wait|week|work)([- ]?word)? ?mode[.!\s]*$",
     re.IGNORECASE)
@@ -133,18 +172,16 @@ def is_noise(text: str) -> bool:
 
 
 # voicebridge speakers use Latin (English/Hinglish) or Devanagari (Hindi).
-# A capture dominated by other scripts (Korean/CJK/Cyrillic/...) is almost
-# always background media (e.g. a TV), not the user, so drop it.
-_SUPPORTED = re.compile(r"[A-Za-zऀ-ॿ]")
+# Any capture containing foreign-script letters (Korean/CJK/Cyrillic/Arabic/
+# ...) is background media (a TV, a video), never the user, so drop it. Even
+# two such characters is a giveaway ("MBC 뉴스"): real speech has none.
 _LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
 def _foreign_script(text: str) -> bool:
-    letters = _LETTER.findall(text)
-    if len(letters) < 3:
-        return False
-    supported = len(_SUPPORTED.findall(text))
-    return supported / len(letters) < 0.5
+    other = [c for c in _LETTER.findall(text)
+             if not ("a" <= c.lower() <= "z" or "ऀ" <= c <= "ॿ")]
+    return len(other) >= 2
 
 
 # ---------- state helpers (called from the hook and the CLI) -----------------
@@ -232,16 +269,24 @@ def voice_on(ensure: bool = True) -> str:
                 "session first, then run /voice-on again.")
     sid, tp = last["session_id"], last["transcript_path"]
     VOICED.mkdir(parents=True, exist_ok=True)
+    # Exclusive: only ONE session is voiced at a time. With a single mic,
+    # multiple voiced sessions hear each other's spoken replies and inject
+    # them as prompts, drop the others so voice always belongs to here.
+    for f in VOICED.iterdir():
+        if f.name != sid:
+            try:
+                f.unlink()
+            except OSError:
+                pass
     (VOICED / sid).write_text(tp)
     ACTIVE.write_text(json.dumps(last))
     app = bind_app()
     if ensure:
         ensure_daemon()
         hotkey_up()
-    n = len(list(VOICED.iterdir()))
     where = f" Bound to {app}; ignored elsewhere." if app else ""
-    return (f"voice mode ON for session {sid[:8]} ({n} voiced session"
-            f"{'s' if n != 1 else ''}). Mic follows this session now.{where}")
+    return (f"voice mode ON for session {sid[:8]}. This session only; any "
+            f"other session's voice is now off.{where} Mic is yours here.")
 
 
 def voice_off(ensure: bool = True) -> str:
@@ -378,13 +423,14 @@ def get_barge() -> str:
 
 
 def get_cues() -> str:
-    """Cue sounds: 'on' = every listen cycle, 'once' = a single ding when
-    voice mode activates (default), 'off' = fully silent."""
+    """Cue sounds: 'on' = a soft tick each listen cycle so you always know
+    it's hearing you (default), 'once' = only a ding when voice activates,
+    'off' = fully silent."""
     try:
         v = CUES.read_text().strip()
-        return v if v in ("on", "once", "off") else "once"
+        return v if v in ("on", "once", "off") else "on"
     except Exception:
-        return "once"
+        return "on"
 
 
 def cues_on() -> bool:
@@ -653,12 +699,13 @@ def barge_decision(heard: str, conf: float, loud: float) -> str:
     residue, overlap = echo_residue(heard)
     if ATTENTION_RE.search(residue):
         return residue          # "stop"/"wait" cuts through at any length
-    if len(residue.split()) < BARGE_MIN_WORDS:
-        return ""               # too little signal to kill a reply over
-    if overlap < 0.35:
-        return heard            # clearly new speech, not our echo
-    if overlap < 0.6:
-        return residue          # a real phrase over the top of us
+    # Only CLEARLY-new speech interrupts otherwise. The old "overlap < 0.6"
+    # path false-cut our OWN long replies: over a long utterance the mic
+    # hears our voice, echo-subtraction is imperfect, and leftover words
+    # looked like a barge-in and killed playback mid-reply. Require very low
+    # overlap (genuinely different words) AND enough of them.
+    if overlap < 0.25 and len(residue.split()) >= BARGE_MIN_WORDS:
+        return heard
     return ""                   # mostly our own voice; keep talking
 
 
@@ -776,11 +823,20 @@ def run_daemon() -> int:
         PID.write_text(str(os.getpid()))   # claim singleton ownership
     except Exception:
         pass
+    # Warm the Kokoro server in the background so the FIRST reply doesn't pay
+    # the model-load wait (and never silently drops to the robotic voice).
+    if core.get_engine() == "kokoro":
+        import threading
+        threading.Thread(target=core.ensure_kokoro_server,
+                         daemon=True).start()
     wav = str(STATE / "talkd.wav")
     prev: dict = {}
     announced: set = set()
     follow_until = 0.0   # wake mode: window after "hey Claude" alone
     queued = ""          # barge-in captured while a reply was speaking
+    fleet_states = {}    # sid -> state, for idle alerts
+    fleet_next = 0.0     # next fleet-check time
+    first_fleet = True   # skip alerts on the very first scan (no baseline)
     unfocused_since = 0.0   # when the bound app lost focus (0.0 = focused)
     while True:
         # Singleton: if another daemon claimed the pid file, this one exits.
@@ -822,6 +878,21 @@ def run_daemon() -> int:
             prev[tp] = core.latest_assistant_uuid(tp)
             announced.add(sid)
             _cue_event(START_TINK)   # single "voice mode is live" ding
+
+        # 0) Fleet alerts: every ~12s, announce any OTHER agent that just
+        # finished (working -> idle), so you hear "jobhunt is ready" without
+        # watching terminals. Skipped while speaking.
+        if alerts_on() and time.time() >= fleet_next and not _any_speech_playing():
+            from . import sessions as _sess
+            fresh, fleet_states = _sess.newly_idle(fleet_states)
+            fleet_next = time.time() + 12
+            others = [n for n in fresh if n]  # labels only
+            if fleet_states and others and not first_fleet:
+                names = ", ".join(others[:4])
+                core.speak(f"Heads up: {names} "
+                           f"{'is' if len(others) == 1 else 'are'} ready for "
+                           f"you.", blocking=True)
+            first_fleet = False
 
         # 1) Speak every reply we have not spoken yet, oldest first.
         #
@@ -910,6 +981,33 @@ def run_daemon() -> int:
                     core.log(f"talkd dropped ({why}): {text[:80]}")
                 continue
 
+        # Fleet control by voice: roster + switch across all sessions.
+        if ROSTER_RE.match(text):
+            from . import sessions as _sess
+            core.speak(_sess.speak_roster(), blocking=True)
+            continue
+        m_rl = READLAST_RE.match(text)
+        if m_rl:
+            from . import sessions as _sess
+            core.speak(_sess.read_last(m_rl.group(1)), blocking=True)
+            continue
+        m_sw = SWITCH_RE.match(text)
+        if m_sw and not m_sw.group(1).rstrip().endswith("mode"):
+            from . import sessions as _sess
+            core.speak(_sess.switch(m_sw.group(1)), blocking=True)
+            continue
+
+        # Playback speed by voice.
+        if FASTER_RE.match(text):
+            core.speak(_adjust_speed(delta=0.25), blocking=True)
+            continue
+        if SLOWER_RE.match(text):
+            core.speak(_adjust_speed(delta=-0.25), blocking=True)
+            continue
+        if NORMAL_SPEED_RE.match(text):
+            core.speak(_adjust_speed(absolute=1.0), blocking=True)
+            continue
+
         # Mode switching by voice, from either mode.
         if TO_WAKE_RE.match(text):
             set_mode("wake")
@@ -935,6 +1033,7 @@ def run_daemon() -> int:
             addressed, prompt = wake_match(text)
             if not addressed:
                 continue   # ambient chatter, drop silently
+            _cue_event(START_TINK)   # heard the wake word, you know it's live
             if not prompt:
                 core.speak("Yes?", blocking=True)
                 follow_until = time.time() + 12   # next utterance is the prompt

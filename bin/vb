@@ -102,9 +102,43 @@ def stop_watcher() -> None:
         pass
 
 
+HELP = """voicebridge , talk to your coding agents, hands-free.
+
+  Rule of thumb:  /commands control THIS session.  vb ... controls everything.
+
+START (type inside a Claude Code session)
+  /voice-on      talk to this session, replies spoken (headphones best)
+  /voice-wake    stays quiet until you say "hey Claude ..." (good near others)
+  /voice-off     stop voice in this session
+
+STOP / INTERRUPT (least to most)
+  just start typing      cut the voice off, take your new prompt
+  Cmd+Alt+Ctrl+X         silence the voice now (vb hush)
+  Cmd+Alt+Ctrl+Z         silence AND stop Claude mid-answer (vb stop)
+  /voice-stop            stop listening everywhere (vb off)
+
+FLEET (control many sessions by voice, or from the terminal)
+  say "which agents need me?"     hear who's waiting vs working
+  say "switch to <name>"          move voice to that session
+  say "read me <name>'s reply"    hear a session's last reply
+  vb sessions                     list them   |   vb alerts on|off
+
+PHONE     vb phone  (or /phone)   scan the QR, talk from anywhere
+VOICE     vb voice <name>         change voice   |   vb speed 1.5  (or say
+                                  "speak faster"; or tap F9 faster / F7 slower)
+AGENTS    vb agent add <name> <glob> <kind>      use with Codex/Cursor/etc.
+SETUP     vb doctor               health check   |   see README for install
+DEBUG     vb selftest             not hearing you? this says exactly why
+"""
+
+
 def main(argv) -> int:
     cmd = argv[0] if argv else "status"
     rest = argv[1:]
+
+    if cmd in ("help", "-h", "--help"):
+        print(HELP)
+        return 0
 
     if cmd == "on":
         narrate = "--narrate" in rest
@@ -118,13 +152,29 @@ def main(argv) -> int:
         core.speak("Voice bridge on. I'll speak as I work.")
 
     elif cmd == "off":
+        # Master stop: silence + stop the watcher AND the listening daemon,
+        # and clear all voiced sessions. The one command that stops
+        # everything, everywhere. (Per-session stop is /voice-off.)
         try:
             core.ENABLED_FLAG.unlink()
         except FileNotFoundError:
             pass
         stop_watcher()
-        subprocess.run(["pkill", "-x", "say"], capture_output=True)
-        print("voicebridge: OFF")
+        core.hush()
+        try:
+            from vb import talkd as _td
+            _td.stop_daemon()
+            if _td.VOICED.exists():
+                for f in _td.VOICED.iterdir():
+                    f.unlink()
+            for extra in ("active.json",):
+                p = _td.STATE / extra
+                if p.exists():
+                    p.unlink()
+        except Exception:
+            pass
+        print("voicebridge OFF (all voice stopped). Run /voice-on to start "
+              "again.")
 
     elif cmd == "status":
         print(f"enabled : {core.is_enabled()}")
@@ -214,6 +264,34 @@ def main(argv) -> int:
             print("voice  : set a kokoro voice, e.g. vb voice af_heart")
             print("         (list: curl -s localhost:8798/voices)")
 
+    elif cmd == "__install_hooks__":
+        # Register the three hooks in settings.json (cross-platform; used by
+        # install.sh and install.ps1). Args: <repo_dir> <settings_path>
+        import json as _json
+        import os as _os
+        repo, path = rest[0], rest[1]
+        settings = {}
+        if _os.path.exists(path):
+            settings = _json.loads(open(path).read() or "{}")
+        hooks = settings.setdefault("hooks", {})
+        wanted = {"Stop": "on_stop.py", "Notification": "on_notify.py",
+                  "UserPromptSubmit": "on_prompt.py"}
+        changed = False
+        for ev, script in wanted.items():
+            entries = hooks.setdefault(ev, [])
+            if "voicebridge" in _json.dumps(entries):
+                continue
+            hookpath = _os.path.join(repo, "hooks", script)
+            entries.append({"matcher": "", "hooks": [{
+                "type": "command",
+                "command": f'python3 "{hookpath}" # voicebridge',
+                "timeout": 5}]})
+            changed = True
+        if changed:
+            with open(path, "w") as f:
+                _json.dump(settings, f, indent=2)
+        print("hooks registered" if changed else "hooks already present")
+
     elif cmd == "__speak__":
         # Internal: chunked-speech worker spawned by core.start_speech.
         try:
@@ -224,15 +302,53 @@ def main(argv) -> int:
         return 0
 
     elif cmd == "phone":
-        # One command: start the relay + tunnel + show the QR to scan.
+        # One command: relay + tunnel + QR, non-blocking (slash-command safe).
         import os as _os
+        import time as _t
         secret = (_os.environ.get("VB_CALL_SECRET", "")
                   or core._read(core.STATE_DIR / "call_secret")
                   or "vb-" + str(abs(hash(str(core.STATE_DIR))))[:8])
         _os.environ["VB_CALL_SECRET"] = secret
         from vb import call as _call
         print(_call.on())
-        return main(["call", "tunnel"])
+        saved = core._read(core.STATE_DIR / "public_url")
+        if saved:
+            return main(["call", "tunnel"])   # permanent link: instant, no wait
+        cf = "/opt/homebrew/bin/cloudflared"
+        port = _os.environ.get("VB_CALL_PORT", "8790")
+        logf = core.STATE_DIR / "tunnel.log"
+        if not Path(cf).exists():
+            print("cloudflared missing: brew install cloudflared")
+            return 1
+        with open(logf, "w") as lf:
+            subprocess.Popen([cf, "tunnel", "--url", f"http://127.0.0.1:{port}"],
+                             stdout=lf, stderr=lf, start_new_session=True)
+        url = ""
+        for _ in range(60):
+            _t.sleep(0.5)
+            try:
+                import re as _re
+                m = _re.search(r"https://[a-z0-9-]+\.trycloudflare\.com",
+                               logf.read_text())
+                if m:
+                    url = m.group(0)
+                    break
+            except Exception:
+                pass
+        if not url:
+            print("tunnel didn't come up; try again or check network")
+            return 1
+        full = f"{url}/?k={secret}"
+        print(f"\n  PHONE URL: {full}\n")
+        try:
+            import qrcode
+            qr = qrcode.QRCode(border=1)
+            qr.add_data(full)
+            qr.make()
+            qr.print_ascii(invert=True)
+        except Exception:
+            pass
+        print("  scan the QR or open the URL on your phone, tap Start call")
 
     elif cmd == "barge":
         from vb import talkd as _td
@@ -252,7 +368,15 @@ def main(argv) -> int:
 
     elif cmd == "hush":
         core.hush()
-        print("hushed")
+        print("hushed (voice only)")
+
+    elif cmd == "stop":
+        # Real interrupt: silence the voice AND send Esc to the session so
+        # Claude stops generating (its own stop key), not just pkill say.
+        core.hush()
+        from vb import inject
+        inject.press_escape()
+        print("stopped: voice silenced + Esc sent to the session")
 
     elif cmd == "sens":
         from vb import talkd as _td
@@ -274,10 +398,78 @@ def main(argv) -> int:
         print("  once = single ding when voice mode activates (default)")
         print("  off  = fully silent")
 
+    elif cmd == "sessions":
+        from vb import sessions as _s
+        rows = _s.all_rows(max_age_h=12)
+        if not rows:
+            print("no active Claude sessions in the last 12h")
+        else:
+            for r in rows:
+                mark = "*" if r["voiced"] else " "
+                print(f" {mark} {r['label']:16} {r['state']:8} {r['ago']}")
+            print("\n * = voiced. Switch: vb switch <name>  (or say "
+                  "'switch to <name>')")
+
+    elif cmd == "switch":
+        from vb import sessions as _s
+        print(_s.switch(" ".join(rest)) if rest else "usage: vb switch <name>")
+
+    elif cmd == "agent":
+        # Register / test a non-Claude agent so voicebridge can read ITS
+        # replies too. This is how you make the universal layer real for
+        # Codex/Cursor/etc. and verify it works, on your own machine.
+        import json as _json
+        from vb import adapters, sessions as _s
+        cfgp = core.STATE_DIR / "agents.json"
+        cfg = {}
+        try:
+            cfg = _json.loads(cfgp.read_text())
+        except Exception:
+            pass
+        sub = rest[0] if rest else "list"
+        if sub == "add" and len(rest) >= 3:
+            name, glob = rest[1], rest[2]
+            kind = rest[3] if len(rest) > 3 else "jsonl_text"
+            cfg[name] = {"glob": glob, "kind": kind}
+            core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+            cfgp.write_text(_json.dumps(cfg, indent=2))
+            print(f"registered agent '{name}': {glob} ({kind})")
+            print(f"verify with: vb agent test {name}")
+        elif sub == "remove" and len(rest) >= 2:
+            cfg.pop(rest[1], None); cfgp.write_text(_json.dumps(cfg, indent=2))
+            print(f"removed '{rest[1]}'")
+        elif sub == "test" and len(rest) >= 2:
+            found = [a for a in adapters.discover() if a["label"] == rest[1]]
+            if not found:
+                print(f"no log files matched for '{rest[1]}' "
+                      "(check the glob in vb agent list)")
+            else:
+                a = sorted(found, key=lambda x: x["mtime"])[-1]
+                rep = adapters.last_reply(a["path"], a["kind"])
+                print(f"newest log: {a['path']}")
+                print(f"extracted reply: {rep[:300] or '(nothing, wrong kind?)'}")
+        else:
+            if not cfg:
+                print("no agents registered. Add one:")
+                print("  vb agent add codex '~/.codex/sessions/*.jsonl' jsonl_text")
+                print("  vb agent test codex   # confirm it reads a reply")
+                print("kinds: jsonl_text | lastpara  (claude is built in)")
+            else:
+                for n, c in cfg.items():
+                    print(f"  {n}: {c['glob']} ({c['kind']})")
+
+    elif cmd == "alerts":
+        from vb import talkd as _td
+        if rest and rest[0] in ("on", "off"):
+            _td.STATE.mkdir(parents=True, exist_ok=True)
+            _td.ALERTS.write_text(rest[0])
+        print(f"fleet alerts : {'on' if _td.alerts_on() else 'off'}")
+        print("  spoken 'X is ready for you' when any other session goes idle")
+
     elif cmd == "mode":
         from vb import talkd as _td
-        if rest and rest[0] in ("wake", "all"):
-            _td.set_mode(rest[0])
+        if rest and rest[0] in ("wake", "all", "full"):
+            _td.set_mode("all" if rest[0] in ("all", "full") else "wake")
             core.speak("Wake word mode. Say hey Claude when you need me."
                        if rest[0] == "wake"
                        else "Agent mode. I'm taking everything now.")
@@ -447,6 +639,35 @@ def main(argv) -> int:
             print("note: only has effect inside a `vb session` "
                   "(voicemode channel running)")
 
+    elif cmd == "speed":
+        # Podcast-style multiplier (1x, 1.5x, 2x). Reuses the rate plumbing:
+        # effective wpm = 175 * multiplier, which both say and Kokoro honor.
+        base = 175.0
+        if rest:
+            try:
+                x = float(rest[0].rstrip("xX"))
+            except ValueError:
+                x = 1.0
+            x = max(0.5, min(2.5, x))
+            core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+            core.RATE_FILE.write_text(str(int(round(base * x))))
+            print(f"speed: {x:g}x  ({core.get_rate()} wpm)")
+            core.speak(f"This is {x:g} times speed.")
+        else:
+            x = int(core.get_rate()) / base
+            print(f"speed: {x:.2g}x  ({core.get_rate()} wpm)")
+            print("set: vb speed 1.5   (0.5x to 2.5x; or say 'speak faster')")
+
+    elif cmd in ("faster", "slower"):
+        # Nudge speed by 0.25x. Meant for a hotkey (F9 faster / F8 slower).
+        base = 175.0
+        cur = int(core.get_rate()) / base
+        x = max(0.5, min(2.5, cur + (0.25 if cmd == "faster" else -0.25)))
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        core.RATE_FILE.write_text(str(int(round(base * x))))
+        print(f"speed: {x:g}x")
+        core.speak(f"{x:g} times speed.")
+
     elif cmd == "rate":
         if not rest:
             print(f"rate: {core.get_rate()} wpm  (set: vb rate 175)")
@@ -556,23 +777,83 @@ def main(argv) -> int:
         check("Accessibility (typing)", r.returncode == 0,
               "System Settings -> Privacy & Security -> Accessibility: "
               "enable your terminal app")
-        # Microphone: try a very short capture.
+        # Microphone: record ~1.5s and check the actual LEVEL, not just that
+        # a file appeared. A muted mic / wrong input device / missing
+        # permission all still write a silent file, the #1 "it doesn't hear
+        # me" cause, so a file-only check gives a false PASS.
         wav = str(core.STATE_DIR / "doctor.wav")
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        mic_ok = False
+        level = -1.0
         if deps["rec"]:
+            print("  (say something for a second for the mic check...)")
             rr = subprocess.run(
                 [deps["rec"], "-q", "-c", "1", "-r", "16000", wav,
-                 "trim", "0", "0.3"],
+                 "trim", "0", "1.5"],
                 capture_output=True, timeout=10)
-            mic_ok = rr.returncode == 0 and _os.path.exists(wav)
-        check("Microphone (capture)", mic_ok,
+            if rr.returncode == 0:
+                from vb import stt as _st
+                level = _st.loudness(wav)
+        check("Microphone (records)", deps["rec"] and level >= 0,
               "System Settings -> Privacy & Security -> Microphone: "
               "enable your terminal app")
+        check(f"Microphone (hears sound, level={level:.3f})", level >= 0.004,
+              "recording SILENCE. Check: mic not muted, correct Input device "
+              "in System Settings -> Sound, and terminal has Mic permission")
         bad = [n for n, ok, _ in results if not ok]
         print("all good, run /voice-on inside a Claude session" if not bad
               else f"{len(bad)} issue(s) above")
         return 0 if not bad else 1
+
+    elif cmd == "selftest":
+        # One command that reproduces the whole capture pipeline and says
+        # exactly where it breaks. For "the agent won't hear/answer me".
+        import time as _t
+        from vb import stt as _st, talkd as _td
+        if not _st.whisper_bin() or not _st.MODEL.exists():
+            print("FAIL: whisper or model missing. Run vb doctor.")
+            return 1
+        wav = str(core.STATE_DIR / "selftest.wav")
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        print("\nSpeak a full sentence now (recording ~4s)...")
+        _t.sleep(0.3)
+        try:
+            _os = __import__("os")
+            _os.remove(wav)
+        except Exception:
+            pass
+        rr = subprocess.run([_st._find("rec"), "-q", "-c", "1", "-r", "16000",
+                             wav, "trim", "0", "4"], capture_output=True)
+        lvl = _st.loudness(wav)
+        text, conf = _st.transcribe_ex(wav)
+        print(f"\n  1. recorded        : {'ok' if rr.returncode == 0 else 'FAILED (mic permission?)'}")
+        print(f"  2. sound level     : {lvl:.3f} " +
+              ("(good)" if lvl >= 0.004 else "SILENT , mic muted / wrong input device / no permission"))
+        print(f"  3. transcribed     : {text!r}")
+        print(f"  4. confidence      : {conf:.2f}")
+        ok, why = _td.accept_capture(text or "x", conf, lvl)
+        print(f"  5. would be sent   : {ok}" + ("" if ok else f"  (dropped: {why})"))
+        print(f"  6. voice engine    : {core.get_engine()} "
+              f"(kokoro up: {core.kokoro_up()})")
+        acc = subprocess.run(["osascript", "-e",
+            'tell application \"System Events\" to keystroke \"\"'],
+            capture_output=True)
+        print(f"  7. can type (Accessibility): {'yes' if acc.returncode == 0 else 'NO , grant Accessibility to your terminal'}")
+        print("\nVerdict:")
+        if lvl < 0.004:
+            print("  Mic is recording SILENCE. That's your problem, fix mic")
+            print("  input/permission, then rerun vb selftest.")
+        elif not text:
+            print("  Heard sound but no words, speak louder/clearer, or the")
+            print("  wrong input device is selected.")
+        elif not ok:
+            print(f"  Heard you but the capture was filtered ({why}). Try:")
+            print("  vb sens relaxed")
+        elif acc.returncode != 0:
+            print("  Capture works, but typing is blocked, grant Accessibility.")
+        else:
+            print("  Full pipeline works. If you still get no reply, make sure")
+            print("  /voice-on is active and this window stays focused.")
+        return 0
 
     elif cmd == "stt":
         from vb import stt

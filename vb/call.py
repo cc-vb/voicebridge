@@ -142,12 +142,28 @@ const btn=document.getElementById('btn'), state=document.getElementById('state')
       log=document.getElementById('log');
 let live=false, rec=null, media=null, audioCtx=null;
 
-function say(text, cb){
-  const u=new SpeechSynthesisUtterance(text);
+function pickVoice(){
   const vs=speechSynthesis.getVoices().filter(v=>v.lang.startsWith('en'));
-  const best=vs.find(v=>/siri|premium|enhanced|natural/i.test(v.name))||vs[0];
-  if(best)u.voice=best; u.rate=1.0; u.onend=()=>cb&&cb();
-  speechSynthesis.speak(u);
+  return vs.find(v=>/siri|premium|enhanced|natural/i.test(v.name))||vs[0];
+}
+// Chrome/Safari silently cut off long utterances (a known bug), which made
+// it stop after the first sentence. Split into sentence-sized chunks and
+// chain them via onend so the WHOLE reply is spoken.
+function say(text, cb){
+  speechSynthesis.cancel();
+  const best=pickVoice();
+  const parts=(text.match(/[^.!?]+[.!?]*\s*/g)||[text])
+    .reduce((a,s)=>{ // keep chunks <=160 chars
+      if(a.length&&(a[a.length-1]+s).length<=160)a[a.length-1]+=s; else a.push(s);
+      return a;},[]);
+  let i=0;
+  (function next(){
+    if(i>=parts.length){cb&&cb();return;}
+    const u=new SpeechSynthesisUtterance(parts[i++].trim());
+    if(best)u.voice=best; u.rate=1.0;
+    u.onend=next; u.onerror=next;
+    speechSynthesis.speak(u);
+  })();
 }
 function add(cls,t){const d=document.createElement('div');d.className=cls;
   d.textContent=(cls==='you'?'you: ':'')+t;log.prepend(d);}

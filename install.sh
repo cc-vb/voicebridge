@@ -125,7 +125,7 @@ say_step "7/8 Silence hotkey (Cmd+Alt+Ctrl+X to hush the voice)"
 if brew list skhd >/dev/null 2>&1 || brew install koekeishiya/formulae/skhd; then
   SKHDRC="$HOME/.skhdrc"
   if ! grep -q "vb hush" "$SKHDRC" 2>/dev/null; then
-    printf '\n# voicebridge: silence the voice instantly\ncmd + alt + ctrl - x : %s hush\n' "$BIN_DIR/vb" >> "$SKHDRC"
+    printf '\n# voicebridge: silence the voice instantly\ncmd + alt + ctrl - x : %s hush\n# voicebridge: real interrupt (silence + stop generating)\ncmd + alt + ctrl - z : %s stop\n# voicebridge: playback speed (fast-forward / rewind)\nf9 : %s faster\nf7 : %s slower\n' "$BIN_DIR/vb" "$BIN_DIR/vb" "$BIN_DIR/vb" "$BIN_DIR/vb" >> "$SKHDRC"
   fi
   # Deliberately not `skhd --start-service`: that leaves a keyboard hook
   # running at login forever for a key that only matters while we speak.

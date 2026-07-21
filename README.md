@@ -11,21 +11,33 @@ voice services, no per-minute fees.
 
 ## What you get
 
-- **/voice-on** inside any session: hands-free conversation with that exact
-  session. Talk, hear the reply, talk again. `/voice-off` or say "stop
-  listening" to end.
-- **Wake-word mode** (`/voice-wake`): ambient, only reacts to "hey Claude
-  ...", ignores everything else. Agent mode (`/voice-agent`) takes
-  everything.
-- **Barge-in**: talk over a long answer out loud and it stops and takes
-  your words as the next prompt.
-- **Natural voice**: Kokoro neural TTS (54 voices, runs on CPU, Apache
-  licensed) with macOS `say` as fallback. `vb engine kokoro`.
-- **Phone, free**: a PWA "call" page (`vb call on` + `vb call tunnel`),
-  open on your phone, tap Start once, then talk hands-free from anywhere.
-  Plus a Telegram bridge (`vb remote on`) for voice notes.
-- Smart capture: thinking pauses don't split your prompt, mic noise is
-  filtered, and it never hears its own voice (echo guard).
+- **Talk to a session**: `/voice-on` for a continuous hands-free
+  conversation, or `/voice-wake` for ambient mode that only reacts to "hey
+  Claude ..." (good around other people). `/voice-off` to stop.
+- **Fleet control by voice** , the part nothing else does. Run many agents
+  at once and steer them all with one voice: ask *"which agents need me?"*
+  to hear who's waiting vs working, *"switch to jobhunt"* to move your
+  voice there, *"read me codex's last reply"* to check one without leaving
+  your seat. It even speaks up on its own , *"heads up, signup is ready for
+  you"* , when any agent finishes. (`vb sessions`, `vb alerts on|off`.)
+- **Universal**: works with any coding agent. Voice input pastes into
+  whatever's focused (Codex, Cursor, Cline, Copilot), and reading replies
+  back is pluggable per agent (`vb agent add`, see AGENTS.md).
+- **Real interrupt**: talk over a reply and it stops and takes your words;
+  `Cmd+Alt+Ctrl+X` silences the voice; `Cmd+Alt+Ctrl+Z` (or `/voice-stop`)
+  also sends Claude its Esc to stop generating, not just muting audio.
+- **Natural voice**: Kokoro neural TTS (54 voices, on-CPU, Apache),
+  streamed so it starts speaking in ~0.4s, with macOS `say` as fallback.
+  Podcast-style speed: `vb speed 1.5` (0.5x-2.5x), or say "speak faster".
+- **Phone, free**: `vb phone` prints a QR , scan it, tap Start, talk from
+  anywhere. Plus a Telegram bridge (`vb remote on`) for voice notes.
+- **Smart listening**: thinking-pauses don't split your prompt, background
+  chatter and foreign-language media are filtered out, and it never hears
+  its own voice (echo guard).
+- **Cross-platform**: macOS today; Windows/Linux support is built behind an
+  OS layer (see WINDOWS.md), pending a tester.
+
+Full command guide any time: `vb help`.
 
 ## Quickstart
 

@@ -326,24 +326,41 @@ def get_engine() -> str:
         return "say"
 
 
-def split_speech_chunks(text: str, max_chars: int = 300,
-                        first_max: int = 120) -> list:
-    """Split a reply into sentence-ish chunks so playback can start after
-    the FIRST sentence synthesizes instead of after the whole reply. The
-    first chunk is kept small so the voice starts as fast as possible."""
-    sents = re.split(r"(?<=[.!?])\s+", text)
-    chunks, cur = [], ""
+def split_speech_chunks(text: str, first_max: int = 120,
+                        chunk_max: int = 220) -> list:
+    """Chunk a reply for smooth, gap-free streaming playback:
+    - a SMALL first chunk so the voice starts fast (~0.8s);
+    - then several ~chunk_max pieces at sentence boundaries.
+    Each piece synthesizes in ~1-2s while the previous (much longer) piece
+    is still playing, so the pipeline never runs dry, no mid-reply gap, and
+    nothing is one giant synth that lags. Sentences longer than chunk_max are
+    split on commas/spaces so a single long sentence can't stall it."""
+    sents = re.split(r"(?<=[.!?])\s+", text.strip())
+    pieces = []
     for s in sents:
-        cap = first_max if not chunks else max_chars
-        if len(cur) + len(s) + 1 <= cap:
-            cur = f"{cur} {s}".strip()
+        s = s.strip()
+        while len(s) > chunk_max:
+            cut = s.rfind(", ", 0, chunk_max)
+            if cut < chunk_max // 2:
+                cut = s.rfind(" ", 0, chunk_max)
+            if cut <= 0:
+                cut = chunk_max
+            pieces.append(s[:cut + 1].strip())
+            s = s[cut + 1:].strip()
+        if s:
+            pieces.append(s)
+    if not pieces:
+        return [text]
+    chunks, cur, cap = [], "", first_max
+    for p in pieces:
+        if cur and len(cur) + len(p) + 1 > cap:
+            chunks.append(cur)
+            cur, cap = p, chunk_max
         else:
-            if cur:
-                chunks.append(cur)
-            cur = s
+            cur = f"{cur} {p}".strip()
     if cur:
         chunks.append(cur)
-    return chunks or [text]
+    return chunks
 
 
 def _kokoro_wav(text: str, out: str = "") -> str:
@@ -353,7 +370,7 @@ def _kokoro_wav(text: str, out: str = "") -> str:
     if not _KOKORO_VOICE_RE.match(voice or ""):
         voice = "af_heart"
     try:
-        speed = max(0.6, min(1.4, float(get_rate()) / 175.0))
+        speed = max(0.6, min(1.6, float(get_rate()) / 175.0))
     except ValueError:
         speed = 1.0
     payload = json.dumps({"text": text, "voice": voice, "speed": speed})
@@ -460,7 +477,17 @@ def speak_chunks_blocking(text: str) -> None:
                                       out=slots[(i + 1) % 2])
                 player.wait()
                 if i + 1 < len(chunks) and not nxt:
-                    break   # server died mid-reply; stop cleanly
+                    # A later chunk failed to synthesize , DON'T go silent.
+                    # Speak the rest with `say` so the whole reply is heard.
+                    rest = " ".join(chunks[i + 1:])
+                    log("kokoro chunk failed mid-reply; say-fallback for rest")
+                    v = get_voice()
+                    if _KOKORO_VOICE_RE.match(v or ""):
+                        v = ""
+                    sc = ["say", "-r", get_rate()] + (["-v", v] if v else [])
+                    subprocess.run(sc + [rest], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+                    return
                 cur = nxt
                 i += 1
             return
