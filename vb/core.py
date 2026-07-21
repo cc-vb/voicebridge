@@ -408,7 +408,17 @@ def speak_chunks_blocking(text: str) -> None:
                                       out=slots[(i + 1) % 2])
                 player.wait()
                 if i + 1 < len(chunks) and not nxt:
-                    break   # server died mid-reply; stop cleanly
+                    # A later chunk failed to synthesize , DON'T go silent.
+                    # Speak the rest with `say` so the whole reply is heard.
+                    rest = " ".join(chunks[i + 1:])
+                    log("kokoro chunk failed mid-reply; say-fallback for rest")
+                    v = get_voice()
+                    if _KOKORO_VOICE_RE.match(v or ""):
+                        v = ""
+                    sc = ["say", "-r", get_rate()] + (["-v", v] if v else [])
+                    subprocess.run(sc + [rest], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+                    return
                 cur = nxt
                 i += 1
             return
