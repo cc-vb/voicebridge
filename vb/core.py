@@ -277,21 +277,41 @@ def get_engine() -> str:
         return "say"
 
 
-def split_speech_chunks(text: str, first_max: int = 140) -> list:
-    """Two chunks only: a small FIRST chunk so the voice starts fast, then
-    ALL the rest as one piece. This avoids a synthesis gap (audible pause)
-    at every sentence, the voice flows naturally and only pauses once, at
-    the very start, which the listener never notices."""
+def split_speech_chunks(text: str, first_max: int = 120,
+                        chunk_max: int = 220) -> list:
+    """Chunk a reply for smooth, gap-free streaming playback:
+    - a SMALL first chunk so the voice starts fast (~0.8s);
+    - then several ~chunk_max pieces at sentence boundaries.
+    Each piece synthesizes in ~1-2s while the previous (much longer) piece
+    is still playing, so the pipeline never runs dry, no mid-reply gap, and
+    nothing is one giant synth that lags. Sentences longer than chunk_max are
+    split on commas/spaces so a single long sentence can't stall it."""
     sents = re.split(r"(?<=[.!?])\s+", text.strip())
-    if not sents:
+    pieces = []
+    for s in sents:
+        s = s.strip()
+        while len(s) > chunk_max:
+            cut = s.rfind(", ", 0, chunk_max)
+            if cut < chunk_max // 2:
+                cut = s.rfind(" ", 0, chunk_max)
+            if cut <= 0:
+                cut = chunk_max
+            pieces.append(s[:cut + 1].strip())
+            s = s[cut + 1:].strip()
+        if s:
+            pieces.append(s)
+    if not pieces:
         return [text]
-    first = sents[0]
-    i = 1
-    while i < len(sents) and len(first) + len(sents[i]) + 1 <= first_max:
-        first = f"{first} {sents[i]}"
-        i += 1
-    rest = " ".join(sents[i:]).strip()
-    return [first, rest] if rest else [first]
+    chunks, cur, cap = [], "", first_max
+    for p in pieces:
+        if cur and len(cur) + len(p) + 1 > cap:
+            chunks.append(cur)
+            cur, cap = p, chunk_max
+        else:
+            cur = f"{cur} {p}".strip()
+    if cur:
+        chunks.append(cur)
+    return chunks
 
 
 def _kokoro_wav(text: str, out: str = "") -> str:

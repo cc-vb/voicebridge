@@ -601,12 +601,13 @@ def barge_decision(heard: str, conf: float, loud: float) -> str:
     residue, overlap = echo_residue(heard)
     if ATTENTION_RE.search(residue):
         return residue          # "stop"/"wait" cuts through at any length
-    if len(residue.split()) < BARGE_MIN_WORDS:
-        return ""               # too little signal to kill a reply over
-    if overlap < 0.35:
-        return heard            # clearly new speech, not our echo
-    if overlap < 0.6:
-        return residue          # a real phrase over the top of us
+    # Only CLEARLY-new speech interrupts otherwise. The old "overlap < 0.6"
+    # path false-cut our OWN long replies: over a long utterance the mic
+    # hears our voice, echo-subtraction is imperfect, and leftover words
+    # looked like a barge-in and killed playback mid-reply. Require very low
+    # overlap (genuinely different words) AND enough of them.
+    if overlap < 0.25 and len(residue.split()) >= BARGE_MIN_WORDS:
+        return heard
     return ""                   # mostly our own voice; keep talking
 
 
