@@ -234,6 +234,33 @@ def record_start(wav: str, max_secs: int = 30,
         return None
 
 
+def live_level(wav: str, tail_ms: int = 200) -> float:
+    """Cheap 0..1 loudness of the last ~tail_ms of a 16k mono s16le recording,
+    for the live mic meter. Reads only the tail and does the RMS in-process
+    (no sox), so it's fine to call every ~0.15s in the capture loop."""
+    import array
+    try:
+        with open(wav, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            nbytes = min(size - 44, int(16000 * 2 * tail_ms / 1000))
+            if nbytes <= 0:
+                return 0.0
+            nbytes -= nbytes % 2
+            f.seek(size - nbytes)
+            raw = f.read(nbytes)
+        a = array.array("h")
+        a.frombytes(raw)
+        if not a:
+            return 0.0
+        rms = (sum(x * x for x in a) / len(a)) ** 0.5
+        # sqrt curve: loudness is perceived roughly non-linearly, so a soft
+        # voice still visibly moves the meter instead of barely twitching.
+        return min(1.0, (rms / 6000.0) ** 0.5)
+    except Exception:
+        return 0.0
+
+
 def transcribe(wav: str) -> str:
     """Run whisper.cpp on a wav and return cleaned text."""
     return transcribe_ex(wav)[0]

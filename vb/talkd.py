@@ -845,6 +845,7 @@ def _speak_interruptible(text: str) -> str:
         while say.poll() is None:
             if bound and not app_focused(inject.frontmost_app(), bound):
                 core.hush()   # switched away mid-reply -> stop speaking
+                core.set_hud("away")
                 break
             try:
                 os.remove(wav)
@@ -1059,6 +1060,8 @@ def run_daemon() -> int:
             except FileNotFoundError:
                 pass
             t_rec = time.time()
+            core.set_hud("wake" if (mode == "wake" and not in_follow)
+                         else "listening")
             p = stt.record_start(wav, silence_stop=pause)
             if p is None:
                 time.sleep(1)
@@ -1066,6 +1069,13 @@ def run_daemon() -> int:
             cut = False
             while p.poll() is None:
                 time.sleep(0.15)
+                # Live mic meter: once your voice registers, the indicator
+                # flips to "hearing" and pulses with the level, so you can see
+                # it's catching you (and know when it isn't).
+                lvl = stt.live_level(wav)
+                core.set_hud("hearing" if lvl > 0.12 else
+                             ("wake" if (mode == "wake" and not in_follow)
+                              else "listening"), level=lvl)
                 now_active = _read_json(ACTIVE)
                 switched = (not now_active
                             or now_active.get("session_id") != sid)
@@ -1080,6 +1090,8 @@ def run_daemon() -> int:
                         p.terminate()
                         p.wait()
                         cut = True
+                        if switched:
+                            core.set_hud("away")
                         break
             if mode == "all" or in_follow:
                 _cue(STOP_POP)
@@ -1102,6 +1114,7 @@ def run_daemon() -> int:
             # true (longer) window. If this turns out to be a command or gets
             # dropped, the speculative continuation is simply discarded.
             _t0 = time.time()
+            core.set_hud("thinking")   # transcribing now
             get_text = _transcribe_async(wav)
             first_more = _listen_continuation(wav2, pause, followup_window(""))
             text, conf = get_text()

@@ -62,6 +62,47 @@ from vb import core  # noqa: E402
 SELF = str(Path(__file__).resolve())
 
 
+def _orb_show(quiet: bool = False) -> None:
+    """Show the floating 'am I listening?' indicator. Idempotent. Suppressed
+    by VB_NO_ORB (for headless CI or users who don't want it)."""
+    import os
+    if os.environ.get("VB_NO_ORB"):
+        return
+    orb_pid = core.STATE_DIR / "orb.pid"
+    try:
+        os.kill(int(orb_pid.read_text().strip()), 0)
+        if not quiet:
+            print("orb already showing")
+        return
+    except Exception:
+        pass
+    script = Path(SELF).parent.parent / "scripts" / "vb_orb.py"
+    try:
+        p = subprocess.Popen([sys.executable, str(script)],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        orb_pid.write_text(str(p.pid))
+        if not quiet:
+            print("orb showing (drag to move, double-click or Esc to close)")
+    except Exception:
+        pass
+
+
+def _orb_hide(quiet: bool = False) -> None:
+    import os
+    import signal
+    orb_pid = core.STATE_DIR / "orb.pid"
+    try:
+        os.kill(int(orb_pid.read_text().strip()), signal.SIGTERM)
+        orb_pid.unlink()
+        if not quiet:
+            print("orb hidden")
+    except Exception:
+        if not quiet:
+            print("orb not running")
+
+
 def _int_flag(rest, name, default):
     for a in rest:
         if a.startswith(name + "="):
@@ -123,6 +164,9 @@ FLEET (control many sessions by voice, or from the terminal)
   say "read me <name>'s reply"    hear a session's last reply
   vb sessions                     list them   |   vb alerts on|off
 
+ORB       vb orb                  floating "am I listening?" indicator that
+                                  pulses with your voice (auto-shows on
+                                  /voice-on; vb orb off to hide)
 PHONE     vb phone  (or /phone)   scan the QR, talk from anywhere
 VOICE     vb voice <name>         change voice   |   vb speed 1.5  (or say
                                   "speak faster"; or tap F9 faster / F7 slower)
@@ -173,6 +217,7 @@ def main(argv) -> int:
                     p.unlink()
         except Exception:
             pass
+        _orb_hide(quiet=True)
         print("voicebridge OFF (all voice stopped). Run /voice-on to start "
               "again.")
 
@@ -360,6 +405,15 @@ def main(argv) -> int:
             print("continuing where the cap cut off")
         else:
             print("nothing pending — the last reply was spoken in full")
+
+    elif cmd == "orb":
+        # The floating "am I listening?" indicator. `vb orb` shows it,
+        # `vb orb off` hides it. It reads the daemon's live state, so you
+        # can glance and know whether the mic is actually open.
+        if rest and rest[0] == "off":
+            _orb_hide()
+        else:
+            _orb_show()
 
     elif cmd == "hush":
         core.hush()
@@ -574,8 +628,10 @@ def main(argv) -> int:
         sub = rest[0] if rest else "status"
         if sub == "on":
             print(talkd.voice_on())
+            _orb_show(quiet=True)   # show the indicator automatically
         elif sub == "off":
             print(talkd.voice_off())
+            _orb_hide(quiet=True)
         elif sub in ("off-all", "offall"):
             print(talkd.voice_off_all())
         elif sub == "status":

@@ -68,6 +68,7 @@ Speak. That's it.
 | `/voicebridge:voice-off` | stop, for this session |
 | `/voicebridge:voice-off-all` | stop everywhere and release the mic, from any terminal |
 | **Cmd+Alt+Ctrl+X** | **silence the voice instantly** (or just start typing) |
+| `vb orb` | floating indicator that pulses with your voice, so you can see at a glance whether the mic is actually open (auto-shows on voice-on) |
 | `vb phone` | use it from your phone (prints a QR to scan) |
 | `vb voice <name>` | change the voice (`vb voice` lists all) |
 

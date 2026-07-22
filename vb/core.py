@@ -119,7 +119,51 @@ def log(msg: str) -> None:
         pass
 
 
-_FENCE = re.compile(r"```.*?```", re.DOTALL)
+HUD_FILE = STATE_DIR / "hud.json"
+
+# The phases the indicator (the orb / `vb orb`) shows. This is the honest
+# answer to "is it listening right now?" so you never talk to a dead mic.
+#   listening  mic open, waiting for you to start talking
+#   hearing    actively capturing your voice (level > 0 -> the pulse)
+#   thinking   transcribing / pasting into the session
+#   speaking   a reply is playing out loud
+#   wake       wake mode, ignoring the room until "hey Claude"
+#   away       you switched off the bound window, so it stopped listening
+#   off        the daemon isn't running (inferred from a stale file)
+HUD_PHASES = ("listening", "hearing", "thinking", "speaking", "wake", "away")
+
+
+def set_hud(phase: str, level: float = 0.0, text: str = "") -> None:
+    """Publish the daemon's live state + mic level for the indicator to read.
+    Best-effort and cheap (atomic replace, never raises), so it's safe to call
+    on the hot path of the capture loop."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({
+            "phase": phase,
+            "level": round(max(0.0, min(1.0, level)), 3),
+            "text": text[:80],
+            "ts": time.time(),
+        })
+        tmp = str(HUD_FILE) + f".{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            f.write(payload)
+        os.replace(tmp, HUD_FILE)
+    except Exception:
+        pass
+
+
+def read_hud() -> dict:
+    """Current indicator state. Returns phase 'off' if the file is missing or
+    stale (no update recently), i.e. the daemon isn't actually listening, so
+    the indicator can't falsely claim a live mic."""
+    try:
+        d = json.loads(HUD_FILE.read_text())
+        if time.time() - float(d.get("ts", 0)) > 5.0:
+            return {"phase": "off", "level": 0.0, "text": "", "ts": 0}
+        return d
+    except Exception:
+        return {"phase": "off", "level": 0.0, "text": "", "ts": 0}
 _INLINE_CODE = re.compile(r"`([^`]*)`")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _URL = re.compile(r"https?://\S+")
@@ -492,6 +536,7 @@ def speak_chunks_blocking(text: str) -> None:
     Kokoro path: synthesize sentence chunks, PLAY chunk N while chunk N+1
     synthesizes, so the first words come out after one small synth instead
     of after the whole reply. Falls back to `say` when the server is down."""
+    set_hud("speaking", text=text)   # indicator: a reply is playing aloud
     # Kokoro's voices are English-only. Detect from the TEXT itself: any
     # Devanagari means this reply needs the macOS Hindi voice, regardless
     # of settings, so auto-detected Hindi conversations just work.
