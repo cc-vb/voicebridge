@@ -165,11 +165,9 @@ FLEET (control many sessions by voice, or from the terminal)
   say "read me <name>'s reply"    hear a session's last reply
   vb sessions                     list them   |   vb alerts on|off
 
-ORB       vb orb                  floating "am I listening?" indicator that
-                                  pulses with your voice (auto-shows on
-                                  /voice-on; vb orb off to hide)
-STATUSBAR vb statusline-install   show voice state in Claude Code's status
-                                  line (listening / speaking / ...)
+STATUS    vb statusline-install   show voice state right in Claude Code's
+                                  status line: listening / hearing / speaking
+                                  (restart Claude Code once after installing)
 PHONE     vb phone  (or /phone)   scan the QR, talk from anywhere
 VOICE     vb voice <name>         change voice   |   vb speed 1.5  (or say
                                   "speak faster"; or tap F9 faster / F7 slower)
@@ -682,10 +680,12 @@ def main(argv) -> int:
         sub = rest[0] if rest else "status"
         if sub == "on":
             print(talkd.voice_on())
-            _orb_show(quiet=True)   # show the indicator automatically
+            # No popup window: the live indicator lives in the terminal status
+            # line (vb statusline-install). The floating orb is opt-in only
+            # via `vb orb` for anyone who wants it.
         elif sub == "off":
             print(talkd.voice_off())
-            _orb_hide(quiet=True)
+            _orb_hide(quiet=True)   # clean up an opt-in orb if one is running
         elif sub in ("off-all", "offall"):
             print(talkd.voice_off_all())
         elif sub == "status":
