@@ -161,7 +161,8 @@ _SL_LABEL = {
     "wake": "💤 wake-word", "speakonly": "🔉 reads replies",
     "away": "⏸ paused", "off": "○ voice off",
 }
-# States with one obviously-right hint show it; the rest rotate through tips.
+# States with one obviously-right thing to say show it; the rest get a single
+# rotating recommendation (see recommend()).
 _SL_CRITICAL = {
     "speaking": 'say "stop" or ⌃⌥⌘X to cut in',
     "off": '/voice-agent to talk · /voice-on to just hear replies',
@@ -169,28 +170,48 @@ _SL_CRITICAL = {
     "away": 'focus this window to resume',
     "thinking": 'one moment…',
 }
-# Rotating tips: a different one each refresh so features get discovered.
-_SL_TIPS = [
-    'say "faster" / "slower", or tap F9 / F7, to change speed',
-    'say "wake word mode" to only listen after "hey Claude"',
-    'say "stop listening" to mute  ·  ⌃⌥⌘X silences now',
-    '⌃⌥⌘Z stops Claude mid-answer',
-    '/voice-agent = hands-free  ·  /voice-on = just hear replies',
-    'talk over a reply to interrupt and redirect it',
-]
 
 
-def render_statusline(hud: dict, n: int = 0, update_cmd: str = "") -> str:
-    """Build the one-line status text: [update alert] state · hint. Pure and
-    testable. `n` rotates the tips (the line refreshes on activity, so a
-    different tip shows each time). `update_cmd`, when set, prepends an alert
-    with the exact command to run."""
+def recommend(phase: str, n: int = 0, stats: dict = None,
+              update_cmd: str = "", speed_changed: bool = False) -> str:
+    """Pick ONE suggestion to show, adapting to what the user is doing.
+
+    Not everything at once: a single tip, rotated by `n` each refresh, drawn
+    from the ones that are RELEVANT right now. Behaviour signals steer it, e.g.
+    a burst of dropped/stray captures (`stats['drops']`) surfaces the wake-mode
+    tip, since that usually means agent mode is hearing things it shouldn't."""
+    if phase in _SL_CRITICAL:
+        return _SL_CRITICAL[phase]
+    stats = stats or {}
+    cands = []
+    if update_cmd:
+        cands.append(update_cmd)
+    drops = stats.get("drops", 0)
+    prompts = stats.get("prompts", 0)
+    if phase in ("listening", "hearing") and drops >= 3 and drops >= prompts:
+        cands.append('getting stray prompts? say "wake word mode" to only '
+                     'listen after "hey Claude"')
+    if not speed_changed:
+        cands.append('say "faster" / "slower", or tap F9 / F7, for speed')
+    cands += [
+        'say "stop listening" to mute  ·  ⌃⌥⌘X silences now',
+        '⌃⌥⌘Z stops Claude mid-answer',
+        'talk over a reply to interrupt and redirect it',
+    ]
+    return cands[n % len(cands)]
+
+
+def render_statusline(hud: dict, n: int = 0, stats: dict = None,
+                      update_cmd: str = "", speed_changed: bool = False) -> str:
+    """One clean line: `vb <state>  ·  <one recommendation>`. The update
+    prompt, when pending, is just one of the rotating recommendations rather
+    than a permanent prefix."""
     phase = hud.get("phase", "off")
     if phase not in _SL_LABEL:
         phase = "off"
-    hint = _SL_CRITICAL.get(phase) or _SL_TIPS[n % len(_SL_TIPS)]
-    alert = f"⬆ {update_cmd}  ·  " if update_cmd else ""
-    return f"vb {alert}{_SL_LABEL[phase]}  ·  {hint}"
+    hint = recommend(phase, n=n, stats=stats, update_cmd=update_cmd,
+                     speed_changed=speed_changed)
+    return f"vb {_SL_LABEL[phase]}  ·  {hint}"
 
 
 def read_hud() -> dict:
@@ -204,6 +225,38 @@ def read_hud() -> dict:
         return d
     except Exception:
         return {"phase": "off", "level": 0.0, "text": "", "ts": 0}
+
+
+STATS_FILE = STATE_DIR / "stats.json"
+
+
+def bump_stat(key: str, window: float = 600.0) -> None:
+    """Count a recent behaviour event (rolling ~10min window) for the status
+    line's recommendations, e.g. 'prompts' injected, 'drops' (stray captures),
+    'speed'. Best-effort; never raises."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            d = json.loads(STATS_FILE.read_text())
+            if time.time() - float(d.get("since", 0)) > window:
+                d = {"since": time.time()}
+        except Exception:
+            d = {"since": time.time()}
+        d[key] = int(d.get(key, 0)) + 1
+        STATS_FILE.write_text(json.dumps(d))
+    except Exception:
+        pass
+
+
+def get_stats(window: float = 600.0) -> dict:
+    """Recent behaviour counts, or {} if none/stale."""
+    try:
+        d = json.loads(STATS_FILE.read_text())
+        if time.time() - float(d.get("since", 0)) > window:
+            return {}
+        return d
+    except Exception:
+        return {}
 
 
 _FENCE = re.compile(r"```.*?```", re.DOTALL)

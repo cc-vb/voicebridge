@@ -504,7 +504,9 @@ def main(argv) -> int:
                 update_cmd = "update: /plugin marketplace update voicebridge"
         except Exception:
             pass
-        print(core.render_statusline(h, n=n, update_cmd=update_cmd))
+        stats = core.get_stats()
+        print(core.render_statusline(h, n=n, stats=stats, update_cmd=update_cmd,
+                                     speed_changed=bool(stats.get("speed"))))
 
     elif cmd == "statusline-install":
         # Opt-in: wire `vb statusline` into ~/.claude/settings.json without
