@@ -559,26 +559,33 @@ _TRAILING_INCOMPLETE = {
 
 def followup_window(text: str) -> float:
     """How long to keep the mic open for a continuation, judged from how
-    finished the words sound. Trailing conjunctions mean they're mid-thought."""
+    finished the words sound. Trailing conjunctions mean they're mid-thought.
+    Tightened per issue #2: the old 3.5s default was the common case (whisper
+    often drops terminal punctuation), so short commands paid the slow path."""
     t = text.rstrip()
     if not t:
-        return 3.5
-    if t.endswith((",", ";", ":", "-")):
-        return 6.0
-    lastword = t.strip(".!?, ").split()[-1].lower() if t.strip(".!?, ") else ""
-    if lastword in _TRAILING_INCOMPLETE:
-        return 6.0
+        return 0.8
+    # Finished punctuation wins first: "do it." is complete even though "it"
+    # is a trailing-incomplete word, so check terminal punctuation before the
+    # word list (that ordering bug made finished commands wait the long path).
     if t.endswith(("?", "!", ".")):
+        return 0.5
+    if t.endswith((",", ";", ":", "-")):
         return 2.0
-    return 3.5
+    lastword = t.split()[-1].lower().strip(".!?,")
+    if lastword in _TRAILING_INCOMPLETE:
+        return 2.0
+    return 0.8
 
 
 def get_pause() -> float:
-    """Seconds of silence that end an utterance (default 2.5)."""
+    """Seconds of silence that end an utterance (default 1.0). Stitching
+    repairs a mid-sentence breath, so a short pause stays coherent; slower
+    speakers can raise it with `vb pause`."""
     try:
-        return max(1.0, min(6.0, float(PAUSE.read_text().strip())))
+        return max(0.6, min(6.0, float(PAUSE.read_text().strip())))
     except Exception:
-        return 2.5
+        return 1.0
 
 
 def _stitch_more(wav: str, pause: float, so_far: str = "") -> str:
@@ -1004,18 +1011,19 @@ def run_daemon() -> int:
             _wait_for_silence()   # never record while ANY speech is playing
             if mode == "all" or in_follow:
                 _cue(START_TINK)   # wake mode listens silently (ambient)
-                time.sleep(0.35)
+                time.sleep(0.15)   # brief, just so the cue isn't recorded
             try:
                 os.remove(wav)
             except FileNotFoundError:
                 pass
+            t_rec = time.time()
             p = stt.record_start(wav, silence_stop=pause)
             if p is None:
                 time.sleep(1)
                 continue
             cut = False
             while p.poll() is None:
-                time.sleep(0.3)
+                time.sleep(0.15)
                 now_active = _read_json(ACTIVE)
                 switched = (not now_active
                             or now_active.get("session_id") != sid)
@@ -1042,7 +1050,10 @@ def run_daemon() -> int:
                     continue
             except OSError:
                 continue
+            _t0 = time.time()
             text, conf = stt.transcribe_ex(wav)
+            core.log(f"latency: capture+silence {_t0 - t_rec:.2f}s, "
+                     f"transcribe {time.time() - _t0:.2f}s -> {text[:40]!r}")
             why = screen_capture(text, conf, stt.loudness(wav), mode)
             if why:
                 if text:

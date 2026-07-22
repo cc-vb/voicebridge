@@ -108,11 +108,13 @@ def voice_for_lang(lang: str) -> str:
 
 
 def log(msg: str) -> None:
-    """Best-effort debug log; never raises."""
+    """Best-effort debug log; never raises. Timestamped so latency can be
+    read straight off the log (issue #2) instead of measured by hand."""
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%H:%M:%S") + f".{int((time.time() % 1) * 1000):03d}"
         with open(LOG_FILE, "a") as f:
-            f.write(msg.rstrip() + "\n")
+            f.write(f"{ts} {msg.rstrip()}\n")
     except Exception:
         pass
 
