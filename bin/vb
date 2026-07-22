@@ -416,6 +416,51 @@ def main(argv) -> int:
         else:
             _orb_show()
 
+    elif cmd == "meter":
+        # A LIVE, self-refreshing "am I listening?" meter for a second
+        # terminal tab / tmux split. Unlike the status line (which Claude Code
+        # only redraws on activity), this redraws itself ~15x/sec, so the bar
+        # actually moves up and down as you talk. Terminal-native, no popup.
+        import time as _t
+        WIDTH = 28
+        COL = {"listening": "39", "hearing": "46", "thinking": "214",
+               "speaking": "171", "wake": "244", "speakonly": "44",
+               "away": "244", "off": "240"}
+        NAME = {"listening": "LISTENING", "hearing": "HEARING",
+                "thinking": "TRANSCRIBING", "speaking": "SPEAKING",
+                "wake": "WAKE WORD", "speakonly": "READS REPLIES",
+                "away": "NOT FOCUSED", "off": "VOICE OFF"}
+        ICON = {"listening": "🎙", "hearing": "🎙", "thinking": "✍",
+                "speaking": "🔊", "wake": "💤", "speakonly": "🔉",
+                "away": "⏸", "off": "○"}
+        shown = 0.0
+        sys.stdout.write("\033[?25l")   # hide cursor
+        try:
+            while True:
+                h = core.read_hud()
+                ph = h.get("phase", "off")
+                if ph not in NAME:
+                    ph = "off"
+                target = float(h.get("level", 0.0))
+                if ph == "speaking":
+                    target = 0.55 + 0.45 * abs(((_t.time() * 2) % 2) - 1)
+                elif ph not in ("hearing", "listening"):
+                    target = 0.0
+                shown += (target - shown) * 0.4
+                fill = int(shown * WIDTH + 0.5)
+                bar = "█" * fill + "·" * (WIDTH - fill)
+                c = COL[ph]
+                line = (f"\r\033[K  \033[38;5;{c}m{ICON[ph]} {NAME[ph]:13}\033[0m "
+                        f"\033[38;5;{c}m{bar}\033[0m")
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                _t.sleep(0.066)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            sys.stdout.write("\033[?25h\n")   # restore cursor
+            sys.stdout.flush()
+
     elif cmd in ("statusline", "status-line"):
         # For Claude Code's statusLine setting: prints ONE compact line with
         # the live voice state, so the status shows right in the terminal
