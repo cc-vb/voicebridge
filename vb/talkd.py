@@ -953,6 +953,8 @@ def run_daemon() -> int:
     fleet_next = 0.0     # next fleet-check time
     first_fleet = True   # skip alerts on the very first scan (no baseline)
     unfocused_since = 0.0   # when the bound app lost focus (0.0 = focused)
+    listening_cued = False  # the "now listening" ding: once per turn, NOT
+    #                         every idle re-record (that was the ting-spam)
     while True:
         # Singleton: if another daemon claimed the pid file, this one exits.
         try:
@@ -1051,10 +1053,18 @@ def run_daemon() -> int:
                 core.log(f"talkd barge dropped ({why}): {text[:80]}")
                 continue
         else:
+            # A turn boundary is "speech just finished playing": after a reply
+            # or a spoken command response we re-arm the ding so it sounds ONCE
+            # as we start listening again. Idle re-records (you didn't talk)
+            # don't re-arm it, so there's no ting-ting-ting every second.
+            was_speaking = _any_speech_playing()
             _wait_for_silence()   # never record while ANY speech is playing
-            if mode == "all" or in_follow:
+            if was_speaking:
+                listening_cued = False
+            if (mode == "all" or in_follow) and not listening_cued:
                 _cue(START_TINK)   # wake mode listens silently (ambient)
                 time.sleep(0.15)   # brief, just so the cue isn't recorded
+                listening_cued = True
             try:
                 os.remove(wav)
             except FileNotFoundError:
@@ -1093,17 +1103,18 @@ def run_daemon() -> int:
                         if switched:
                             core.set_hud("away")
                         break
-            if mode == "all" or in_follow:
-                _cue(STOP_POP)
             if cut:
                 continue
 
             # 3) Handle speech: is this really the user talking to Claude?
             try:
                 if os.path.getsize(wav) < 2000:
-                    continue
+                    continue   # silence: no pop, no ting, stay quiet
             except OSError:
                 continue
+            # Real audio captured: a single pop confirms "got it, thinking".
+            if mode == "all" or in_follow:
+                _cue(STOP_POP)
             # Overlap (issue #2): transcribe what we just heard on a
             # background thread WHILE we hold the mic open for a possible
             # continuation. The mic is idle during that grace window anyway,
