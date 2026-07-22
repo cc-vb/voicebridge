@@ -171,6 +171,15 @@ def wake_match(text: str) -> "tuple[bool, str]":
     return True, m.group(1).strip()
 
 
+def _first_sentence(text: str, cap: int = 200) -> str:
+    """The first spoken sentence of a reply, for wake mode's short answers.
+    Strips markdown first, then returns up to the first ., !, or ?; falls back
+    to a hard cap so a run-on still stays about one line."""
+    clean = core.clean_for_speech(text, max_chars=max(cap, 400))
+    first = re.split(r"(?<=[.!?])\s+", clean, maxsplit=1)[0]
+    return first[:cap].strip()
+
+
 def _snapshot_wav(src: str, dst: str, min_s: float = 0.4) -> bool:
     """Write a valid WAV of the PCM captured in `src` so far (a growing 16k
     mono s16le sox recording), so we can transcribe WHILE recording, for early
@@ -1138,10 +1147,9 @@ def run_daemon() -> int:
                 if mode == "speak":
                     core.speak(text, blocking=True)   # no mic, no barge-in
                 else:
-                    # Wake mode is quick Q&A: speak only a short answer (the
-                    # full reply stays on screen). Agent mode reads it all.
-                    say_text = (core.clean_for_speech(text, max_chars=200)
-                                if mode == "wake" else text)
+                    # Wake mode is quick Q&A: speak just the first sentence
+                    # (the full reply stays on screen). Agent mode reads it all.
+                    say_text = _first_sentence(text) if mode == "wake" else text
                     barge = _speak_interruptible(say_text)  # must not loop it
                     if barge:
                         queued = barge  # talked over the reply; that's the prompt
@@ -1208,9 +1216,9 @@ def run_daemon() -> int:
                 # ding the INSTANT "hey Claude" is heard, while you keep
                 # talking, instead of after the whole sentence is captured.
                 if (mode == "wake" and not in_follow and not winked
-                        and time.time() - last_probe > 0.45):
+                        and time.time() - last_probe > 0.30):
                     last_probe = time.time()
-                    if _snapshot_wav(wav, wav_probe):
+                    if _snapshot_wav(wav, wav_probe, min_s=0.3):
                         ptxt, _pc = stt.transcribe_ex(wav_probe)
                         if ptxt and wake_match(ptxt)[0]:
                             _cue_event(START_TINK)   # heard it, right away
