@@ -1,7 +1,7 @@
 {
   "name": "voicebridge",
   "displayName": "voicebridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Talk to Claude Code like a teammate: hands-free voice conversations with your live session, on your Mac or from your phone. Local whisper STT + Kokoro neural TTS.",
   "author": {
     "name": "voicebridge",

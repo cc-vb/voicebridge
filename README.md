@@ -74,6 +74,15 @@ Speak. That's it.
 (Cloned directly instead of the plugin? Same commands without the
 `voicebridge:` prefix.)
 
+**Updating (important):** plugins do NOT auto-update, an install stays on
+its version until you refresh. To get the latest fixes:
+```
+/plugin marketplace update voicebridge
+/plugin install voicebridge@voicebridge
+```
+(Cloned directly? `cd ~/voicebridge && git pull`.) After updating, restart
+voice with `/voice-off-all` then `/voice-on` so the new code is running.
+
 **Or clone it directly:**
 
 ```bash
