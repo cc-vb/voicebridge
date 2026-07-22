@@ -462,10 +462,12 @@ def main(argv) -> int:
             sys.stdout.flush()
 
     elif cmd in ("statusline", "status-line"):
-        # For Claude Code's statusLine setting: prints ONE compact line with
-        # the live voice state, so the status shows right in the terminal
-        # (Mayank's request). Claude Code pipes session JSON on stdin; we
-        # ignore it and just report voicebridge's phase.
+        # For Claude Code's statusLine setting. Claude Code re-invokes this
+        # only on activity (measured ~once every few seconds), NOT
+        # continuously, so this can't animate. Instead it shows the current
+        # state, a contextual suggestion for that state, and an update alert
+        # when one is pending. The real-time "listening now" cue is the audio
+        # ding; this line is the glanceable "what mode am I in / what can I do".
         try:
             if not sys.stdin.isatty():
                 sys.stdin.read()
@@ -473,19 +475,28 @@ def main(argv) -> int:
             pass
         h = core.read_hud()
         phase = h.get("phase", "off")
-        bar = ""
-        if phase in ("hearing", "listening"):
-            lvl = float(h.get("level", 0.0))
-            blocks = "▁▂▃▄▅▆▇█"
-            n = min(len(blocks) - 1, int(lvl * (len(blocks) - 1) + 0.5))
-            bar = " " + blocks[n] if phase == "hearing" else ""
-        faces = {
-            "listening": "🎙 listening", "hearing": "🎙 hearing",
-            "thinking": "✍ transcribing", "speaking": "🔊 speaking",
-            "wake": "💤 wake-word", "speakonly": "🔉 reads replies",
-            "away": "⏸ not focused", "off": "○ voice off",
+        # state -> (label, hint the user can act on right now)
+        info = {
+            "listening": ("🎙 voice on", "just talk · say \"stop listening\" to mute"),
+            "hearing":   ("🎙 hearing you", "say \"stop listening\" to mute"),
+            "thinking":  ("✍ working", "one moment…"),
+            "speaking":  ("🔊 speaking", "say \"stop\" or ⌃⌥⌘X to cut in"),
+            "wake":      ("💤 wake-word", "say \"hey Claude …\" to talk"),
+            "speakonly": ("🔉 reads replies", "type, or press space to dictate"),
+            "away":      ("⏸ paused", "focus this window to resume"),
+            "off":       ("○ voice off", "/voice-agent to talk · /voice-on to just hear replies"),
         }
-        print(f"vb {faces.get(phase, faces['off'])}{bar}")
+        label, hint = info.get(phase, info["off"])
+        # Update alert: the running daemon fingerprints its code; if the repo
+        # has newer code than the daemon is running, prompt a quick restart.
+        alert = ""
+        try:
+            from vb import talkd as _td
+            if _td.VER.exists() and _td.VER.read_text().strip() != _td._code_version():
+                alert = "⬆ update ready: /voice-off then /voice-on  ·  "
+        except Exception:
+            pass
+        print(f"vb {alert}{label}  ·  {hint}")
 
     elif cmd == "statusline-install":
         # Opt-in: wire `vb statusline` into ~/.claude/settings.json without
