@@ -33,7 +33,40 @@ HINT = """\
 """
 
 
+def _auto_update() -> None:
+    """Clone installs self-update: a throttled, fast-forward-only git pull in
+    the background so pushes reach users without a manual step. Plugin
+    installs are version-pinned by the platform and skip this. Never blocks
+    the session; skips if the working tree has local changes."""
+    import subprocess
+    import time
+    if os.environ.get("VB_NO_AUTOUPDATE"):
+        return
+    repo = str(Path(__file__).resolve().parent.parent)
+    if not os.path.isdir(os.path.join(repo, ".git")):
+        return
+    stamp = core.STATE_DIR / "last_update_check"
+    try:
+        if time.time() - float(stamp.read_text().strip()) < 21600:  # 6h
+            return
+    except Exception:
+        pass
+    try:
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(time.time()))
+        # Only if clean; --ff-only so it can never create a merge/conflict.
+        subprocess.Popen(
+            ["bash", "-c",
+             f'cd "{repo}" && [ -z "$(git status --porcelain)" ] && '
+             f'git pull --ff-only >/dev/null 2>&1'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except Exception:
+        pass
+
+
 def main() -> int:
+    _auto_update()
     flag = core.STATE_DIR / "hint_shown"
     if flag.exists():
         return 0

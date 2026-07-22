@@ -728,6 +728,52 @@ def main(argv) -> int:
               "session (hook loads at startup); this session, just ask me to "
               "switch. The voice switches immediately.")
 
+    elif cmd == "update":
+        import os as _os
+        repo = str(Path(__file__).resolve().parent.parent)
+        if not _os.path.isdir(_os.path.join(repo, ".git")):
+            print("This is a plugin install (version-pinned). Update with:")
+            print("  /plugin marketplace update voicebridge")
+            print("  /plugin install voicebridge@voicebridge")
+            return 0
+        before = subprocess.run(["git", "-C", repo, "rev-parse", "--short",
+                                 "HEAD"], capture_output=True, text=True).stdout.strip()
+        r = subprocess.run(["git", "-C", repo, "pull", "--ff-only"],
+                           capture_output=True, text=True)
+        after = subprocess.run(["git", "-C", repo, "rev-parse", "--short",
+                                "HEAD"], capture_output=True, text=True).stdout.strip()
+        if r.returncode != 0:
+            print("update skipped (local changes or not fast-forward):")
+            print("  " + (r.stderr.strip().splitlines() or ["?"])[-1])
+            return 1
+        if before == after:
+            print(f"already up to date ({after})")
+            return 0
+        # refresh installed slash commands, then restart voice on new code
+        cmds = Path.home() / ".claude" / "commands"
+        cmds.mkdir(parents=True, exist_ok=True)
+        for src in (Path(repo) / "commands").glob("*.md"):
+            (cmds / src.name).write_text(src.read_text())
+        from vb import talkd as _td
+        _td.stop_daemon()
+        print(f"updated {before} -> {after}. Restart voice with /voice-on.")
+        return 0
+
+    elif cmd == "version":
+        import os as _os
+        repo = str(Path(__file__).resolve().parent.parent)
+        v = "?"
+        try:
+            import json as _j
+            v = _j.loads((Path(repo) / ".claude-plugin" /
+                          "plugin.json").read_text()).get("version", "?")
+        except Exception:
+            pass
+        head = subprocess.run(["git", "-C", repo, "rev-parse", "--short",
+                               "HEAD"], capture_output=True, text=True).stdout.strip()
+        print(f"voicebridge {v}" + (f" ({head})" if head else ""))
+        return 0
+
     elif cmd == "doctor":
         import json as _json
         import os as _os
