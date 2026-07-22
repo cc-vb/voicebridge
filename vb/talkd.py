@@ -537,6 +537,20 @@ def _cue_event(sound: str) -> None:
         _beep(sound)
 
 
+def should_ding(mode: str, in_follow: bool, armed: bool) -> bool:
+    """Whether to play the 'now listening' ding as we open the mic.
+
+    ONE ding per turn, never a ding-per-cycle. The caller keeps an `armed`
+    flag: it is True at startup and set True again ONLY after speech finishes
+    (a reply or spoken response). We ding once when armed and actually
+    listening, then the caller disarms. Idle re-records (no speech in between)
+    stay armed=False, so they are silent, that is the fix for the
+    ting-ting-ting. Wake mode's ambient listen never dings (it isn't 'all' and
+    isn't in the post-wake follow window); the wake-word match dings instead.
+    """
+    return armed and (mode == "all" or in_follow)
+
+
 SENS = STATE / "sens"
 
 # (min whisper confidence, min RMS loudness) per sensitivity level.
@@ -1004,8 +1018,8 @@ def run_daemon() -> int:
     fleet_next = 0.0     # next fleet-check time
     first_fleet = True   # skip alerts on the very first scan (no baseline)
     unfocused_since = 0.0   # when the bound app lost focus (0.0 = focused)
-    listening_cued = False  # the "now listening" ding: once per turn, NOT
-    #                         every idle re-record (that was the ting-spam)
+    cue_armed = True   # ding once when listening (re)starts for a turn; armed
+    #                    at boot and after each reply, never on idle re-records
     while True:
         # Singleton: if another daemon claimed the pid file, this one exits.
         try:
@@ -1094,6 +1108,7 @@ def run_daemon() -> int:
                         queued = barge  # talked over the reply; that's the prompt
                         break
             time.sleep(0.3)
+            cue_armed = True   # spoke a reply -> ding once when we next listen
             if not barge:
                 continue
 
@@ -1120,18 +1135,13 @@ def run_daemon() -> int:
                 core.log(f"talkd barge dropped ({why}): {text[:80]}")
                 continue
         else:
-            # A turn boundary is "speech just finished playing": after a reply
-            # or a spoken command response we re-arm the ding so it sounds ONCE
-            # as we start listening again. Idle re-records (you didn't talk)
-            # don't re-arm it, so there's no ting-ting-ting every second.
-            was_speaking = _any_speech_playing()
             _wait_for_silence()   # never record while ANY speech is playing
-            if was_speaking:
-                listening_cued = False
-            if (mode == "all" or in_follow) and not listening_cued:
+            # ONE ding as listening (re)starts, never per idle cycle. `armed`
+            # is set at boot and after each reply (below), and cleared here.
+            if should_ding(mode, in_follow, cue_armed):
                 _cue(START_TINK)   # wake mode listens silently (ambient)
                 time.sleep(0.15)   # brief, just so the cue isn't recorded
-                listening_cued = True
+                cue_armed = False
             try:
                 os.remove(wav)
             except FileNotFoundError:
@@ -1179,9 +1189,6 @@ def run_daemon() -> int:
                     continue   # silence: no pop, no ting, stay quiet
             except OSError:
                 continue
-            # Real audio captured: a single pop confirms "got it, thinking".
-            if mode == "all" or in_follow:
-                _cue(STOP_POP)
             # Overlap (issue #2): transcribe what we just heard on a
             # background thread WHILE we hold the mic open for a possible
             # continuation. The mic is idle during that grace window anyway,
