@@ -164,6 +164,9 @@ def read_hud() -> dict:
         return d
     except Exception:
         return {"phase": "off", "level": 0.0, "text": "", "ts": 0}
+
+
+_FENCE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _URL = re.compile(r"https?://\S+")
