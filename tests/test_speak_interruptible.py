@@ -58,6 +58,12 @@ def wired(tmp_path, monkeypatch):
     (tmp_path / "voiced").mkdir()
     monkeypatch.setattr(talkd, "BARGE", tmp_path / "barge")
     monkeypatch.setattr(talkd, "SENS", tmp_path / "sens")
+    # APP is computed from the real state dir at import, so without this the
+    # loop reads ~/.voicebridge/talk/app and calls the real frontmost-app
+    # check: if a bound app exists and this process isn't it, the barge loop
+    # breaks early and the test flakes. Point it at the (absent) tmp file so
+    # bound_app() is "" (unbound) and the focus gate stays out of the way.
+    monkeypatch.setattr(talkd, "APP", tmp_path / "app")
 
     monkeypatch.setattr(core, "clean_for_speech", lambda t, max_chars=0: t)
     monkeypatch.setattr(core, "_recently_spoken", lambda t: False)

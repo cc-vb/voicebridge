@@ -49,9 +49,12 @@ def test_unbound_falls_back_to_legacy_always_on(isolated_state):
     assert talkd.app_focused("Google Chrome", "") is True
 
 
-def test_undetectable_frontmost_does_not_deadlock_the_mic(isolated_state):
-    """osascript can fail; failing closed forever would look like a hang."""
-    assert talkd.app_focused("", "Ghostty") is True
+def test_undetectable_frontmost_fails_closed_for_isolation(isolated_state):
+    """Bound, but we can't see the frontmost app (screen locked, or switched
+    to another macOS user): stop. Voice must never carry over to a switched
+    user, so we fail CLOSED here even though it means going quiet when
+    osascript can't answer. (Unbound still falls back to always-on above.)"""
+    assert talkd.app_focused("", "Ghostty") is False
 
 
 # ---------- binding ----------------------------------------------------------
