@@ -354,9 +354,44 @@ def daemon_alive() -> bool:
         return False
 
 
+def _daemon_pids() -> list:
+    # Only THIS user's daemons: another account's voicebridge (separate home
+    # + state) is a different install we can't and shouldn't touch.
+    r = subprocess.run(["pgrep", "-U", str(os.getuid()),
+                        "-f", "vb talkd __run__"],
+                       capture_output=True, text=True)
+    return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+
+
+def _kill_all_daemons(keep: int = 0) -> None:
+    """Kill every talkd daemon (optionally keeping one pid). Orphans from
+    earlier runs otherwise survive restarts and cause double-voice. Escalate
+    to SIGKILL: a daemon blocked in a subprocess (recording/speaking) soaks
+    SIGTERM, so plain terminate leaves zombies that keep listening."""
+    import signal
+    for pid in _daemon_pids():
+        if pid == keep or pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+    time.sleep(0.3)
+    for pid in _daemon_pids():
+        if pid == keep or pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)   # force , it ignored SIGTERM
+        except Exception:
+            pass
+
+
 def ensure_daemon() -> None:
     if daemon_alive():
+        # A valid daemon owns the pid file; kill any OTHER (orphan) daemons.
+        _kill_all_daemons(keep=int(PID.read_text().strip()))
         return
+    _kill_all_daemons()   # clear any orphan before starting a fresh one
     STATE.mkdir(parents=True, exist_ok=True)
     vb = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "bin", "vb")
@@ -367,10 +402,7 @@ def ensure_daemon() -> None:
 
 
 def stop_daemon() -> None:
-    try:
-        os.kill(int(PID.read_text().strip()), 15)
-    except Exception:
-        pass
+    _kill_all_daemons()
     try:
         PID.unlink()
     except FileNotFoundError:
@@ -817,8 +849,26 @@ def _wait_for_silence(max_wait: float = 60.0) -> None:
     time.sleep(0.3)   # let speaker audio settle before the mic opens
 
 
+def _cleanup_temp() -> None:
+    """Delete audio scratch files older than an hour so they don't pile up."""
+    import glob
+    now = time.time()
+    roots = [str(core.STATE_DIR), str(core.STATE_DIR / "vm-tmp"),
+             str(core.STATE_DIR / "remote-tmp"),
+             str(core.STATE_DIR / "telegram" / "tmp")]
+    for r in roots:
+        for ext in ("*.wav", "*.aiff", "*.ogg", "*.oga"):
+            for f in glob.glob(os.path.join(r, ext)):
+                try:
+                    if now - os.path.getmtime(f) > 3600:
+                        os.remove(f)
+                except OSError:
+                    pass
+
+
 def run_daemon() -> int:
     core.log(f"talkd: started (pid {os.getpid()})")
+    _cleanup_temp()
     try:
         PID.write_text(str(os.getpid()))   # claim singleton ownership
     except Exception:

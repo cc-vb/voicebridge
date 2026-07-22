@@ -157,8 +157,18 @@ def run_daemon() -> int:
     first = _tg("getUpdates", {"timeout": 0, "offset": -1})
     if first.get("result"):
         offset = first["result"][-1]["update_id"] + 1
+    fails = 0
     while True:
         res = _tg("getUpdates", {"timeout": 25, "offset": offset}, timeout=35)
+        if not res or res.get("ok") is False or "result" not in res:
+            # Network hiccup / no connection. Back off and stay quiet, one
+            # log line per 10 consecutive failures instead of spamming.
+            fails += 1
+            if fails % 10 == 1:
+                core.log(f"remote: getUpdates unavailable (x{fails}), backing off")
+            time.sleep(min(30, 2 * fails))
+            continue
+        fails = 0
         for u in res.get("result") or []:
             offset = u["update_id"] + 1
             msg = u.get("message") or {}
