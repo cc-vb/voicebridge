@@ -170,6 +170,39 @@ def wake_match(text: str) -> "tuple[bool, str]":
         return False, ""
     return True, m.group(1).strip()
 
+
+def _snapshot_wav(src: str, dst: str, min_s: float = 0.4) -> bool:
+    """Write a valid WAV of the PCM captured in `src` so far (a growing 16k
+    mono s16le sox recording), so we can transcribe WHILE recording, for early
+    wake-word detection. Returns False if there isn't enough audio yet."""
+    import wave
+    try:
+        with open(src, "rb") as f:
+            f.seek(44)   # past the standard sox WAV header
+            data = f.read()
+        data = data[:len(data) - (len(data) % 2)]
+        if len(data) < int(16000 * 2 * min_s):
+            return False
+        with wave.open(dst, "wb") as o:
+            o.setnchannels(1)
+            o.setsampwidth(2)
+            o.setframerate(16000)
+            o.writeframes(data)
+        return True
+    except Exception:
+        return False
+
+
+def wake_accept(text: str, why: str, winked: bool) -> bool:
+    """In wake mode, whether to accept a capture the normal gate wanted to
+    drop. Short wake phrases often score low on confidence/loudness, so if the
+    capture is NOT noise/echo and either the wake word is present or we already
+    dinged on it mid-recording (`winked`), take it. Genuine noise/echo (dropped
+    upstream) never reaches here."""
+    if why in ("noise", "echo", "assistant-echo", ""):
+        return why == ""   # "" means it already passed; noise/echo stays dropped
+    return winked or wake_match(text)[0]
+
 # Whisper renders non-speech as bracketed/parenthesized tags: "(air
 # whooshing)", "[BLANK_AUDIO]", "(wind blowing)". Never treat those as words.
 NOISE_RE = re.compile(r"^[\s\(\[][^\)\]]*[\)\]][.!\s]*$|^[\s.,!?]*$")
@@ -1011,6 +1044,7 @@ def run_daemon() -> int:
     wav = str(STATE / "talkd.wav")
     wav2 = str(STATE / "talkd_cont.wav")   # continuation, recorded while
     #                                        the main capture transcribes
+    wav_probe = str(STATE / "talkd_probe.wav")   # partial, for early wake ding
     prev: dict = {}
     announced: set = set()
     follow_until = 0.0   # wake mode: window after "hey Claude" alone
@@ -1104,7 +1138,11 @@ def run_daemon() -> int:
                 if mode == "speak":
                     core.speak(text, blocking=True)   # no mic, no barge-in
                 else:
-                    barge = _speak_interruptible(text)   # reply must not loop it
+                    # Wake mode is quick Q&A: speak only a short answer (the
+                    # full reply stays on screen). Agent mode reads it all.
+                    say_text = (core.clean_for_speech(text, max_chars=200)
+                                if mode == "wake" else text)
+                    barge = _speak_interruptible(say_text)  # must not loop it
                     if barge:
                         queued = barge  # talked over the reply; that's the prompt
                         break
@@ -1125,6 +1163,7 @@ def run_daemon() -> int:
         pause = get_pause()
         in_follow = time.time() < follow_until
         first_more = ""   # continuation captured during the overlapped listen
+        winked = False    # dinged early on the wake word (wake mode)
         if queued:
             # A barge-in was captured while we spoke. It cleared the barge
             # bar, but it still has to clear the injection bar: conf/loudness
@@ -1155,6 +1194,7 @@ def run_daemon() -> int:
                 time.sleep(1)
                 continue
             cut = False
+            last_probe = 0.0     # throttle for the mid-recording wake probe
             while p.poll() is None:
                 time.sleep(0.15)
                 # Live mic meter: once your voice registers, the indicator
@@ -1164,6 +1204,17 @@ def run_daemon() -> int:
                 core.set_hud("hearing" if lvl > 0.12 else
                              ("wake" if (mode == "wake" and not in_follow)
                               else "listening"), level=lvl)
+                # Wake mode: transcribe the partial recording every ~0.45s and
+                # ding the INSTANT "hey Claude" is heard, while you keep
+                # talking, instead of after the whole sentence is captured.
+                if (mode == "wake" and not in_follow and not winked
+                        and time.time() - last_probe > 0.45):
+                    last_probe = time.time()
+                    if _snapshot_wav(wav, wav_probe):
+                        ptxt, _pc = stt.transcribe_ex(wav_probe)
+                        if ptxt and wake_match(ptxt)[0]:
+                            _cue_event(START_TINK)   # heard it, right away
+                            winked = True
                 now_active = _read_json(ACTIVE)
                 switched = (not now_active
                             or now_active.get("session_id") != sid)
@@ -1208,7 +1259,10 @@ def run_daemon() -> int:
                      f"transcribe+listen {time.time() - _t0:.2f}s -> "
                      f"{text[:40]!r}")
             why = screen_capture(text, conf, stt.loudness(wav), mode)
-            if why:
+            # In wake mode, don't let a low confidence/loudness score drop a
+            # capture that's actually addressed to the wake word (short "hey
+            # Claude" phrases score low); noise/echo are still dropped.
+            if why and not (mode == "wake" and wake_accept(text, why, winked)):
                 if text:
                     core.log(f"talkd dropped ({why}): {text[:80]}")
                     core.bump_stat("drops")   # stray audio -> may suggest wake
@@ -1264,9 +1318,11 @@ def run_daemon() -> int:
         # Wake mode: ignore everything not addressed to the wake word.
         if mode == "wake" and not in_follow:
             addressed, prompt = wake_match(text)
-            if not addressed:
+            if not (addressed or winked):
                 continue   # ambient chatter, drop silently
-            _cue_event(START_TINK)   # heard the wake word, you know it's live
+            if not winked:
+                _cue_event(START_TINK)   # ding now if we didn't already do it
+                #                          the instant we heard it mid-recording
             if not prompt:
                 core.speak("Yes?", blocking=True)
                 follow_until = time.time() + 12   # next utterance is the prompt
