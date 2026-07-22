@@ -79,7 +79,22 @@ class Orb:
             w.bind("<B1-Motion>", self._move)
             w.bind("<Double-Button-1>", lambda e: root.destroy())
         root.bind("<Escape>", lambda e: root.destroy())
+        # macOS: a borderless top-most window often won't draw or come to
+        # front on its own. Force it visible and above everything.
+        self._raise()
         self.tick()
+
+    def _raise(self):
+        try:
+            self.root.deiconify()
+            self.root.update_idletasks()
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+            # briefly grab focus so the window server actually maps it
+            self.root.focus_force()
+            self.root.update()
+        except Exception:
+            pass
 
     def _press(self, e):
         self._drag = (e.x_root - self.root.winfo_x(),
@@ -90,6 +105,21 @@ class Orb:
                            f"+{e.y_root - self._drag[1]}")
 
     def tick(self):
+        try:
+            self._tick()
+        except Exception:
+            pass   # a transient read/draw error must never freeze the orb
+        # keep it above other windows (macOS drops topmost after focus changes)
+        self._frames = getattr(self, "_frames", 0) + 1
+        if self._frames % 40 == 0:
+            try:
+                self.root.lift()
+                self.root.attributes("-topmost", True)
+            except Exception:
+                pass
+        self.root.after(50, self.tick)
+
+    def _tick(self):
         h = core.read_hud()
         phase = h.get("phase", "off")
         if phase not in STYLE:
@@ -132,7 +162,6 @@ class Orb:
                            fill=_blend(col, "#ffffff", 0.28))
         self.c.create_text(CENTER, SIZE - 16, text=label, fill="#e5e7eb",
                            font=("Helvetica", 11, "bold"))
-        self.root.after(50, self.tick)
 
 
 def main():
