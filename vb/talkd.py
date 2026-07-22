@@ -59,10 +59,15 @@ def bound_app() -> str:
 def app_focused(frontmost: str, bound: str) -> bool:
     """May we record and inject right now?
 
-    Unbound (upgrade from an older version, or an undetectable app) falls
-    back to the previous always-on behaviour rather than going mute."""
-    if not bound or not frontmost:
+    Voice belongs to the window you turned it on in. If we're bound to an
+    app and it isn't the frontmost one, stop. If we're bound but CAN'T see
+    the frontmost app (screen locked, switched to another macOS user), also
+    stop: fail closed, so voice never carries over to a switched user.
+    Only when unbound (old version) do we fall back to always-on."""
+    if not bound:
         return True
+    if not frontmost:
+        return False   # bound but can't confirm our app is front -> stop
     return frontmost.strip().casefold() == bound.casefold()
 
 
@@ -775,17 +780,28 @@ def _speak_interruptible(text: str) -> str:
     if say is None:
         return ""
     if get_barge() != "on":
-        # Voice barge-in disabled (default): play the reply out; it stays
-        # interruptible by a typed prompt (hook hush) or the hotkey.
+        # Voice barge-in disabled (default): play the reply out, but stop the
+        # instant you switch away from the bound window (don't keep talking
+        # into another app/user), and stay interruptible by typing/the hotkey.
+        bound = bound_app()
         try:
+            while say.poll() is None:
+                time.sleep(0.25)
+                if bound and not app_focused(inject.frontmost_app(), bound):
+                    core.hush()
+                    break
             say.wait()
         except Exception:
             pass
         return ""
     wav = str(STATE / "barge.wav")
     barge = ""
+    bound = bound_app()
     try:
         while say.poll() is None:
+            if bound and not app_focused(inject.frontmost_app(), bound):
+                core.hush()   # switched away mid-reply -> stop speaking
+                break
             try:
                 os.remove(wav)
             except FileNotFoundError:
@@ -913,7 +929,9 @@ def run_daemon() -> int:
         if not focused:
             if not unfocused_since:
                 unfocused_since = time.time()
-                core.log(f"talkd: {bound} not frontmost, mic released")
+                core.hush()   # switched away -> stop speaking, not just listening
+                core.log(f"talkd: {bound} not frontmost, voice paused "
+                         "(silence + mic released)")
             time.sleep(1.0)
             continue
         if unfocused_since:
