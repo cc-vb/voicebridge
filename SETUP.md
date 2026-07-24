@@ -61,7 +61,7 @@ F9  /  Cmd + Alt + Ctrl + F   speak faster (+0.25x)
 F7  /  Cmd + Alt + Ctrl + S   speak slower (-0.25x)
 ```
 
-Both pairs run `vb faster` / `vb slower` (0.5x to 2.5x). Plain **F9/F7 only
+Both pairs run `vb faster` / `vb slower` (0.5x to 2x). Plain **F9/F7 only
 reach skhd if the keyboard is in "standard function keys" mode** — otherwise
 macOS consumes them as media keys and you must press **Fn+F9**. Turn the mode
 on in System Settings -> Keyboard -> "Use F1, F2, etc. keys as standard

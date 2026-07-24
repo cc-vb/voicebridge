@@ -808,30 +808,50 @@ def main(argv) -> int:
         # Podcast-style multiplier (1x, 1.5x, 2x). Reuses the rate plumbing:
         # effective wpm = 175 * multiplier, which both say and Kokoro honor.
         base = 175.0
+        lo, hi = core.MIN_SPEED, core.MAX_SPEED
         if rest:
             try:
-                x = float(rest[0].rstrip("xX"))
+                asked = float(rest[0].rstrip("xX"))
             except ValueError:
-                x = 1.0
-            x = max(0.5, min(2.5, x))
+                asked = 1.0
+            x = max(lo, min(hi, asked))
             core.STATE_DIR.mkdir(parents=True, exist_ok=True)
             core.RATE_FILE.write_text(str(int(round(base * x))))
-            print(f"speed: {x:g}x  ({core.get_rate()} wpm)")
-            core.speak(f"This is {x:g} times speed.")
+            # Always report the speed the engine will really use, never the
+            # number that was typed -- they differ once a clamp or the wpm
+            # rounding bites, and a wrong figure here is worse than none.
+            got = int(core.get_rate()) / base
+            if asked > hi:
+                note = f"   asked {asked:g}x, capped at the {hi:g}x engine max"
+            elif asked < lo:
+                note = f"   asked {asked:g}x, raised to the {lo:g}x minimum"
+            else:
+                note = ""
+            print(f"speed: {got:.2f}x  ({core.get_rate()} wpm){note}")
+            core.speak(f"This is {got:.2f} times speed.")
         else:
-            x = int(core.get_rate()) / base
-            print(f"speed: {x:.2g}x  ({core.get_rate()} wpm)")
-            print("set: vb speed 1.5   (0.5x to 2.5x; or say 'speak faster')")
+            got = int(core.get_rate()) / base
+            print(f"speed: {got:.2f}x  ({core.get_rate()} wpm)")
+            print(f"set: vb speed 1.5   ({lo:g}x to {hi:g}x, the Kokoro "
+                  "engine limit; or say 'speak faster')")
 
     elif cmd in ("faster", "slower"):
         # Nudge speed by 0.25x. Meant for a hotkey (F9 faster / F7 slower).
         base = 175.0
+        lo, hi = core.MIN_SPEED, core.MAX_SPEED
         cur = int(core.get_rate()) / base
-        x = max(0.5, min(2.5, cur + (0.25 if cmd == "faster" else -0.25)))
+        step = 0.25 if cmd == "faster" else -0.25
+        # Snap to the 0.25 grid: wpm is stored as a whole number, so without
+        # this each nudge inherits the last one's rounding error and you
+        # drift (1.00143x after a round trip).
+        x = max(lo, min(hi, round((cur + step) * 4) / 4))
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
         core.RATE_FILE.write_text(str(int(round(base * x))))
-        print(f"speed: {x:g}x")
-        core.speak(f"{x:g} times speed.")
+        got = int(core.get_rate()) / base
+        edge = "   (engine max)" if x >= hi else (
+               "   (minimum)" if x <= lo else "")
+        print(f"speed: {got:.2f}x  ({core.get_rate()} wpm){edge}")
+        core.speak(f"{got:.2f} times speed.")
 
     elif cmd == "rate":
         if not rest:

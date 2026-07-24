@@ -500,6 +500,11 @@ ENGINE_FILE = STATE_DIR / "engine"     # "say" (default) | "kokoro"
 SPEECH_PID = STATE_DIR / "speech.pid"  # pid of the current speech player
 KOKORO_PORT = int(os.environ.get("VB_TTS_PORT", "8798"))
 _KOKORO_VOICE_RE = re.compile(r"^[a-z]{2}_[a-z]+$")
+# Kokoro's own limits, verbatim from its error: "Speed should be between
+# 0.5 and 2.0". Asking for more returns no audio at all, so these are the
+# real numbers everything else must agree with.
+MIN_SPEED = 0.5
+MAX_SPEED = 2.0
 
 
 def get_engine() -> str:
@@ -554,7 +559,7 @@ def _kokoro_wav(text: str, out: str = "") -> str:
     if not _KOKORO_VOICE_RE.match(voice or ""):
         voice = "af_heart"
     try:
-        speed = max(0.6, min(1.6, float(get_rate()) / 175.0))
+        speed = max(MIN_SPEED, min(MAX_SPEED, float(get_rate()) / 175.0))
     except ValueError:
         speed = 1.0
     payload = json.dumps({"text": text, "voice": voice, "speed": speed})

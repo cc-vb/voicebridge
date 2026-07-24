@@ -121,10 +121,13 @@ NORMAL_SPEED_RE = re.compile(r"^\s*(normal|regular|default) speed[.!\s]*$",
 
 def _adjust_speed(delta: float = 0.0, absolute: float = 0.0) -> str:
     cur = int(core.get_rate()) / 175.0
-    x = absolute if absolute else max(0.5, min(2.5, cur + delta))
+    x = max(core.MIN_SPEED,
+            min(core.MAX_SPEED, absolute if absolute else cur + delta))
     core.RATE_FILE.write_text(str(int(round(175.0 * x))))
     core.bump_stat("speed")   # user knows speed control; stop suggesting it
-    return f"{x:g} times speed"
+    # Read back what was stored, so the spoken confirmation matches the
+    # speed actually in effect rather than the requested one.
+    return f"{int(core.get_rate()) / 175.0:.2f} times speed"
 
 
 def alerts_on() -> bool:

@@ -28,7 +28,8 @@ voice services, no per-minute fees.
   its Esc to stop generating, not just muting audio.
 - **Natural voice**: Kokoro neural TTS (54 voices, on-CPU, Apache),
   streamed so it starts speaking in ~0.4s, with macOS `say` as fallback.
-  Podcast-style speed: `vb speed 1.5` (0.5x-2.5x), or say "speak faster".
+  Podcast-style speed: `vb speed 1.5` (0.5x-2x, the Kokoro engine's own
+  limit), or say "speak faster".
 - **Phone, free**: `vb phone` prints a QR , scan it, tap Start, talk from
   anywhere. Plus a Telegram bridge (`vb remote on`) for voice notes.
 - **Smart listening**: thinking-pauses don't split your prompt, background
