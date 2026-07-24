@@ -2521,6 +2521,14 @@ class Handler(BaseHTTPRequestHandler):
                 fd, tmp = tempfile.mkstemp(suffix=".wav")
                 os.close(fd)
                 wav = core._kokoro_wav(text[:600], out=tmp)
+                if wav != tmp:
+                    # mkstemp already created the file, so a synthesis that
+                    # fails (or writes elsewhere) leaves it behind: one empty
+                    # file per failed chunk, and the page retries per chunk.
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
             if wav:
                 try:
                     with open(wav, "rb") as f:
