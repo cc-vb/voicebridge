@@ -1220,6 +1220,11 @@ def run_daemon() -> int:
                 continue
             cut = False
             last_probe = 0.0     # throttle for the mid-recording wake probe
+            try:
+                last_tsize = os.path.getsize(tp)   # transcript size, to detect
+            except OSError:                         # a new reply without a full
+                last_tsize = -1                     # re-parse every poll
+
             # Only probe mid-recording when the warm STT server is up: the CLI
             # fallback takes ~2s and would block this loop (stalling the meter
             # and end-of-speech detection). Checked once per capture, not per
@@ -1248,8 +1253,19 @@ def run_daemon() -> int:
                 now_active = _read_json(ACTIVE)
                 switched = (not now_active
                             or now_active.get("session_id") != sid)
-                newreply = bool(core.assistant_replies_after(tp,
-                                                            prev.get(tp, "")))
+                # Only re-parse the transcript when the FILE actually grew.
+                # Parsing the whole JSONL every 0.15s starved this loop on
+                # long (multi-MB) sessions; a stat() is ~free and a reply can't
+                # land without the file growing.
+                newreply = False
+                try:
+                    tsize = os.path.getsize(tp)
+                except OSError:
+                    tsize = last_tsize
+                if tsize != last_tsize:
+                    last_tsize = tsize
+                    newreply = bool(core.assistant_replies_after(
+                        tp, prev.get(tp, "")))
                 if switched or newreply:
                     try:
                         size = os.path.getsize(wav)

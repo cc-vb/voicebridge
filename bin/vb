@@ -589,6 +589,23 @@ def main(argv) -> int:
         # Pause/resume, as opposed to hush, which ends the reply for good.
         print(core.hold())
 
+    elif cmd == "repeat":
+        # Re-speak the last reply. Keyboard recovery for "I missed that",
+        # and the only recovery that works in speak-only mode (no mic to say
+        # "again"). Bound to a hotkey; also usable as `vb repeat`.
+        import json as _json
+        try:
+            d = _json.loads((core.STATE_DIR / "last_spoken_text").read_text())
+            t = (d.get("text") or "").strip()
+        except Exception:
+            t = ""
+        if t:
+            core.hush()
+            core.speak(t)
+            print("repeating the last reply")
+        else:
+            print("nothing spoken yet to repeat")
+
     elif cmd == "stop":
         # Real interrupt: silence the voice AND send Esc to the session so
         # Claude stops generating (its own stop key), not just pkill say.

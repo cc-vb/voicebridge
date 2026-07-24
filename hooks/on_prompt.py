@@ -39,16 +39,98 @@ TONE = ("[voicebridge] Keep replies in a warm, natural, spoken "
         "and end with a short follow-up question when it fits. Style note for "
         "prose only; do not let it change code, commands, or file contents.")
 
-# Rotating discovery hints for the gray hook line (shown only while voiced).
-# A different one each prompt, so shortcuts get discovered without nagging.
-_TIPS = [
-    'silence me: Ctrl+Alt+Cmd+X  ·  or just start typing',
-    'say "faster" or "slower" (or tap F9 / F7) to change my pace',
-    'say "wake word mode" so I only listen after "hey Claude"',
-    'talk over me to interrupt and redirect',
-    'say "stop listening" to mute  ·  /voice-off to end',
-    'Ctrl+Alt+Cmd+Z stops me mid-answer',
+# --- the gray "voice on" line: a DECAYING TUTOR (shown only while voiced) ---
+# A fixed intro sequence teaches the essentials over the first prompts, then a
+# rotation surfaces the rest, retiring each tip once you've clearly learned it
+# (inferred from your own settings) or after a small show-cap. Context lines
+# (update ready, a cut-off reply) preempt everything. When there's nothing
+# useful left to say it falls silent, so a fluent user just sees "voice on".
+import json  # noqa: E402
+
+TEACH_DIR = core.STATE_DIR / "teach"
+SHOWN = TEACH_DIR / "shown.json"
+
+_INTRO = [
+    'silence me anytime with Ctrl+Alt+Cmd+X, or just start typing',
+    'Fn+F8 (or Ctrl+Alt+Cmd+H) pauses me mid-word; press again to resume',
+    'too fast or slow? tap Fn+F9 / Fn+F7 while I talk (or say "faster")',
+    'others nearby? say "wake word mode" so I only reply after "hey Claude"',
+    'talk to this session from your phone: run  vb phone  and scan the QR',
 ]
+
+
+def _safe(fn, default=""):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+# (id, text, learned? -> retire when True, max shows)
+def _pool():
+    from vb import talkd as _td
+    return [
+        ("speed", 'say "faster"/"slower", or tap Fn+F9 / Fn+F7 anytime',
+         lambda: _safe(core.get_rate) not in ("", "175"), 3),
+        ("wake", 'say "wake word mode" so I only reply after "hey Claude"',
+         lambda: _safe(_td.get_mode) == "wake", 3),
+        ("barge", 'talk over me to interrupt and redirect (agent mode)',
+         lambda: False, 2),
+        ("stopgen", 'Ctrl+Alt+Cmd+Z silences me AND stops Claude mid-answer',
+         lambda: False, 2),
+        ("engine", 'want a nicer neural voice? run  vb engine kokoro',
+         lambda: _safe(core.get_engine) == "kokoro", 2),
+        ("voice", 'change my voice with  vb voice  (dozens of options)',
+         lambda: False, 1),
+        ("off", 'say "stop listening" to mute, or /voice-off to end',
+         lambda: False, 2),
+    ]
+
+
+def _teach_line() -> str:
+    """One line of teaching for the gray hook area, or '' to stay quiet."""
+    # Context triggers preempt the tutor (rare, actionable, self-clearing).
+    try:
+        from vb import talkd as _td
+        repo = Path(__file__).resolve().parent.parent
+        if ((repo / ".git").is_dir() and _td.VER.exists()
+                and _td.VER.read_text().strip() != _td._code_version()):
+            return "update ready: run /voice-off then /voice-on for the latest"
+    except Exception:
+        pass
+    if core.REMAINDER.exists():
+        return 'that was cut short, say "continue" (or run vb continue) for the rest'
+    try:
+        shown = json.loads(SHOWN.read_text())
+    except Exception:
+        shown = {}
+
+    def save():
+        try:
+            TEACH_DIR.mkdir(parents=True, exist_ok=True)
+            SHOWN.write_text(json.dumps(shown))
+        except Exception:
+            pass
+
+    # Intro sequence: one essential per prompt, in order.
+    i = shown.get("_intro", 0)
+    if i < len(_INTRO):
+        shown["_intro"] = i + 1
+        save()
+        return _INTRO[i]
+    # Steady state: show the least-shown tip that's neither learned nor capped.
+    elig = []
+    for tid, text, learned, cap in _pool():
+        if _safe(learned, False) or shown.get(tid, 0) >= cap:
+            continue
+        elig.append((shown.get(tid, 0), tid, text))
+    if not elig:
+        return ""   # fully learned -> fall silent
+    elig.sort(key=lambda e: e[0])
+    _, tid, text = elig[0]
+    shown[tid] = shown.get(tid, 0) + 1
+    save()
+    return text
 
 
 def main() -> int:
@@ -89,16 +171,11 @@ def main() -> int:
     # a non-voice session never sees it.
     try:
         if voiced:
-            nf = core.STATE_DIR / "hooktip_n"
-            try:
-                n = int(nf.read_text().strip()) + 1
-            except Exception:
-                n = 0
-            try:
-                nf.write_text(str(n))
-            except Exception:
-                pass
-            print(f"[voicebridge] \U0001f399 voice on · {_TIPS[n % len(_TIPS)]}")
+            line = _teach_line()
+            if line:
+                print(f"[voicebridge] \U0001f399 voice on · {line}")
+            else:
+                print("[voicebridge] \U0001f399 voice on")
     except Exception:
         pass
     return 0

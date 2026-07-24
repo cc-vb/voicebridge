@@ -150,6 +150,8 @@ if brew list skhd >/dev/null 2>&1 || brew install koekeishiya/formulae/skhd; the
   add_key "cmd + alt + ctrl - f" faster "speak faster (works without Fn)"
   add_key "cmd + alt + ctrl - s" slower "speak slower (works without Fn)"
   add_key "cmd + alt + ctrl - h" hold   "pause/resume (works without Fn)"
+  add_key "f6"                   repeat "re-speak the last reply"
+  add_key "cmd + alt + ctrl - r" repeat "re-speak the last reply (no Fn)"
   # Deliberately not `skhd --start-service`: that leaves a keyboard hook
   # running at login forever for a key that only matters while we speak.
   # voice-on starts skhd, voice-off stops it.
