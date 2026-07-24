@@ -193,30 +193,46 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
-  voicebridge call page v2. Drop-in replacement for PAGE in vb/call.py.
-  IMPORTANT when embedding: assign it to PAGE as a RAW triple-quoted string
-  (r prefix) so the regex backslashes below survive Python escaping.
+  voicebridge call page v3. Drop-in replacement for PAGE in vb/call.py.
+  Embed as a RAW string (r prefix) so regex backslashes survive. This file
+  contains no triple double-quote sequence anywhere, so it is safe inside
+  a Python raw triple-quoted string.
 
-  Backend contract used (unchanged from v1):
-    GET  /              serves this page (401 unless ?k=SECRET or no secret set)
-    POST /ask?k=SECRET  body {"text": "..."} returns {"reply": "..."}
-    POST /stt?k=SECRET  body audio blob (webm/mp4) returns {"text": "..."}
-    GET  /manifest.json and /icon.svg still exist server-side; this page also
-         injects its own data-URI manifest so Add to Home Screen keeps the
-         ?k= secret in start_url (the server manifest's start_url "/" drops it).
+  Endpoint contract used (every call carries ?k=SECRET):
+    GET  /            serves this page (401 recovery page without a valid k)
+    POST /ask         body {"text":"..."} returns {"reply":"..."}. The server
+                      may block up to ~90s and answer with a timeout phrase
+                      ("Still working on that..."); the page treats that as
+                      "turn still in progress" and keeps polling /poll.
+    GET  /poll        {"reply":"<latest cleaned reply of the active session>"}
+                      Snapshot, no injection. The page records this BEFORE an
+                      ask and polls until the text changes, then speaks it.
+    GET  /status      {"pending":"<question>"} empty string when Claude is not
+                      blocked on a permission decision. Polled ~4s while a turn
+                      is working, ~8s while idle on a live call. Non-empty:
+                      speak it and show the YES / NO pair (each sends POST /ask
+                      with text "yes" or "no", the permission relay).
+    GET  /sessions    {"sessions":[{"id","name","state","current",
+                      "pending":bool}]}. Control room roster. Polled ~8s while
+                      the sheet is open, ~20s in the background of a live call.
+    GET  /last?q=NAME {"reply":"..."} latest reply of the named session,
+                      spoken WITHOUT switching the call.
+    POST /switch      body {"id":"..."} repoints the call at that session.
+    GET  /chat        {"turns":[{"role":"user"|"assistant","text":"..."}]}
+                      most recent last, cleaned for reading. Renders the chat
+                      sheet; refreshed after each completed turn and on
+                      pull-to-refresh. Page degrades to its local transcript
+                      when the endpoint is missing.
+    POST /heartbeat   empty body, every 5s while the call is live. Freshness
+                      tells the Mac to keep its own speakers quiet; the page
+                      shows the "audio on phone" chip while beats land.
+    POST /stt         audio blob (webm/mp4) returns {"text":"..."}, the
+                      whisper fallback when native SpeechRecognition is absent.
 
-  PROPOSED new endpoints (page degrades gracefully when they 404):
-    GET  /sessions?k=SECRET
-         {"sessions":[{"id":"<transcript path or uuid>","name":"voicebridge",
-                       "cwd":"~/voicebridge","current":true}, ...]}
-         Roster for the session sheet. Suggested source: enumerate open Claude
-         transcripts (core.newest_transcript siblings) plus talkd ACTIVE.
-    POST /switch?k=SECRET  body {"id":"..."} returns {"ok":true,"name":"..."}
-         Re-point the relay's focused session (update talkd ACTIVE) so the next
-         /ask lands in the chosen session. The page shows an "ending previous
-         call" affordance while this is in flight.
-    GET  /session?k=SECRET  (optional) {"id":"...","name":"..."} for naming the
-         pill on load without pulling the whole roster.
+  All inline, no external assets or CDNs. iOS Safari and Android Chrome
+  quirks handled: SpeechSynthesis chunking, visibilitychange recovery,
+  wake lock re-arm, data-URI manifest that preserves ?k= on Add to Home
+  Screen, safe-area insets, prefers-reduced-motion.
 -->
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -248,21 +264,23 @@ body {
   transition:--o1 .9s ease, --o2 .9s ease, --o3 .9s ease, --glow .9s ease, --ring .9s ease;
   --o1:#dfe7f8; --o2:#5f74b0; --o3:#1c2440;
   --glow:rgba(95,116,176,.34); --ring:rgba(120,140,200,.5);
-  --danger:#e5484d; --dim:#96a0b5; --surface:#141926; --line:#232b3d;
+  --danger:#e5484d; --amber:#e5a13d; --mint:#46d7c3;
+  --dim:#96a0b5; --surface:#141926; --line:#232b3d;
 }
 body[data-state="listening"] { --o1:#e4fff8; --o2:#37bfae; --o3:#093330; --glow:rgba(70,215,195,.42); --ring:rgba(90,225,205,.55); }
 body[data-state="thinking"]  { --o1:#ece4ff; --o2:#8674e6; --o3:#241d4e; --glow:rgba(140,120,235,.42); --ring:rgba(160,140,255,.55); }
 body[data-state="speaking"]  { --o1:#ffffff; --o2:#8fb2f2; --o3:#16294f; --glow:rgba(160,195,255,.55); --ring:rgba(180,205,255,.6); }
+body[data-state="needs"]     { --o1:#ffe9df; --o2:#e0755f; --o3:#3f150f; --glow:rgba(235,125,100,.45); --ring:rgba(255,150,125,.55); }
 body[data-state="muted"]     { --o1:#ccd1db; --o2:#59606f; --o3:#191d26; --glow:rgba(120,128,148,.22); --ring:rgba(130,138,158,.35); }
 body[data-state="ended"]     { --o1:#b9bfca; --o2:#464c5a; --o3:#14171f; --glow:rgba(100,106,124,.16); --ring:rgba(110,118,138,.25); }
 
 button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; padding:0; }
 button:focus-visible { outline:2px solid #9db9ff; outline-offset:3px; border-radius:14px; }
 
-/* ---- top: session pill ---- */
+/* ==== top: session pill + audio-ownership chip ==== */
 header {
   padding:calc(env(safe-area-inset-top, 0px) + 14px) 16px 6px;
-  display:flex; justify-content:center;
+  display:flex; flex-direction:column; align-items:center; gap:8px;
 }
 #pill {
   display:flex; align-items:center; gap:8px;
@@ -274,17 +292,30 @@ header {
   transition:background .9s ease; }
 #pill .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #pill svg { width:14px; height:14px; opacity:.6; flex:none; }
+#chip {
+  display:none; align-items:center; gap:6px;
+  padding:4px 12px; border-radius:999px;
+  background:rgba(70,215,195,.08); border:1px solid rgba(70,215,195,.28);
+  font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:#6fd8c8;
+}
+#chip.on { display:inline-flex; }
+#chip .cdot { width:6px; height:6px; border-radius:50%; background:var(--mint);
+  animation:softpulse 2.4s ease-in-out infinite; }
+@keyframes softpulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
 
-/* ---- middle: the orb ---- */
+/* ==== middle: the orb ==== */
 main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:34px; min-height:0; }
 #orbzone { position:relative; width:min(64vw, 280px); aspect-ratio:1; }
 .ripple {
   position:absolute; inset:0; border-radius:50%;
   border:1.5px solid var(--ring); opacity:0; pointer-events:none;
 }
-body[data-state="thinking"] .ripple { animation:ripple 2.6s cubic-bezier(.2,.6,.35,1) infinite; }
-body[data-state="thinking"] .ripple:nth-child(2) { animation-delay:.85s; }
-body[data-state="thinking"] .ripple:nth-child(3) { animation-delay:1.7s; }
+body[data-state="thinking"] .ripple,
+body[data-state="needs"] .ripple { animation:ripple 2.6s cubic-bezier(.2,.6,.35,1) infinite; }
+body[data-state="thinking"] .ripple:nth-child(2),
+body[data-state="needs"] .ripple:nth-child(2) { animation-delay:.85s; }
+body[data-state="thinking"] .ripple:nth-child(3),
+body[data-state="needs"] .ripple:nth-child(3) { animation-delay:1.7s; }
 @keyframes ripple { 0% { transform:scale(1); opacity:.55; } 100% { transform:scale(1.85); opacity:0; } }
 
 #orbscale { position:absolute; inset:0;
@@ -316,16 +347,17 @@ body[data-state="ended"] #orb, body[data-state="muted"] #orb { animation:none; }
 #status {
   font-size:15px; letter-spacing:.42em; text-indent:.42em; /* balance tracking */
   text-transform:lowercase; color:var(--dim); min-height:22px; text-align:center;
-  padding:0 24px;
+  padding:0 24px; font-variant-numeric:tabular-nums;
 }
+body[data-state="needs"] #status { color:#f0a294; }
 
-/* ---- bottom: call controls ---- */
+/* ==== bottom: call controls ==== */
 footer {
   display:flex; align-items:center; justify-content:center; gap:34px;
   padding:10px 24px calc(env(safe-area-inset-bottom, 0px) + 26px);
 }
 .ctl {
-  width:64px; height:64px; border-radius:50%;
+  width:64px; height:64px; border-radius:50%; position:relative;
   display:flex; align-items:center; justify-content:center;
   background:rgba(255,255,255,.07); border:1px solid var(--line);
   transition:background .25s ease, transform .1s ease;
@@ -339,10 +371,49 @@ footer {
 #muteBtn.muted .off { display:block; }
 #muteBtn.muted .on { display:none; }
 #endBtn { background:var(--danger); border-color:transparent; color:#fff; }
-#ccBtn.active { background:rgba(255,255,255,.18); }
-.ctl-label { position:absolute; left:-9999px; } /* visually hidden, for readers */
+#chatBtn.active { background:rgba(255,255,255,.18); }
 
-/* ---- sheets (captions + sessions) ---- */
+/* ==== decision panel: the permission relay ==== */
+#decide {
+  position:fixed; left:14px; right:14px; z-index:35;
+  bottom:calc(env(safe-area-inset-bottom, 0px) + 124px);
+  background:var(--surface); border:1px solid rgba(229,72,77,.4);
+  border-radius:20px; padding:16px 16px 14px;
+  transform:translateY(calc(100% + 180px));
+  transition:transform .3s cubic-bezier(.3,.9,.3,1);
+  box-shadow:0 8px 40px rgba(0,0,0,.5);
+}
+#decide.open { transform:translateY(0); }
+#decide .eyebrow { font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:#ff8a8e; margin:0 0 8px; display:flex; align-items:center; gap:7px; }
+#decide .eyebrow .ddot { width:7px; height:7px; border-radius:50%; background:var(--danger);
+  animation:softpulse 1.6s ease-in-out infinite; }
+#decideQ { font-size:15.5px; line-height:1.5; color:#e8ebf2; margin:0;
+  max-height:7.5em; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  user-select:text; -webkit-user-select:text; }
+#decide .row { display:flex; gap:12px; margin-top:14px; }
+#decide .row button { flex:1; min-height:58px; border-radius:16px;
+  font-size:18px; font-weight:650; letter-spacing:.04em; }
+#decide .row button:active { transform:scale(.97); }
+#yesBtn { background:var(--mint); color:#06231f; }
+#noBtn { border:1.5px solid rgba(229,72,77,.6); color:#ff9a9e; }
+
+/* ==== toast: background session news ==== */
+#toast {
+  position:fixed; left:50%; z-index:36;
+  bottom:calc(env(safe-area-inset-bottom, 0px) + 132px);
+  transform:translate(-50%, 16px);
+  display:flex; align-items:center; gap:9px;
+  background:#1a2130; border:1px solid var(--line); border-radius:999px;
+  padding:11px 18px; font-size:14px; color:#dfe4ee;
+  opacity:0; pointer-events:none; transition:opacity .3s ease, transform .3s ease;
+  max-width:86vw; box-shadow:0 6px 28px rgba(0,0,0,.45);
+}
+#toast.show { opacity:1; transform:translate(-50%, 0); pointer-events:auto; }
+#toast .tdot { width:7px; height:7px; border-radius:50%; background:var(--amber); flex:none; }
+#toast .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* ==== sheets ==== */
 #scrim { position:fixed; inset:0; background:rgba(4,6,10,.55); opacity:0;
   pointer-events:none; transition:opacity .25s ease; z-index:40; }
 body.sheet-open #scrim { opacity:1; pointer-events:auto; }
@@ -356,44 +427,77 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 }
 .sheet.open { transform:translateY(0); }
 .sheet .grab { width:38px; height:4px; border-radius:2px; background:#39435a; margin:2px auto 12px; flex:none; }
-/* captions are non-modal: they float above the call controls so mute and
-   end stay reachable while reading */
-#capSheet {
+.sheet h2 { font-size:13px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--dim); margin:0 0 10px; flex:none; display:flex; align-items:baseline; gap:10px; }
+.sheet h2 .count { font-weight:500; letter-spacing:.04em; text-transform:none; font-size:12.5px; color:#5b6479; }
+.sheet .scroll { overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; min-height:60px; }
+.sheet .hint { font-size:12.5px; color:var(--dim); line-height:1.5; padding:8px 12px 0; flex:none; }
+
+/* control room: full-height so a fleet of sessions fits */
+#sessSheet {
+  height:calc(100vh - 64px); height:calc(100dvh - 64px);
+  max-height:none;
+}
+#sessSheet .scroll { flex:1; }
+
+/* chat: non-modal, floats above the call controls so mute and end
+   stay reachable while reading */
+#chatSheet {
   left:10px; right:10px;
   bottom:calc(env(safe-area-inset-bottom, 0px) + 122px);
   border:1px solid var(--line); border-radius:20px;
-  max-height:36vh; padding-bottom:14px; z-index:30;
+  height:52vh; height:52dvh; max-height:none; padding-bottom:14px; z-index:30;
   transform:translateY(calc(100% + 140px));
 }
-#capSheet.open { transform:translateY(0); }
-.sheet h2 { font-size:13px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;
-  color:var(--dim); margin:0 0 10px; flex:none; }
-.sheet .scroll { overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; min-height:60px; }
-
-/* captions */
-#capLines { font-size:16px; line-height:1.55; }
-#capLines .line { margin:0 0 12px; }
-#capLines .who { display:block; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); margin-bottom:2px; }
-#capLines .you .who { color:#6fd8c8; }
-#capLines .agent .who { color:#a3b8ea; }
-#capLines .empty { color:var(--dim); font-size:14px; }
-
-/* sessions roster */
-.sess {
-  display:flex; align-items:center; gap:12px; width:100%; text-align:left;
-  padding:14px 12px; min-height:56px; border-radius:14px; font-size:16px;
+#chatSheet.open { transform:translateY(0); }
+#pullHint { height:0; overflow:hidden; text-align:center; font-size:12px;
+  color:var(--dim); line-height:28px; transition:height .18s ease; flex:none; }
+#chatLines { display:flex; flex-direction:column; gap:8px; padding:2px 2px 6px; }
+.bub {
+  max-width:84%; padding:10px 14px; border-radius:18px;
+  font-size:15.5px; line-height:1.5; white-space:pre-wrap; word-break:break-word;
+  user-select:text; -webkit-user-select:text;
 }
-.sess:active { background:rgba(255,255,255,.06); }
-.sess .sdot { width:9px; height:9px; border-radius:50%; background:#3d465c; flex:none; }
-.sess.current .sdot { background:#46d7c3; }
-.sess .meta { min-width:0; }
-.sess .meta .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.sess .meta .c { font-size:12.5px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.sess .tag { margin-left:auto; flex:none; font-size:11px; letter-spacing:.1em; text-transform:uppercase;
-  color:#46d7c3; border:1px solid rgba(70,215,195,.4); border-radius:999px; padding:4px 10px; }
-.sheet .hint { font-size:12.5px; color:var(--dim); line-height:1.5; padding:8px 12px 0; }
+.bub.user { align-self:flex-end; background:rgba(70,215,195,.15);
+  border:1px solid rgba(70,215,195,.22); border-bottom-right-radius:6px; color:#e7fffa; }
+.bub.assistant { align-self:flex-start; background:rgba(255,255,255,.06);
+  border:1px solid var(--line); border-bottom-left-radius:6px; }
+.bub.live { border-style:dashed; }
+#chatLines .empty { color:var(--dim); font-size:14px; align-self:center; padding:18px 8px; text-align:center; line-height:1.55; }
 
-/* ---- overlays: start / permission / switching ---- */
+/* control room cards */
+.card {
+  display:flex; align-items:center; gap:6px; border-radius:16px;
+  border:1px solid transparent; margin-bottom:2px; padding-right:6px;
+}
+.card.current { background:rgba(255,255,255,.05); border-color:var(--line); }
+.card .main {
+  flex:1; min-width:0; display:flex; align-items:center; gap:12px;
+  text-align:left; padding:13px 8px 13px 12px; min-height:60px; border-radius:14px;
+}
+.card .main:active { background:rgba(255,255,255,.05); }
+.sdot { width:10px; height:10px; border-radius:50%; background:var(--mint); flex:none; }
+.sdot.working { background:var(--amber); animation:softpulse 1.6s ease-in-out infinite; }
+.sdot.needs { background:var(--danger); }
+.card .meta { min-width:0; flex:1; }
+.card .meta .n { display:block; font-size:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.card .meta .c { display:block; font-size:12.5px; color:var(--dim); margin-top:2px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.badge { flex:none; font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+  border-radius:999px; padding:4px 10px; }
+.badge.needs { color:#ff9a9e; border:1px solid rgba(229,72,77,.55); background:rgba(229,72,77,.12);
+  animation:softpulse 1.6s ease-in-out infinite; }
+.badge.oncall { color:var(--mint); border:1px solid rgba(70,215,195,.4); }
+.hear {
+  flex:none; width:46px; height:46px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.07); border:1px solid var(--line);
+}
+.hear:active { transform:scale(.92); }
+.hear svg { width:20px; height:20px; }
+.hear.busy { opacity:.45; }
+
+/* ==== overlays: start / switching ==== */
 .overlay {
   position:fixed; inset:0; z-index:60; background:#0a0d14;
   display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -420,23 +524,26 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 @keyframes spin { to { transform:rotate(360deg); } }
 #switchMsg { font-size:16px; color:#dfe4ee; letter-spacing:.02em; }
 
-/* ---- reduced motion: state still legible via color and text ---- */
+/* ==== reduced motion: state still legible via color and text ==== */
 @media (prefers-reduced-motion: reduce) {
   #orb, #orb::after, .overlay .glyph, body[data-state="speaking"] #orb { animation:none; }
-  body[data-state="thinking"] .ripple { animation:none; opacity:.35; transform:scale(1.25); }
+  body[data-state="thinking"] .ripple,
+  body[data-state="needs"] .ripple { animation:none; opacity:.35; transform:scale(1.25); }
   #orbscale { transition:none; transform:none; }
-  .sheet { transition:none; }
+  .sheet, #decide, #toast { transition:none; }
   #switchOverlay .spin { animation:none; border-top-color:var(--line); }
+  .sdot.working, .badge.needs, #chip .cdot, #decide .eyebrow .ddot { animation:none; }
 }
 </style></head><body data-state="ended">
 
 <header>
-  <button id="pill" aria-haspopup="dialog" aria-label="Session: live session. Change session.">
+  <button id="pill" aria-haspopup="dialog" aria-label="Session: live session. Open control room.">
     <span class="dot" aria-hidden="true"></span>
     <span class="name" id="pillName">live session</span>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
   </button>
+  <span id="chip" role="status"><span class="cdot" aria-hidden="true"></span>audio on phone</span>
 </header>
 
 <main>
@@ -448,11 +555,11 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 </main>
 
 <footer>
-  <button class="ctl" id="ccBtn" aria-pressed="false" aria-label="Show captions">
+  <button class="ctl" id="chatBtn" aria-pressed="false" aria-label="Show chat">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-      stroke-linecap="round" aria-hidden="true">
-      <rect x="3" y="5.5" width="18" height="13" rx="3.5"/>
-      <path d="M11 10.3a2.5 2.5 0 1 0 0 3.4"/><path d="M17.5 10.3a2.5 2.5 0 1 0 0 3.4"/>
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.2 9.2 0 0 1-3.9-.9L3 20l1-4.1a8.2 8.2 0 0 1-1-4.4 8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 9 8.4z"/>
+      <path d="M8.5 10.5h7"/><path d="M8.5 13.5h4.5"/>
     </svg>
   </button>
   <button class="ctl" id="muteBtn" aria-pressed="false" aria-label="Mute microphone">
@@ -474,18 +581,35 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
   </button>
 </footer>
 
-<div id="scrim"></div>
-
-<section class="sheet" id="capSheet" role="dialog" aria-label="Captions">
-  <div class="grab" aria-hidden="true"></div>
-  <h2>Captions</h2>
-  <div class="scroll" id="capLines"><p class="empty">Replies will appear here as they are spoken.</p></div>
+<section id="decide" role="alertdialog" aria-label="Claude needs a decision" aria-live="assertive">
+  <p class="eyebrow"><span class="ddot" aria-hidden="true"></span>claude needs you</p>
+  <p id="decideQ"></p>
+  <div class="row">
+    <button id="yesBtn">Yes, allow</button>
+    <button id="noBtn">No, decline</button>
+  </div>
 </section>
 
-<section class="sheet" id="sessSheet" role="dialog" aria-label="Sessions">
+<button id="toast" aria-live="polite">
+  <span class="tdot" aria-hidden="true"></span><span class="t" id="toastText"></span>
+</button>
+
+<div id="scrim"></div>
+
+<section class="sheet" id="chatSheet" role="dialog" aria-label="Chat">
   <div class="grab" aria-hidden="true"></div>
-  <h2>Sessions</h2>
+  <h2>Chat</h2>
+  <div class="scroll" id="chatScroll">
+    <div id="pullHint">pull to refresh</div>
+    <div id="chatLines"><p class="empty">The conversation with this session appears here.</p></div>
+  </div>
+</section>
+
+<section class="sheet" id="sessSheet" role="dialog" aria-label="Control room">
+  <div class="grab" aria-hidden="true"></div>
+  <h2>Control room <span class="count" id="sessCount"></span></h2>
   <div class="scroll" id="sessList"></div>
+  <p class="hint">Tap a session to move the call there. The speaker icon plays its last reply without switching.</p>
 </section>
 
 <div class="overlay" id="startOverlay">
@@ -509,12 +633,16 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 const K = new URLSearchParams(location.search).get('k') || '';
 const $ = id => document.getElementById(id);
 const statusEl=$('status'), pillName=$('pillName'), muteBtn=$('muteBtn'),
-      ccBtn=$('ccBtn'), capLines=$('capLines');
+      chatBtn=$('chatBtn'), chatLines=$('chatLines'), chatScroll=$('chatScroll'),
+      pullHint=$('pullHint'), chipEl=$('chip'), decideEl=$('decide'),
+      decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
+      sessList=$('sessList'), sessCount=$('sessCount');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const TTS = 'speechSynthesis' in window;
 
 let live=false, muted=false, state='ended';
 let gen=0;                 // listen generation: bump to invalidate in-flight mic work
+let turnId=0, turnActive=false;   // turn generation: bump to invalidate stale turn work
 let rec=null, recActive=false, media=null, audioCtx=null;
 let wakeLock=null, speechCancelled=false;
 
@@ -523,6 +651,15 @@ function setState(s, label){
   document.body.dataset.state = s;
   statusEl.textContent = label !== undefined ? label : s;
 }
+function urlFor(path){
+  return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'k=' + encodeURIComponent(K);
+}
+async function jget(path){
+  const r = await fetch(urlFor(path));
+  if(!r.ok) throw new Error('http ' + r.status);
+  return r.json();
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /* mic-level meter drives the orb scale via --level (0..1) */
 let level=0, levelTarget=0;
@@ -601,61 +738,288 @@ function say(text, done){
     speechSynthesis.speak(u);
   })();
 }
+/* A short interjection (hear-last, pending question) that then returns to
+   whatever the call was doing, without ending the working turn. */
+function speakAside(text){
+  stopListening(); stopSpeaking();
+  setState('speaking');
+  say(text, resumeAfterSpeech);
+}
+function resumeAfterSpeech(){
+  if(!live){ setState('ended', 'call ended'); return; }
+  if(decisionOpen){ setState('needs', 'needs you'); return; }
+  if(turnActive){ setWorking(); return; }
+  if(muted){ setState('muted'); return; }
+  setState('listening'); setTimeout(listen, 300);
+}
 /* Backgrounding pauses synthesis on both platforms; resume when we return,
-   and re-arm the wake lock (it is released whenever the tab hides). */
+   re-arm the wake lock (released whenever the tab hides), kick a heartbeat,
+   and restart the mic if a listen was in flight. */
 document.addEventListener('visibilitychange', () => {
   if(document.visibilityState !== 'visible') return;
   if(TTS && speechSynthesis.paused) speechSynthesis.resume();
-  if(live) acquireWakeLock();
+  if(live){ acquireWakeLock(); beatOnce(); }
   if(live && !muted && state === 'listening' && !recActive) listen();
 });
 
-/* ============================================================ captions */
-function captionAdd(role, text){
-  const empty = capLines.querySelector('.empty');
-  if(empty) empty.remove();
-  const d = document.createElement('div');
-  d.className = 'line ' + role;
-  const w = document.createElement('span');
-  w.className = 'who';
-  w.textContent = role === 'you' ? 'you' : 'agent';
-  const t = document.createElement('span');
-  t.textContent = text;
-  d.append(w, t);
-  capLines.appendChild(d);
-  capLines.scrollTop = capLines.scrollHeight;
+/* soft chime for background-session news; WebAudio, no assets */
+function chime(){
+  try{
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    const t = audioCtx.currentTime + .01;
+    [[880, 0], [1318.5, .16]].forEach(pair => {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = pair[0];
+      g.gain.setValueAtTime(0, t + pair[1]);
+      g.gain.linearRampToValueAtTime(.055, t + pair[1] + .02);
+      g.gain.exponentialRampToValueAtTime(.0001, t + pair[1] + .34);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(t + pair[1]); o.stop(t + pair[1] + .4);
+    });
+  }catch(e){}
 }
 
-/* ============================================================ the turn loop */
-async function ask(text){
-  captionAdd('you', text);
-  setState('thinking');
-  try{
-    const r = await fetch('/ask?k=' + encodeURIComponent(K), {
-      method:'POST', headers:{ 'Content-Type':'application/json' },
-      body:JSON.stringify({ text }) });
-    const j = await r.json();
-    const reply = (j.reply || '').trim() || 'No reply came back.';
-    if(!live) return;
-    captionAdd('agent', reply);
-    setState('speaking');
-    say(reply, () => {
-      if(!live) return;
-      if(muted){ setState('muted'); }
-      else { setState('listening'); setTimeout(listen, 300); }
-    });
-  }catch(e){
-    if(!live) return;
-    setState('listening', 'connection lost, retrying');
-    if(!muted) setTimeout(listen, 1600);
+/* ============================================================ chat */
+/* Local turn log renders instantly; GET /chat replaces it with the server's
+   cleaned transcript when available (refreshed after each completed turn and
+   on pull-to-refresh). Falls back to local-only when /chat is missing. */
+let localTurns = [];
+let chatHasServer = false;
+function bubble(role, text, liveNow){
+  const d = document.createElement('div');
+  d.className = 'bub ' + (role === 'user' ? 'user' : 'assistant') + (liveNow ? ' live' : '');
+  d.textContent = text;
+  return d;
+}
+function chatScrollBottom(){ chatScroll.scrollTop = chatScroll.scrollHeight; }
+function renderChat(){
+  chatLines.textContent = '';
+  if(!localTurns.length){
+    const p = document.createElement('p'); p.className = 'empty';
+    p.textContent = 'The conversation with this session appears here.';
+    chatLines.appendChild(p);
+    return;
   }
+  localTurns.forEach(t => chatLines.appendChild(bubble(t.role, t.text)));
+  chatScrollBottom();
+}
+function chatAdd(role, text){
+  if(!text) return;
+  localTurns.push({ role: role, text: text });
+  const empty = chatLines.querySelector('.empty');
+  if(empty) empty.remove();
+  chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive));
+  chatScrollBottom();
+}
+async function refreshChat(){
+  try{
+    const j = await jget('/chat');
+    if(Array.isArray(j.turns)){
+      localTurns = j.turns
+        .map(t => ({ role: t.role === 'user' ? 'user' : 'assistant',
+                     text: String(t.text || '').trim() }))
+        .filter(t => t.text);
+      chatHasServer = true;
+      renderChat();
+      return true;
+    }
+  }catch(e){ /* endpoint missing or offline: keep the local log */ }
+  if(!chatHasServer) renderChat();
+  return false;
+}
+/* pull down at the top of the chat to refresh */
+(function(){
+  let y0 = 0, pulling = false, dist = 0, busy = false;
+  chatScroll.addEventListener('touchstart', e => {
+    if(busy) return;
+    if(chatScroll.scrollTop <= 0){ y0 = e.touches[0].clientY; pulling = true; dist = 0; }
+  }, { passive:true });
+  chatScroll.addEventListener('touchmove', e => {
+    if(!pulling || busy) return;
+    dist = e.touches[0].clientY - y0;
+    if(dist > 0 && chatScroll.scrollTop <= 0){
+      e.preventDefault();
+      const h = Math.min(dist * .4, 54);
+      pullHint.style.height = h + 'px';
+      pullHint.textContent = h >= 46 ? 'release to refresh' : 'pull to refresh';
+    }
+  }, { passive:false });
+  chatScroll.addEventListener('touchend', async () => {
+    if(!pulling || busy) return;
+    pulling = false;
+    if(Math.min(dist * .4, 54) >= 46){
+      busy = true;
+      pullHint.textContent = 'refreshing';
+      pullHint.style.height = '28px';
+      await refreshChat();
+      busy = false;
+    }
+    pullHint.style.height = '0px';
+    dist = 0;
+  });
+})();
+
+/* ============================================================ the turn engine */
+/* A turn is IN PROGRESS until the session's latest reply text CHANGES from
+   what it was before the ask. The single POST /ask is only a fast path: the
+   server gives up at ~90s with a stock phrase, and tunnels can drop long
+   requests entirely, so GET /poll every few seconds is what actually
+   completes long turns. */
+const STILL_RE = /^still working on that/i;
+const WAITING_RE = /^claude is waiting on you/i;
+let workT0 = 0, workTicker = null;
+
+function fmtElapsed(ms){
+  const s = Math.floor(ms / 1000);
+  if(s < 100) return s + 's';
+  return Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's';
+}
+function setWorking(){
+  setState('thinking', 'working');
+  if(workTicker) clearInterval(workTicker);
+  workTicker = setInterval(() => {
+    if(state === 'thinking') statusEl.textContent = 'working  ' + fmtElapsed(Date.now() - workT0);
+  }, 1000);
+}
+function stopWorkTicker(){ if(workTicker){ clearInterval(workTicker); workTicker = null; } }
+
+async function startTurn(text){
+  const id = ++turnId;
+  turnActive = true;
+  chatAdd('user', text);
+  workT0 = Date.now();
+  setWorking();
+  /* baseline BEFORE the ask so a changed /poll snapshot means "reply landed" */
+  let baseline = '';
+  try{ baseline = String((await jget('/poll')).reply || '').trim(); }catch(e){}
+  if(id !== turnId || !live) return;
+  sendAsk(id, text);
+  pollUntilChanged(id, baseline);
+}
+function sendAsk(id, text){
+  fetch(urlFor('/ask'), {
+    method:'POST', headers:{ 'Content-Type':'application/json' },
+    body:JSON.stringify({ text: text }) })
+  .then(r => r.json())
+  .then(j => {
+    if(id !== turnId || !live) return;
+    const rep = String(j.reply || '').trim();
+    if(!rep || STILL_RE.test(rep)) return;         // long turn: /poll takes over
+    if(WAITING_RE.test(rep)){ showDecision(rep); return; }   // permission moment
+    finishTurn(id, rep);
+  })
+  .catch(() => { /* tunnel dropped the long request; /poll covers it */ });
+}
+async function pollUntilChanged(id, baseline){
+  let n = 0;
+  while(id === turnId && live){
+    await sleep(n++ < 100 ? 3000 : 6000);   // ease off after five minutes
+    if(id !== turnId || !live) return;
+    try{
+      const rep = String((await jget('/poll')).reply || '').trim();
+      if(id !== turnId || !live) return;
+      if(rep && rep !== baseline){ finishTurn(id, rep); return; }
+    }catch(e){ /* offline blip: keep waiting, the elapsed label keeps counting */ }
+  }
+}
+function finishTurn(id, reply){
+  if(id !== turnId) return;
+  turnId++;                       // one winner: kill the other waiters
+  turnActive = false;
+  stopWorkTicker();
+  hideDecision();
+  chatAdd('assistant', reply);
+  refreshChat();                  // swap in the server's cleaned transcript
+  pollSessions();                 // states likely changed with the turn
+  setState('speaking');
+  say(reply, () => {
+    if(!live) return;
+    if(muted){ setState('muted'); }
+    else { setState('listening'); setTimeout(listen, 300); }
+  });
+}
+function cancelTurn(){
+  turnId++;
+  turnActive = false;
+  stopWorkTicker();
+  hideDecision();
 }
 function handleUtterance(t){
   if(/^(stop listening|end call|hang up|goodbye)[.!]?$/i.test(t)){ endCall(); return; }
-  if(t) ask(t);
+  if(t) startTurn(t);
   else if(live && !muted) setTimeout(listen, 300);
 }
 
+/* ============================================================ permission relay */
+/* Claude is blocked on a yes/no. Speak the question once, park the orb in the
+   "needs you" state, and put two big buttons on screen; each answers through
+   the normal turn engine (POST /ask with "yes" or "no"), so the reply that
+   follows the decision is caught by the same polling. */
+let decisionOpen = false;
+function showDecision(q){
+  decideQ.textContent = q;
+  if(!decisionOpen){
+    decisionOpen = true;
+    decideEl.classList.add('open');
+    stopWorkTicker();
+    stopListening();
+    setState('needs', 'needs you');
+    chime();
+    speakAside(q);
+  }
+}
+function hideDecision(){
+  decisionOpen = false;
+  decideEl.classList.remove('open');
+}
+$('yesBtn').addEventListener('click', () => { hideDecision(); cancelTurn(); startTurn('yes'); });
+$('noBtn').addEventListener('click', () => { hideDecision(); cancelTurn(); startTurn('no'); });
+
+/* /status poll: every ~4s while a turn is working, ~8s while idle on a live
+   call, so a permission prompt surfaces even when Claude hits it mid-turn or
+   between turns. An empty pending while the panel is open means it was
+   answered elsewhere (for example on the Mac): put the call back where it was. */
+let liveGen = 0;
+async function statusLoop(myGen){
+  while(live && myGen === liveGen){
+    await sleep(turnActive ? 4000 : 8000);
+    if(!live || myGen !== liveGen) return;
+    try{
+      const p = String((await jget('/status')).pending || '').trim();
+      if(!live || myGen !== liveGen) return;
+      if(p){
+        showDecision('Claude is waiting on you: ' + p + '. Yes to allow, or no to decline.');
+      }else if(decisionOpen){
+        hideDecision();
+        if(state === 'needs') resumeAfterSpeech();
+      }
+    }catch(e){}
+  }
+}
+
+/* ============================================================ heartbeat */
+/* While the call is live the phone owns the audio: a beat every 5s keeps the
+   Mac's speech suppressed server-side, and the chip tells the user so. */
+let hbTimer = null;
+async function beatOnce(){
+  if(!live){ chipEl.classList.remove('on'); return; }
+  try{
+    const r = await fetch(urlFor('/heartbeat'), { method:'POST' });
+    chipEl.classList.toggle('on', r.ok && live);
+  }catch(e){ chipEl.classList.remove('on'); }
+}
+function startHeartbeat(){
+  stopHeartbeat();
+  beatOnce();
+  hbTimer = setInterval(beatOnce, 5000);
+}
+function stopHeartbeat(){
+  if(hbTimer){ clearInterval(hbTimer); hbTimer = null; }
+  chipEl.classList.remove('on');
+}
+
+/* ============================================================ speech in */
 /* ---- path A: native speech recognition (Chrome Android, iOS Safari 14.5+) */
 function listenSR(){
   if(recActive) return;
@@ -726,7 +1090,7 @@ async function listenWhisper(){
     setState('thinking', 'thinking');
     const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
     try{
-      const r = await fetch('/stt?k=' + encodeURIComponent(K), { method:'POST', body:blob });
+      const r = await fetch(urlFor('/stt'), { method:'POST', body:blob });
       const j = await r.json();
       if(myGen !== gen) return;
       handleUtterance((j.text || '').trim());
@@ -736,7 +1100,7 @@ async function listenWhisper(){
   };
   mr.start();
 }
-function listen(){ if(!live || muted) return; (SR ? listenSR : listenWhisper)(); }
+function listen(){ if(!live || muted || turnActive || decisionOpen) return; (SR ? listenSR : listenWhisper)(); }
 function stopListening(){
   gen++;
   if(rec){ try{ rec.onend = null; rec.onerror = null; rec.stop(); }catch(_){} rec = null; }
@@ -746,7 +1110,8 @@ function stopListening(){
 /* ============================================================ call lifecycle */
 const startOverlay=$('startOverlay'), startBtn=$('startBtn');
 function micDenied(){
-  live = false; stopListening(); stopSpeaking(); releaseWakeLock();
+  live = false; liveGen++;
+  cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
   setState('ended', 'microphone blocked');
   $('startTitle').textContent = 'Microphone is blocked';
   $('startBody').textContent = 'Allow microphone access for this site in your browser settings, then start the call again.';
@@ -757,6 +1122,7 @@ function micDenied(){
 async function startCall(){
   startOverlay.classList.add('hidden');
   live = true; muted = false;
+  liveGen++;
   muteBtn.classList.remove('muted');
   muteBtn.setAttribute('aria-pressed', 'false');
   refreshVoices();
@@ -769,13 +1135,17 @@ async function startCall(){
     const s = await navigator.mediaDevices.getUserMedia({ audio:true });
     if(SR) s.getTracks().forEach(t => t.stop()); else media = s;
   }catch(e){ micDenied(); return; }
+  startHeartbeat();
+  statusLoop(liveGen);
+  refreshChat();
+  pollSessions();
   /* This first utterance also unlocks SpeechSynthesis under autoplay rules. */
   setState('speaking', 'connecting');
   say('Connected.', () => { if(live) listen(); });
 }
 function endCall(){
-  live = false;
-  stopListening(); stopSpeaking(); releaseWakeLock();
+  live = false; liveGen++;
+  cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
   setState('ended', 'call ended');
   $('startTitle').textContent = 'Call ended';
   $('startBody').textContent = 'Your session is still running on the Mac. Start a new call whenever you are ready.';
@@ -796,104 +1166,197 @@ muteBtn.addEventListener('click', () => {
     if(state === 'listening') setState('muted');
   }else if(state === 'muted' || state === 'listening'){
     setState('listening'); listen();
-  } /* muted flipped during thinking/speaking: the turn loop checks it after */
+  } /* muted flipped during working/speaking: the turn loop checks it after */
 });
 
 /* ============================================================ sheets */
-const scrim=$('scrim'), capSheet=$('capSheet'), sessSheet=$('sessSheet');
-/* sessions sheet is modal (scrim); captions are an independent toggle */
-function openSessSheet(){ sessSheet.classList.add('open'); document.body.classList.add('sheet-open'); }
-function closeSessSheet(){ sessSheet.classList.remove('open'); document.body.classList.remove('sheet-open'); }
+const scrim=$('scrim'), chatSheet=$('chatSheet'), sessSheet=$('sessSheet');
+let sessOpen = false;
+/* control room is modal (scrim); chat is an independent toggle */
+function openSessSheet(){
+  sessOpen = true;
+  sessSheet.classList.add('open');
+  document.body.classList.add('sheet-open');
+  pollSessions();
+}
+function closeSessSheet(){
+  sessOpen = false;
+  sessSheet.classList.remove('open');
+  document.body.classList.remove('sheet-open');
+}
 scrim.addEventListener('click', closeSessSheet);
-ccBtn.addEventListener('click', () => {
-  const open = capSheet.classList.toggle('open');
-  ccBtn.classList.toggle('active', open);
-  ccBtn.setAttribute('aria-pressed', String(open));
-  ccBtn.setAttribute('aria-label', open ? 'Hide captions' : 'Show captions');
-  if(open) capLines.scrollTop = capLines.scrollHeight;
+$('pill').addEventListener('click', () => { sessOpen ? closeSessSheet() : openSessSheet(); });
+chatBtn.addEventListener('click', () => {
+  const open = chatSheet.classList.toggle('open');
+  chatBtn.classList.toggle('active', open);
+  chatBtn.setAttribute('aria-pressed', String(open));
+  chatBtn.setAttribute('aria-label', open ? 'Hide chat' : 'Show chat');
+  if(open){ chatScrollBottom(); refreshChat(); }
 });
 
-/* ============================================================ sessions */
-const sessList=$('sessList');
+/* ============================================================ control room */
+function isWorkingState(st){ return /work|think|run|busy/i.test(String(st || '')); }
 async function fetchSessions(){
-  /* Needs the proposed GET /sessions endpoint; returns null when the relay
-     does not have it yet and the sheet falls back to the focused session. */
   try{
-    const r = await fetch('/sessions?k=' + encodeURIComponent(K));
-    if(!r.ok) return null;
-    const j = await r.json();
+    const j = await jget('/sessions');
     return Array.isArray(j.sessions) ? j.sessions : null;
   }catch(e){ return null; }
 }
-function sessionRow(s){
-  const b = document.createElement('button');
-  b.className = 'sess' + (s.current ? ' current' : '');
-  const dot = document.createElement('span'); dot.className = 'sdot';
+function stateLabel(s){
+  if(s.pending) return 'waiting on a decision';
+  if(isWorkingState(s.state)) return 'working';
+  return s.state || 'idle';
+}
+function sessionCard(s){
+  const card = document.createElement('div');
+  card.className = 'card' + (s.current ? ' current' : '');
+
+  const main = document.createElement('button');
+  main.className = 'main';
+  main.setAttribute('aria-label', (s.current ? 'On call with ' : 'Move the call to ') + (s.name || 'session'));
+  const dot = document.createElement('span');
+  dot.className = 'sdot' + (s.pending ? ' needs' : (isWorkingState(s.state) ? ' working' : ''));
   const meta = document.createElement('span'); meta.className = 'meta';
   const n = document.createElement('span'); n.className = 'n'; n.textContent = s.name || 'session';
-  meta.appendChild(n);
-  if(s.cwd){ const c = document.createElement('span'); c.className = 'c'; c.textContent = s.cwd; meta.appendChild(c); }
-  b.append(dot, meta);
-  if(s.current){ const t = document.createElement('span'); t.className = 'tag'; t.textContent = 'on call'; b.appendChild(t); }
-  b.addEventListener('click', () => switchTo(s));
-  return b;
-}
-$('pill').addEventListener('click', async () => {
-  sessList.textContent = '';
-  const hint = document.createElement('p'); hint.className = 'hint';
-  hint.textContent = 'Loading sessions...';
-  sessList.appendChild(hint);
-  openSessSheet();
-  const sessions = await fetchSessions();
-  sessList.textContent = '';
-  if(sessions && sessions.length){
-    sessions.forEach(s => sessList.appendChild(sessionRow(s)));
-  }else{
-    sessList.appendChild(sessionRow({ name: pillName.textContent, current:true }));
-    const h = document.createElement('p'); h.className = 'hint';
-    h.textContent = 'This call follows the focused session on your Mac. A full roster needs GET /sessions on the relay.';
-    sessList.appendChild(h);
+  const c = document.createElement('span'); c.className = 'c'; c.textContent = stateLabel(s);
+  meta.append(n, c);
+  main.append(dot, meta);
+  if(s.pending){
+    const b = document.createElement('span'); b.className = 'badge needs'; b.textContent = 'needs you';
+    main.appendChild(b);
+  }else if(s.current){
+    const b = document.createElement('span'); b.className = 'badge oncall'; b.textContent = 'on call';
+    main.appendChild(b);
   }
+  main.addEventListener('click', () => switchTo(s));
+
+  const hear = document.createElement('button');
+  hear.className = 'hear';
+  hear.setAttribute('aria-label', 'Hear the last reply from ' + (s.name || 'this session'));
+  hear.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none"/>' +
+    '<path d="M15 9a4.2 4.2 0 0 1 0 6"/><path d="M17.8 6.6a8 8 0 0 1 0 10.8"/></svg>';
+  hear.addEventListener('click', ev => { ev.stopPropagation(); hearLast(s, hear); });
+
+  card.append(main, hear);
+  return card;
+}
+function renderSessions(list){
+  const keep = sessList.scrollTop;
+  sessList.textContent = '';
+  if(!list || !list.length){
+    const h = document.createElement('p'); h.className = 'hint';
+    h.textContent = list ? 'No open sessions found on the Mac.'
+      : 'The relay has no session roster yet; the call follows the focused session on your Mac.';
+    sessList.appendChild(h);
+    sessCount.textContent = '';
+    return;
+  }
+  list.forEach(s => sessList.appendChild(sessionCard(s)));
+  sessCount.textContent = list.length + (list.length === 1 ? ' session' : ' sessions');
+  sessList.scrollTop = keep;
+}
+async function hearLast(s, btn){
+  btn.classList.add('busy');
+  let rep = '';
+  try{ rep = String((await jget('/last?q=' + encodeURIComponent(s.name || s.id))).reply || '').trim(); }
+  catch(e){ rep = ''; }
+  btn.classList.remove('busy');
+  const name = s.name || 'that session';
+  speakAside(rep ? ('From ' + name + ': ' + rep) : ('No reply yet from ' + name + '.'));
+}
+
+/* roster poll: ~8s with the sheet open, ~20s in the background of a live
+   call. Background flips (working to needs-you, working to idle) get a toast
+   and a soft chime so parallel sessions can call for attention. */
+const prevSess = {};
+let sessBusy = false;
+async function pollSessions(){
+  if(sessBusy) return;
+  sessBusy = true;
+  const list = await fetchSessions();
+  sessBusy = false;
+  if(!list){ if(sessOpen) renderSessions(null); return; }
+  const cur = list.find(s => s.current);
+  if(cur && cur.name){
+    pillName.textContent = cur.name;
+    $('pill').setAttribute('aria-label', 'Session: ' + cur.name + '. Open control room.');
+  }
+  for(const s of list){
+    const key = s.id || s.name;
+    if(!key) continue;
+    const prev = prevSess[key];
+    if(prev && live && !s.current){
+      if(!prev.pending && s.pending){
+        toast((s.name || 'a session') + ' needs you'); chime();
+      }else if(!s.pending && isWorkingState(prev.state) && !isWorkingState(s.state)){
+        toast((s.name || 'a session') + ' finished'); chime();
+      }
+    }
+    prevSess[key] = { state: s.state, pending: !!s.pending };
+  }
+  if(sessOpen) renderSessions(list);
+}
+(async function sessionsLoop(){
+  for(;;){
+    try{ await pollSessions(); }catch(e){}
+    await sleep(sessOpen ? 8000 : (live ? 20000 : 30000));
+  }
+})();
+
+/* toast */
+let toastTimer = null;
+function toast(msg){
+  toastText.textContent = msg;
+  toastEl.classList.add('show');
+  if(toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 4500);
+}
+toastEl.addEventListener('click', () => {
+  toastEl.classList.remove('show');
+  openSessSheet();
 });
+
+/* ============================================================ switching */
 const switchOverlay=$('switchOverlay'), switchMsg=$('switchMsg');
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function switchTo(s){
   closeSessSheet();
   if(s.current) return;
-  /* the "ending previous call" affordance: freeze the loop, show intent */
+  /* the "ending previous call" affordance: freeze the loops, show intent */
   switchMsg.textContent = 'ending previous call';
   switchOverlay.classList.remove('hidden');
-  stopSpeaking(); stopListening();
+  cancelTurn(); stopSpeaking(); stopListening();
   let ok = false;
   try{
-    const r = await fetch('/switch?k=' + encodeURIComponent(K), {
+    const r = await fetch(urlFor('/switch'), {
       method:'POST', headers:{ 'Content-Type':'application/json' },
       body:JSON.stringify({ id: s.id }) });
     ok = r.ok;
   }catch(e){}
   if(ok){
     pillName.textContent = s.name || 'session';
-    $('pill').setAttribute('aria-label', 'Session: ' + pillName.textContent + '. Change session.');
+    $('pill').setAttribute('aria-label', 'Session: ' + pillName.textContent + '. Open control room.');
     switchMsg.textContent = 'connected to ' + pillName.textContent;
+    localTurns = []; chatHasServer = false;   // new session, new transcript
+    renderChat();
+    refreshChat();
     await sleep(900);
   }else{
-    switchMsg.textContent = 'switching needs POST /switch on the relay';
+    switchMsg.textContent = 'could not switch; the session may have closed';
+    pollSessions();
     await sleep(1900);
   }
   switchOverlay.classList.add('hidden');
   if(live){ if(muted) setState('muted'); else { setState('listening'); listen(); } }
 }
-/* Name the pill on load if the proposed roster endpoint exists. */
-fetchSessions().then(list => {
-  const cur = list && list.find(s => s.current);
-  if(cur && cur.name){
-    pillName.textContent = cur.name;
-    $('pill').setAttribute('aria-label', 'Session: ' + cur.name + '. Change session.');
-  }
-});
 
-/* First paint: pre-permission explainer is showing; body starts data-state
-   "ended" so the orb sits dim behind it until the call begins. */
+/* Name the pill (and prime the roster diff) on load; also warm the chat so
+   the sheet opens full the first time. First paint keeps the pre-permission
+   explainer on top; body starts data-state "ended" so the orb sits dim
+   behind it until the call begins. */
+pollSessions();
+refreshChat();
 </script></body></html>
 """
 
