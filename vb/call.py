@@ -193,10 +193,30 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
-  voicebridge call page v5. Drop-in replacement for PAGE in vb/call.py.
+  voicebridge call page v6. Drop-in replacement for PAGE in vb/call.py.
   Embed as a RAW string (r prefix) so regex backslashes survive. This file
   contains no triple double-quote sequence anywhere, so it is safe inside
   a Python raw triple-quoted string. 100% ASCII.
+
+  CHANGES v5 to v6:
+    VOICE-SOURCE TOGGLE: a small gear on the call screen opens a settings
+    sheet with one option, "Voice: Phone / Mac (natural)". Default stays
+    Phone (browser SpeechSynthesis); the choice persists in localStorage
+    (key vbvoice). When Mac is selected, replies are synthesized by the
+    Mac's Kokoro neural voice: the text splits into sentence chunks of
+    <=300 chars (the server accepts ~600), each chunk POSTs to /tts, and
+    the returned WAVs play SEQUENTIALLY and gap-free through WebAudio
+    (decodeAudioData + AudioBufferSourceNode; the AudioContext is already
+    unlocked in the start tap, which is what makes this reliable on iOS).
+    Chunk N+1 is prefetched while chunk N plays, an audio pipeline, so the
+    only wait is the first chunk. LATENCY NOTE: that first audio lands
+    about a second later than local synthesis; that is the tradeoff for
+    the natural voice. Barge-in still works: the RMS monitor cancels the
+    WebAudio playback path too, not just speechSynthesis. Any non-200 or
+    a 4s per-chunk timeout falls back automatically and silently to the
+    phone voice for the rest of the reply (one-time toast "Mac voice
+    unavailable, using phone voice"); two consecutive failed replies stop
+    trying the Mac voice for the rest of the session.
 
   CHANGES v4 to v5:
     1. BARGE-IN: while a reply is being spoken, the user starting to talk
@@ -291,6 +311,12 @@ PAGE = r"""<!DOCTYPE html>
                       when native SpeechRecognition is absent or disabled.
                       The page sets Content-Type to the recorder's real
                       mimeType (audio/webm on Android, audio/mp4 on iOS).
+    POST /tts         body {"text":"..."} returns audio/wav synthesized by
+                      the Mac's Kokoro neural voice; 503 when Kokoro is
+                      unavailable; max ~600 chars per request (the page
+                      sends <=300). Used only when the settings sheet has
+                      Voice set to "Mac (natural)"; every failure path
+                      falls back to the phone's SpeechSynthesis.
 
   All inline, no external assets or CDNs. iOS Safari and Android Chrome
   quirks handled as listed above, plus the data-URI manifest that preserves
@@ -414,12 +440,43 @@ body.home header, body.home main, body.home footer, body.home #decide { visibili
 #backBtn svg { width:20px; height:20px; }
 body.home #backBtn { display:none; }
 
+/* ==== v6: settings gear (call screen only, mirrors the back chevron) ==== */
+#setBtn {
+  position:fixed; z-index:65;
+  top:calc(env(safe-area-inset-top, 0px) + 12px);
+  right:calc(env(safe-area-inset-right, 0px) + 12px);
+  width:44px; height:44px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.07); border:1px solid var(--line);
+  color:#96a0b5;
+}
+#setBtn:active { transform:scale(.92); }
+#setBtn svg { width:19px; height:19px; }
+body.home #setBtn { display:none; }
+
+/* v6: settings sheet rows + segmented voice control */
+.setrow {
+  display:flex; align-items:center; justify-content:space-between; gap:14px;
+  padding:10px 4px 6px;
+}
+.setrow .setlbl { font-size:15.5px; color:#dfe4ee; }
+.seg {
+  display:flex; gap:0; border:1px solid var(--line); border-radius:999px;
+  overflow:hidden; background:rgba(255,255,255,.04);
+}
+.seg button {
+  min-height:44px; padding:10px 16px; font-size:14px; color:var(--dim);
+}
+.seg button.sel { background:#e8ebf2; color:#0a0d14; font-weight:600; }
+.seg button:not(.sel):active { background:rgba(255,255,255,.08); }
+
 /* iOS A2HS standalone quirk: with a black-translucent status bar the page
    sits under the clock, and some older devices report a 0 top inset in
    standalone mode. Give the top rows a hard floor so nothing hides. */
 body.standalone .hhead { padding-top:max(calc(env(safe-area-inset-top, 0px) + 24px), 46px); }
 body.standalone header { padding-top:max(calc(env(safe-area-inset-top, 0px) + 14px), 36px); }
 body.standalone #backBtn { top:max(calc(env(safe-area-inset-top, 0px) + 12px), 34px); }
+body.standalone #setBtn { top:max(calc(env(safe-area-inset-top, 0px) + 12px), 34px); }
 
 /* ==== top: session pill + audio-ownership chip ==== */
 header {
@@ -703,6 +760,14 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
 </button>
 
+<button id="setBtn" aria-haspopup="dialog" aria-label="Call settings">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="3.2"/>
+    <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/>
+  </svg>
+</button>
+
 <header>
   <button id="pill" aria-haspopup="dialog" aria-label="Session: live session. Open control room.">
     <span class="dot" aria-hidden="true"></span>
@@ -786,6 +851,21 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
   <p class="hint">This session is closed, you can read it but not talk to it.</p>
 </section>
 
+<section class="sheet" id="setSheet" role="dialog" aria-label="Call settings">
+  <div class="grab" aria-hidden="true"></div>
+  <h2>Settings</h2>
+  <div class="setrow">
+    <span class="setlbl">Voice</span>
+    <div class="seg" role="radiogroup" aria-label="Voice source">
+      <button id="voicePhoneBtn" role="radio" aria-checked="true">Phone</button>
+      <button id="voiceMacBtn" role="radio" aria-checked="false">Mac (natural)</button>
+    </div>
+  </div>
+  <p class="hint">Mac (natural) speaks with the Kokoro neural voice, synthesized on your
+     Mac and streamed here. It sounds much better; the first words arrive about a second
+     later. If the Mac voice is unreachable the phone voice takes over automatically.</p>
+</section>
+
 <div class="overlay hidden" id="startOverlay">
   <div class="glyph" aria-hidden="true"></div>
   <h1 id="startTitle">voicebridge</h1>
@@ -832,6 +912,14 @@ let wantStartName = !!S;   // deep link: name the start overlay once roster land
    errors we stop retrying for the REST OF THIS SESSION and use the whisper
    path (srDead), instead of an infinite error-retry loop. */
 let srDead=false, srFails=0;
+/* v6 voice source: 'phone' = browser SpeechSynthesis (default), 'mac' = the
+   Mac's Kokoro neural voice via POST /tts. Persisted in localStorage. */
+let voicePref='phone';
+try{ if(localStorage.getItem('vbvoice') === 'mac') voicePref = 'mac'; }catch(e){}
+let macDead=false;        // 2 consecutive failed Mac replies: stop trying this session
+let macFails=0;           // consecutive reply-level /tts failures
+let macToastShown=false;  // the fallback toast shows once, then falls back silently
+let macSrc=null;          // the AudioBufferSourceNode currently playing Mac audio
 
 /* rows without "active" come from an older server: treat them as live */
 function isActiveSess(s){ return !s || s.active !== false; }
@@ -940,7 +1028,14 @@ function chunkText(text, max){
   }
   return out.map(x => x.trim()).filter(Boolean);
 }
-function stopSpeaking(){ speechCancelled = true; if(TTS) speechSynthesis.cancel(); stopBarge(); }
+/* Cancel EVERY output path: local synthesis AND the Mac-voice WebAudio
+   pipeline (barge-in relies on this killing whichever one is speaking). */
+function stopSpeaking(){
+  speechCancelled = true;
+  if(TTS) speechSynthesis.cancel();
+  stopMacAudio();
+  stopBarge();
+}
 /* iOS unlocks speechSynthesis only inside a user gesture: speak a silent
    warm-up utterance AND create/resume the AudioContext in the start tap,
    before any await breaks the gesture context. */
@@ -957,7 +1052,13 @@ function unlockAudio(){
     if(audioCtx.state === 'suspended') audioCtx.resume();  /* starts suspended on iOS */
   }catch(e){}
 }
+/* v6 dispatcher: every caller keeps using say(); the voice setting decides
+   which engine speaks. Mac voice out of service falls through to the phone. */
 function say(text, done){
+  if(voicePref === 'mac' && !macDead){ sayMac(text, done); return; }
+  sayPhone(text, done);
+}
+function sayPhone(text, done){
   if(!TTS){ done && done(); return; }
   speechSynthesis.cancel();
   speechCancelled = false;
@@ -988,6 +1089,85 @@ function say(text, done){
     speechSynthesis.speak(u);
   })();
 }
+
+/* ---- v6: the Mac (Kokoro) voice pipeline ----
+   Sentence chunks of <=300 chars each POST to /tts and come back as WAV.
+   Playback is WebAudio (decodeAudioData + AudioBufferSourceNode): gapless
+   chaining is reliable and, unlike a fresh HTMLAudioElement per chunk, it
+   plays fine on iOS because the AudioContext was unlocked in the start tap.
+   Chunk N+1 is PREFETCHED while chunk N plays, so the network hides behind
+   the audio. LATENCY: the first chunk still costs a round trip plus Kokoro
+   synthesis, roughly a second slower than local speechSynthesis; that is
+   the accepted tradeoff for the natural voice. Failures (non-200, 4s
+   timeout, decode error) fall back to the phone voice for the REST of the
+   reply, silently except for a one-time toast; two consecutive failed
+   replies set macDead and the session stays on the phone voice. */
+function stopMacAudio(){
+  if(macSrc){ try{ macSrc.onended = null; macSrc.stop(); }catch(e){} macSrc = null; }
+}
+function fetchTts(text){
+  const ctl = new AbortController();
+  const tm = setTimeout(() => ctl.abort(), 4000);   // 4s per chunk, then phone voice
+  const p = fetch(urlFor('/tts'), {
+    method:'POST', headers:{ 'Content-Type':'application/json' },
+    body:JSON.stringify({ text: text }), signal: ctl.signal })
+  .then(r => {
+    if(!r.ok) throw new Error('tts ' + r.status);   // 503 = Kokoro unavailable
+    return r.arrayBuffer();
+  })
+  .then(ab => new Promise((res, rej) => {
+    /* callback form: older iOS Safari has no promise decodeAudioData */
+    audioCtx.decodeAudioData(ab, res, rej);
+  }))
+  .finally(() => clearTimeout(tm));
+  p.catch(() => {});   // mark handled; the awaiter still sees the rejection
+  return p;
+}
+function playBuf(buf){
+  return new Promise(res => {
+    const s = audioCtx.createBufferSource();
+    s.buffer = buf;
+    s.connect(audioCtx.destination);
+    macSrc = s;
+    s.onended = () => { if(macSrc === s) macSrc = null; res(); };
+    s.start();
+  });
+}
+function sayMac(text, done){
+  try{
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+  }catch(e){ sayPhone(text, done); return; }
+  speechCancelled = false;
+  const parts = chunkText(text, 300);   // server caps around 600; stay well under
+  if(!parts.length){ done && done(); return; }
+  let idx = 0;
+  let pending = fetchTts(parts[0]);
+  (async function pump(){
+    while(!speechCancelled && idx < parts.length){
+      let buf = null;
+      try{ buf = await pending; }catch(e){ buf = null; }
+      if(speechCancelled) return;       // barged or ended while fetching
+      if(!buf){
+        /* fall back to the phone voice for what remains of this reply */
+        macFails++;
+        if(macFails >= 2) macDead = true;
+        if(!macToastShown){
+          macToastShown = true;
+          toast('Mac voice unavailable, using phone voice');
+        }
+        sayPhone(parts.slice(idx).join(' '), done);
+        return;
+      }
+      macFails = 0;
+      /* prefetch the next chunk while this one plays: the gapless pipeline */
+      pending = (idx + 1 < parts.length) ? fetchTts(parts[idx + 1]) : null;
+      await playBuf(buf);
+      idx++;
+    }
+    if(!speechCancelled && done) done();
+  })();
+}
 /* A short interjection (hear-last, pending question) that then returns to
    whatever the call was doing, without ending the working turn. */
 function speakAside(text){
@@ -1011,6 +1191,9 @@ function resumeAfterSpeech(){
 document.addEventListener('visibilitychange', () => {
   if(document.visibilityState !== 'visible') return;
   if(TTS && speechSynthesis.paused) speechSynthesis.resume();
+  /* iOS suspends the AudioContext in the background: the Mac-voice pipeline
+     and the chime need it running again */
+  try{ if(audioCtx && audioCtx.state !== 'running') audioCtx.resume(); }catch(e){}
   if(live){ acquireWakeLock(); beatOnce(); }
   if(live && !muted && state === 'listening' && !recActive) listen();
   if(onHome) pollSessions();
@@ -1020,6 +1203,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('pageshow', e => {
   if(!e.persisted) return;
   if(TTS && speechSynthesis.paused) speechSynthesis.resume();
+  try{ if(audioCtx && audioCtx.state !== 'running') audioCtx.resume(); }catch(e){}
   if(live){ acquireWakeLock(); beatOnce(); }
   pollSessions();
 });
@@ -1666,21 +1850,54 @@ muteBtn.addEventListener('click', () => {
 
 /* ============================================================ sheets */
 const scrim=$('scrim'), chatSheet=$('chatSheet'), sessSheet=$('sessSheet'),
-      closedSheet=$('closedSheet');
-let sessOpen = false, closedOpen = false;
-/* control room and the closed-session sheet are modal (scrim); chat is an
-   independent toggle */
+      closedSheet=$('closedSheet'), setSheet=$('setSheet');
+let sessOpen = false, closedOpen = false, setOpen = false;
+/* control room, the closed-session sheet, and settings are modal (scrim);
+   chat is an independent toggle */
+function syncScrim(){
+  document.body.classList.toggle('sheet-open', sessOpen || closedOpen || setOpen);
+}
 function openSessSheet(){
   sessOpen = true;
   sessSheet.classList.add('open');
-  document.body.classList.add('sheet-open');
+  syncScrim();
   pollSessions();
 }
 function closeSessSheet(){
   sessOpen = false;
   sessSheet.classList.remove('open');
-  if(!closedOpen) document.body.classList.remove('sheet-open');
+  syncScrim();
 }
+/* v6: settings sheet (the gear). One option today: the voice source. */
+function renderVoicePref(){
+  const mac = voicePref === 'mac';
+  $('voiceMacBtn').classList.toggle('sel', mac);
+  $('voiceMacBtn').setAttribute('aria-checked', String(mac));
+  $('voicePhoneBtn').classList.toggle('sel', !mac);
+  $('voicePhoneBtn').setAttribute('aria-checked', String(!mac));
+}
+function setVoicePref(p){
+  voicePref = p;
+  try{ localStorage.setItem('vbvoice', p); }catch(e){}
+  /* re-selecting Mac gives it a fresh chance after earlier failures */
+  if(p === 'mac'){ macDead = false; macFails = 0; }
+  renderVoicePref();
+}
+function openSetSheet(){
+  renderVoicePref();
+  setOpen = true;
+  setSheet.classList.add('open');
+  syncScrim();
+}
+function closeSetSheet(){
+  setOpen = false;
+  setSheet.classList.remove('open');
+  syncScrim();
+}
+$('setBtn').addEventListener('click', () => { setOpen ? closeSetSheet() : openSetSheet(); });
+$('voicePhoneBtn').addEventListener('click', () => setVoicePref('phone'));
+$('voiceMacBtn').addEventListener('click', () => setVoicePref('mac'));
+renderVoicePref();
 /* v5: read-only sheet for a closed (inactive) session; never starts a call */
 async function openClosedSheet(s){
   closedOpen = true;
@@ -1703,7 +1920,7 @@ async function openClosedSheet(s){
 function closeClosedSheet(){
   closedOpen = false;
   closedSheet.classList.remove('open');
-  if(!sessOpen) document.body.classList.remove('sheet-open');
+  syncScrim();
 }
 function closeChatSheet(){
   chatSheet.classList.remove('open');
@@ -1711,7 +1928,7 @@ function closeChatSheet(){
   chatBtn.setAttribute('aria-pressed', 'false');
   chatBtn.setAttribute('aria-label', 'Show chat');
 }
-scrim.addEventListener('click', () => { closeSessSheet(); closeClosedSheet(); });
+scrim.addEventListener('click', () => { closeSessSheet(); closeClosedSheet(); closeSetSheet(); });
 $('pill').addEventListener('click', () => { sessOpen ? closeSessSheet() : openSessSheet(); });
 chatBtn.addEventListener('click', () => {
   const open = chatSheet.classList.toggle('open');
@@ -1868,7 +2085,9 @@ function sessionCard(s){
     ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none"/>' +
     '<path d="M15 9a4.2 4.2 0 0 1 0 6"/><path d="M17.8 6.6a8 8 0 0 1 0 10.8"/></svg>';
-  hear.addEventListener('click', ev => { ev.stopPropagation(); hearLast(s, hear); });
+  /* unlockAudio runs synchronously INSIDE this tap: hear-last can play the
+     Mac voice through WebAudio without ever passing the Start call tap */
+  hear.addEventListener('click', ev => { ev.stopPropagation(); unlockAudio(); hearLast(s, hear); });
 
   card.append(main, hear);
   return card;
@@ -2030,7 +2249,7 @@ function goCall(name){
 function goHome(){
   onHome = true;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
-  hideDecision(); closeSessSheet(); closeClosedSheet(); closeChatSheet();
+  hideDecision(); closeSessSheet(); closeClosedSheet(); closeSetSheet(); closeChatSheet();
   startOverlay.classList.add('hidden');
   setState('ended', 'call ended');
   document.body.classList.add('home');
