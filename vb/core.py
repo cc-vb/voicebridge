@@ -28,6 +28,8 @@ RATE_FILE = STATE_DIR / "rate"
 VOICE_FILE = STATE_DIR / "voice"
 MIC_FLAG = STATE_DIR / "mic_on"
 REMAINDER = STATE_DIR / "speech_remainder"   # what the cap cut off, for `vb continue`
+SPEECH_CHUNKS = STATE_DIR / "speech_chunks"  # current reply, split into chunks
+SPEECH_POS = STATE_DIR / "speech_pos"        # index of the chunk playing now
 
 
 def is_voiced(session_id: str) -> bool:
@@ -646,6 +648,27 @@ def hold() -> str:
         return "nothing is speaking"
 
 
+def rewind_speech(delta: int) -> str:
+    """Re-speak from the sentence `delta` away from the one playing now
+    (delta -1 = back one sentence, +1 = skip forward). The worker publishes
+    the chunk list and its position, so this hushes and re-speaks from the
+    target chunk onward, a small gap, but it's the sentence-granular recovery
+    that works in speak-only mode where there's no mic to say "go back"."""
+    try:
+        chunks = json.loads(SPEECH_CHUNKS.read_text())
+        pos = int(SPEECH_POS.read_text().strip())
+    except Exception:
+        return "nothing is speaking"
+    if not chunks:
+        return "nothing is speaking"
+    if delta > 0 and pos >= len(chunks) - 1:
+        return "already at the last sentence"
+    target = max(0, min(len(chunks) - 1, pos + delta))
+    hush()
+    speak(" ".join(chunks[target:]))
+    return "back a sentence" if delta < 0 else "skipped ahead"
+
+
 def hush() -> None:
     """Stop whatever speech is playing (any engine), including the chunked
     speaker's afplay children (killed via the process group)."""
@@ -718,6 +741,12 @@ def speak_chunks_blocking(text: str) -> None:
         kokoro_ok = False
     if kokoro_ok:
         chunks = split_speech_chunks(text)
+        # Publish the chunk list so `vb back`/`vb skip` can re-speak from a
+        # neighbouring sentence (sentence-level rewind for speak-only mode).
+        try:
+            SPEECH_CHUNKS.write_text(json.dumps(chunks))
+        except Exception:
+            pass
         slots = [str(STATE_DIR / f"speech-{i}.wav") for i in (0, 1)]
         cur = _kokoro_wav(chunks[0], out=slots[0]) \
             or _kokoro_wav(chunks[0], out=slots[0])   # one retry
@@ -726,6 +755,10 @@ def speak_chunks_blocking(text: str) -> None:
         if cur:
             i = 0
             while i < len(chunks):
+                try:
+                    SPEECH_POS.write_text(str(i))   # which sentence is playing
+                except Exception:
+                    pass
                 player = subprocess.Popen(
                     ["afplay", cur],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

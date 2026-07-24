@@ -589,6 +589,12 @@ def main(argv) -> int:
         # Pause/resume, as opposed to hush, which ends the reply for good.
         print(core.hold())
 
+    elif cmd in ("back", "skip"):
+        # Sentence-level rewind while a reply is being read (keyboard recovery
+        # for speak-only mode). back = re-speak from the previous sentence,
+        # skip = jump to the next one.
+        print(core.rewind_speech(-1 if cmd == "back" else 1))
+
     elif cmd == "repeat":
         # Re-speak the last reply. Keyboard recovery for "I missed that",
         # and the only recovery that works in speak-only mode (no mic to say
