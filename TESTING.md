@@ -30,7 +30,7 @@ engine `kokoro`, stt `en`.
 
 ## 1. Install / health
 - **Do:** `vb doctor`
-- **Expect:** all 9 lines PASS. Any FAIL prints the exact fix. Mic +
+- **Expect:** all 10 lines PASS. Any FAIL prints the exact fix. Mic +
   Accessibility must be granted to your terminal app.
 
 ## 2. Voice OUT (it speaks)
@@ -59,9 +59,46 @@ engine `kokoro`, stt `en`.
 ## 5. Wake mode
 - **Do:** `/voice-wake`. Talk normally / to another person.
 - **Expect:** silence, nothing injected. Then say *"hey Claude, what day is
-  it?"* , only that reaches Claude.
+  it?"* , only that reaches Claude. The ding comes while you're still
+  talking, not after the sentence.
+- **Expect (short answers):** wake mode speaks only the FIRST SENTENCE of
+  the reply , the full text still lands on screen. Ask something with a
+  long answer to confirm it stops at the first `.` rather than mid-word.
 - **Try to break:** say a sentence containing "cloudy" or "loud" mid-way ,
   must NOT trigger. Say "hey cloud" / "you cloud" / "glory" , SHOULD trigger.
+
+## 5b. Speed and pause, mid-reply
+- **Faster / slower:** during a long reply press **Fn+F9** (or
+  `Cmd+Alt+Ctrl+F`), then **Fn+F7** (`Cmd+Alt+Ctrl+S`).
+- **Expect:** a tick confirms, and the new pace starts at the NEXT sentence
+  , the reply is never cut off or restarted. `vb speed` shows the value;
+  the range clamps at 0.5x and 3.5x, and the edges say so.
+- **Pause:** press **Fn+F8** (or `Cmd+Alt+Ctrl+H`) mid-sentence, wait, press
+  again.
+- **Expect:** it freezes mid-word and resumes from that same word , not
+  from the start of the reply. Distinct from `Cmd+Alt+Ctrl+X`, which ends
+  the reply for good.
+- **Try to break:** press Fn+F9 several times fast , it should clamp at
+  3.5x and keep speaking, no stutter or double playback.
+
+## 5c. Indicators (opt-in, nothing pops up)
+- **Do (with a status line you already use):** `vb statusline-install`,
+  restart Claude Code, then `/voice-on`.
+- **Expect:** your own status line renders in full and unchanged , if it
+  was two lines it is still two lines , with `vb 🎙 voice on` on a NEW line
+  underneath (then `hearing you`, `speaking`). Nothing is appended to the
+  end of your last line. `settings.json.vbbak` exists as the backup.
+- **Expect (silent when idle):** `/voice-off` , our line disappears
+  entirely, leaving your status line byte-for-byte as it was, with no
+  "voice off" text and no leftover blank line.
+- **Undo:** `vb statusline-uninstall` , `settings.json` goes back to your
+  original `statusLine` command; running it twice says there's nothing to
+  undo rather than deleting your line.
+- **Do:** `vb meter` in a second terminal tab and talk.
+- **Expect:** the bar moves in real time and the label tracks the state.
+  Ctrl-C restores the cursor cleanly.
+- **Expect:** `/voice-on` alone spawns NO floating window; `vb orb` shows
+  one only if you ask for it.
 
 ## 6. Fleet control (the differentiator)
 Open 2-3 Claude sessions in different project folders first.

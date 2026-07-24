@@ -176,4 +176,12 @@ Privacy & Security), for YOUR TERMINAL APP:
 
 Then, inside any Claude Code session:   /voice-on
 Speak. Say "stop listening" to end.    Tune with: vb voice / vb rate / vb lang
+
+Want to SEE whether the mic is open? Add the voice state to Claude Code's
+status line. Yours is printed exactly as it is (however many lines it has)
+and the voice state goes on ONE extra line underneath -- and that line is
+absent entirely while voice is off:
+  vb statusline-install     then restart Claude Code once
+  vb statusline-uninstall   puts your original line back
+Or run  vb meter  in a second terminal tab for a live moving level bar.
 EOF

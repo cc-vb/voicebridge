@@ -13,7 +13,8 @@ voice services, no per-minute fees.
 
 - **Talk to a session**: `/voice-on` for a continuous hands-free
   conversation, or `/voice-wake` for ambient mode that only reacts to "hey
-  Claude ..." (good around other people). `/voice-off` to stop.
+  Claude ..." and answers with a single spoken sentence, so it stays out of
+  the way around other people. `/voice-off` to stop.
 - **Fleet control by voice** , the part nothing else does. Run many agents
   at once and steer them all with one voice: ask *"which agents need me?"*
   to hear who's waiting vs working, *"switch to jobhunt"* to move your
@@ -60,18 +61,38 @@ Setup installs the speech stack (brew packages + local models, one time,
 
 Speak. That's it.
 
+**Recommended one-time extra:** show the voice state in Claude Code's own
+status line, so you can always see whether the mic is open:
+
+```
+vb statusline-install          # then restart Claude Code once
+```
+
+**It adds a line; it never replaces or reflows yours.** Already have a
+status line , even a two-line one with branch, model, and cost? It keeps
+running exactly as before, printed verbatim, and we add `vb 🎙 voice on` as
+one extra line underneath. While voice is off that line isn't there at all,
+so an idle install is invisible. Undo any time with
+`vb statusline-uninstall`, which puts your original command back.
+
+States: `🎙 voice on`, `🎙 hearing you`, `✍ working`, `🔊 speaking`,
+`💤 wake-word`, `🔉 reads replies`, `⏸ paused`. Full details, and the live
+`vb meter` bar for a second terminal tab, are in [SETUP.md](SETUP.md).
+
 **The commands to know (this is all most people need):**
 
 | Command | What it does |
 |---|---|
 | `/voicebridge:voice-on` | start talking to this session, hear replies |
-| `/voicebridge:voice-wake` | hands-free; only reacts to "hey Claude ..." |
+| `/voicebridge:voice-wake` | hands-free; only reacts to "hey Claude ...", answers in one sentence |
 | `/voicebridge:voice-off` | stop, for this session |
 | `/voicebridge:voice-off-all` | stop everywhere and release the mic, from any terminal |
 | **Cmd+Alt+Ctrl+X** | **silence the voice instantly** (or just start typing) |
 | **Fn+F8** (or Cmd+Alt+Ctrl+H) | pause the reply mid-word; press again to resume |
 | **Fn+F9 / Fn+F7** (or Cmd+Alt+Ctrl+F / S) | speak faster / slower, without cutting the reply off |
-| `vb orb` | floating indicator that pulses with your voice, so you can see at a glance whether the mic is actually open (auto-shows on voice-on) |
+| `vb statusline-install` | show the voice state , listening / hearing / speaking , as one extra line under your Claude Code status line; yours is left exactly as it is (`vb statusline-uninstall` undoes it) |
+| `vb meter` | live level meter for a second terminal tab; the bar moves as you talk |
+| `vb orb` | opt-in floating indicator that pulses with your voice; nothing pops it up for you |
 | `vb phone` | use it from your phone (prints a QR to scan) |
 | `vb voice <name>` | change the voice (`vb voice` lists all) |
 
@@ -110,7 +131,9 @@ The installer is idempotent and handles everything: brew packages
 (whisper-cpp, sox, ffmpeg), the whisper model download, the `vb` command,
 the /voice-on and /voice-off slash commands, and hook registration in
 `~/.claude/settings.json` (append-only; your existing hooks are untouched).
-It finishes with `vb doctor`, a 9-point health check.
+It finishes with `vb doctor`, a 10-point health check, and prints the
+`vb statusline-install` tip described above (the status line stays opt-in,
+so the installer never rewrites a status line you already had).
 
 Two one-time macOS permissions are yours to grant when prompted, both for
 your terminal app under System Settings -> Privacy & Security:
@@ -358,7 +381,7 @@ and **Accessibility** (for the paste keystroke). See [SETUP.md](SETUP.md).
 ### Config (env vars)
 
 - `VOICEBRIDGE_VOICE`  say voice name (empty = system default)
-- `VOICEBRIDGE_RATE`   words per minute (default 200)
+- `VOICEBRIDGE_RATE`   words per minute (default 175)
 - `VOICEBRIDGE_MAXCHARS` max chars spoken per utterance (default 700)
 
 List voices with `say -v '?'`.

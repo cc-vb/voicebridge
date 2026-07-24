@@ -17,7 +17,7 @@ Do not paraphrase or shorten the tables. Do not run any other command.
 |---|---|
 | `/voice-on` | Speak-only: replies read aloud; you type or press space to dictate |
 | `/voice-agent` | Hands-free: our mic listens to everything you say |
-| `/voice-wake` | Hands-free, but only reacts to "hey Claude ..." |
+| `/voice-wake` | Hands-free, but only reacts to "hey Claude ..."; speaks a one-sentence answer |
 | `/voice-off` | Stop voice, this session only |
 | `/voice-off-all` | Stop voice everywhere and release the mic, from any terminal |
 | `/phone` | Talk from your phone: prints a QR to scan |
@@ -64,6 +64,8 @@ Cmd+Alt+Ctrl chords work either way.
 | `vb speed 1.5` | Playback speed, 0.5x to 3.5x |
 | `vb hold` | Pause the reply; run again to resume (Fn+F8) |
 | `vb pause <secs>` | Silence that ends an utterance (default 2.5) |
+| `vb statusline-install` | Append the voice state to your status line (`-uninstall` undoes it) |
+| `vb meter` | Live level meter for a second terminal tab |
 | `vb doctor` | Health check |
 | `vb selftest` | Not hearing you? This says exactly why |
 | `vb help` | Full CLI guide |

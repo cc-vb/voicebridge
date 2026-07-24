@@ -32,4 +32,10 @@ Then end with EXACTLY this block so they know what to try first:
      /voicebridge:voice-off    ← stop
      vb phone                  ← use it from your phone (shows a QR to scan)
 
+  See whether the mic is open, right in Claude Code's status line
+  (appends to the status line you already have; silent when voice is off):
+     vb statusline-install     ← then restart Claude Code once
+     vb statusline-uninstall   ← puts your original line back
+     vb meter                  ← or a live level bar in a second tab
+
   Change the voice with `vb voice <name>`; see all with `vb voice`.
