@@ -124,7 +124,6 @@ def _adjust_speed(delta: float = 0.0, absolute: float = 0.0) -> str:
     x = max(core.MIN_SPEED,
             min(core.MAX_SPEED, absolute if absolute else cur + delta))
     core.RATE_FILE.write_text(str(int(round(175.0 * x))))
-    core.bump_stat("speed")   # user knows speed control; stop suggesting it
     # Read back what was stored, so the spoken confirmation matches the
     # speed actually in effect rather than the requested one.
     return f"{core.spoken_speed(int(core.get_rate()) / 175.0)} speed"
@@ -1287,7 +1286,6 @@ def run_daemon() -> int:
             if why and not (mode == "wake" and wake_accept(text, why, winked)):
                 if text:
                     core.log(f"talkd dropped ({why}): {text[:80]}")
-                    core.bump_stat("drops")   # stray audio -> may suggest wake
                 continue
 
         # Fleet control by voice: roster + switch across all sessions.
@@ -1396,7 +1394,6 @@ def run_daemon() -> int:
         # seconds we spent recording and transcribing.
         if not inject.paste_text(text, send=True, expect_app=bound):
             continue
-        core.bump_stat("prompts")
         _cue(THINK)
         time.sleep(1.0)
         # Nothing is marked read here. This used to re-baseline on the newest

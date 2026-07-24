@@ -162,57 +162,25 @@ _SL_LABEL = {
     "wake": "💤 wake-word", "speakonly": "🔉 reads replies",
     "away": "⏸ paused", "off": "○ voice off",
 }
-# States with one obviously-right thing to say show it; the rest get a single
-# rotating recommendation (see recommend()).
-_SL_CRITICAL = {
-    "speaking": 'say "stop" or ⌃⌥⌘X to cut in',
-    "off": '/voice-agent to talk · /voice-on to just hear replies',
-    "wake": 'say "hey Claude …" to talk',
-    "away": 'focus this window to resume',
-    "thinking": 'one moment…',
-}
 
 
-def recommend(phase: str, n: int = 0, stats: dict = None,
-              update_cmd: str = "", speed_changed: bool = False) -> str:
-    """Pick ONE suggestion to show, adapting to what the user is doing.
+def render_statusline(hud: dict, update_cmd: str = "") -> str:
+    """The voicebridge SEGMENT of a status line: `vb <state>`, nothing else.
 
-    Not everything at once: a single tip, rotated by `n` each refresh, drawn
-    from the ones that are RELEVANT right now. Behaviour signals steer it, e.g.
-    a burst of dropped/stray captures (`stats['drops']`) surfaces the wake-mode
-    tip, since that usually means agent mode is hearing things it shouldn't."""
-    if phase in _SL_CRITICAL:
-        return _SL_CRITICAL[phase]
-    stats = stats or {}
-    cands = []
-    if update_cmd:
-        cands.append(update_cmd)
-    drops = stats.get("drops", 0)
-    prompts = stats.get("prompts", 0)
-    if phase in ("listening", "hearing") and drops >= 3 and drops >= prompts:
-        cands.append('getting stray prompts? say "wake word mode" to only '
-                     'listen after "hey Claude"')
-    if not speed_changed:
-        cands.append('say "faster" / "slower", or tap F9 / F7, for speed')
-    cands += [
-        'say "stop listening" to mute  ·  ⌃⌥⌘X silences now',
-        '⌃⌥⌘Z stops Claude mid-answer',
-        'talk over a reply to interrupt and redirect it',
-    ]
-    return cands[n % len(cands)]
+    This is appended to whatever status line you already had, so it has to
+    earn every character. It carries state only , no rotating tips: a hint you
+    have read twice is noise on someone else's line, and it competed with the
+    git/branch/cost segments people actually put there.
 
-
-def render_statusline(hud: dict, n: int = 0, stats: dict = None,
-                      update_cmd: str = "", speed_changed: bool = False) -> str:
-    """One clean line: `vb <state>  ·  <one recommendation>`. The update
-    prompt, when pending, is just one of the rotating recommendations rather
-    than a permanent prefix."""
+    Silent when voice is off, which is most of the time. An empty string means
+    "add nothing", so a status line with no voice running looks exactly like it
+    did before voicebridge was installed. The one exception is a pending
+    update, which is rare, actionable, and disappears once taken."""
     phase = hud.get("phase", "off")
-    if phase not in _SL_LABEL:
-        phase = "off"
-    hint = recommend(phase, n=n, stats=stats, update_cmd=update_cmd,
-                     speed_changed=speed_changed)
-    return f"vb {_SL_LABEL[phase]}  ·  {hint}"
+    if phase not in _SL_LABEL or phase == "off":
+        return ""
+    seg = f"vb {_SL_LABEL[phase]}"
+    return f"{seg}  ·  {update_cmd}" if update_cmd else seg
 
 
 def read_hud() -> dict:
@@ -226,38 +194,6 @@ def read_hud() -> dict:
         return d
     except Exception:
         return {"phase": "off", "level": 0.0, "text": "", "ts": 0}
-
-
-STATS_FILE = STATE_DIR / "stats.json"
-
-
-def bump_stat(key: str, window: float = 600.0) -> None:
-    """Count a recent behaviour event (rolling ~10min window) for the status
-    line's recommendations, e.g. 'prompts' injected, 'drops' (stray captures),
-    'speed'. Best-effort; never raises."""
-    try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        try:
-            d = json.loads(STATS_FILE.read_text())
-            if time.time() - float(d.get("since", 0)) > window:
-                d = {"since": time.time()}
-        except Exception:
-            d = {"since": time.time()}
-        d[key] = int(d.get(key, 0)) + 1
-        STATS_FILE.write_text(json.dumps(d))
-    except Exception:
-        pass
-
-
-def get_stats(window: float = 600.0) -> dict:
-    """Recent behaviour counts, or {} if none/stale."""
-    try:
-        d = json.loads(STATS_FILE.read_text())
-        if time.time() - float(d.get("since", 0)) > window:
-            return {}
-        return d
-    except Exception:
-        return {}
 
 
 _FENCE = re.compile(r"```.*?```", re.DOTALL)

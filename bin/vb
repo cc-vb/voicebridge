@@ -464,31 +464,18 @@ def main(argv) -> int:
             sys.stdout.flush()
 
     elif cmd in ("statusline", "status-line"):
-        # For Claude Code's statusLine setting. Claude Code re-invokes this
-        # only on activity (measured ~once every few seconds), NOT
-        # continuously, so this can't animate. Instead it shows the current
-        # state, a contextual suggestion for that state, and an update alert
-        # when one is pending. The real-time "listening now" cue is the audio
-        # ding; this line is the glanceable "what mode am I in / what can I do".
+        # Prints only the voicebridge SEGMENT , `vb 🎙 voice on` and nothing
+        # else , because this is appended to whatever status line you already
+        # had. Claude Code re-invokes it on activity (~every few seconds), not
+        # continuously, so it can't animate; the real-time "listening now" cue
+        # is the audio ding and `vb meter`. Prints NOTHING when voice is off,
+        # so an untouched status line stays exactly as it was.
         try:
             if not sys.stdin.isatty():
                 sys.stdin.read()
         except Exception:
             pass
-        import os
         h = core.read_hud()
-        # Rotate the tips: bump a counter each refresh so a different
-        # suggestion shows each time (the line refreshes on activity).
-        cnt_file = core.STATE_DIR / "statusline_n"
-        try:
-            n = int(cnt_file.read_text().strip()) + 1
-        except Exception:
-            n = 0
-        try:
-            core.STATE_DIR.mkdir(parents=True, exist_ok=True)
-            cnt_file.write_text(str(n))
-        except Exception:
-            pass
         # Update alert with the exact command for THIS install type.
         update_cmd = ""
         try:
@@ -506,15 +493,19 @@ def main(argv) -> int:
                 update_cmd = "update: /plugin marketplace update voicebridge"
         except Exception:
             pass
-        stats = core.get_stats()
-        print(core.render_statusline(h, n=n, stats=stats, update_cmd=update_cmd,
-                                     speed_changed=bool(stats.get("speed"))))
+        seg = core.render_statusline(h, update_cmd=update_cmd)
+        if seg:
+            print(seg)
 
-    elif cmd == "statusline-install":
-        # Opt-in: wire `vb statusline` into ~/.claude/settings.json without
-        # clobbering an existing status line (we back it up and merge).
+    elif cmd in ("statusline-install", "statusline-uninstall"):
+        # Your status line is YOURS. If you already have one, we do not
+        # replace it: we write a wrapper that runs your command first and
+        # appends our segment to its output, so git/branch/model/cost survive
+        # untouched. `statusline-uninstall` puts your original command back.
         import json as _json
         cfg = Path.home() / ".claude" / "settings.json"
+        wrap = core.STATE_DIR / "statusline.sh"
+        orig_file = core.STATE_DIR / "statusline_orig.json"
         data = {}
         if cfg.exists():
             try:
@@ -522,12 +513,72 @@ def main(argv) -> int:
             except Exception:
                 print(f"couldn't parse {cfg}; not touching it")
                 return 1
-            cfg.with_suffix(".json.vbbak").write_text(cfg.read_text())
-        data["statusLine"] = {"type": "command",
-                              "command": f"{SELF} statusline"}
+        existing = data.get("statusLine") or {}
+        ours = str(wrap) in str(existing.get("command", ""))
+
+        if cmd == "statusline-uninstall":
+            if not ours:
+                print("voicebridge isn't in your status line; nothing to undo")
+                return 0
+            try:
+                data["statusLine"] = _json.loads(orig_file.read_text())
+            except Exception:
+                data.pop("statusLine", None)   # there was nothing before us
+            cfg.write_text(_json.dumps(data, indent=2))
+            print(f"your status line is back to {data.get('statusLine')}. "
+                  "Restart Claude Code.")
+            return 0
+
+        if ours:
+            print("already installed (your own status line is preserved)")
+            return 0
+        cfg.with_suffix(".json.vbbak").write_text(
+            cfg.read_text() if cfg.exists() else "{}")
+        # Remember the exact block we found, so uninstall is a real undo and
+        # not a guess at what you used to have.
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if existing:
+            orig_file.write_text(_json.dumps(existing))
+        prev = ""
+        if existing.get("type") == "command" and existing.get("command"):
+            prev = existing["command"]
+        elif existing:
+            # A non-command status line (a plain string, a future type) can't
+            # be run through a pipe, so leave it alone rather than mangle it.
+            print("your status line isn't a command type; not touching it. "
+                  f"Add this yourself where you want it:  {SELF} statusline")
+            return 1
+        # The wrapper feeds Claude Code's JSON payload to BOTH commands: yours
+        # needs it (branch, model, cost all come from there) and ours reads it
+        # to stay in sync. `$payload` is passed on stdin to each, exactly as
+        # Claude Code would have.
+        #
+        # Ours goes on its OWN line, below yours. Appending to your last line
+        # would grow whichever line happened to be last, and status lines are
+        # already built as columns that people read left to right; a state
+        # that changes every few seconds does not belong in the middle of one.
+        wrap.write_text(
+            "#!/bin/sh\n"
+            "# voicebridge status line: runs YOUR status line unchanged, then\n"
+            "# adds the voice state as one extra line UNDER it (and adds\n"
+            "# nothing at all while voice is off).\n"
+            "# Remove with: vb statusline-uninstall\n"
+            "payload=$(cat)\n"
+            + (f'mine=$(printf %s "$payload" | {prev} 2>/dev/null)\n'
+               if prev else 'mine=""\n')
+            + f'vb=$(printf %s "$payload" | {SELF} statusline 2>/dev/null)\n'
+            '[ -n "$mine" ] && printf "%s\\n" "$mine"\n'
+            '[ -n "$vb" ] && printf "%s\\n" "$vb"\n'
+            'exit 0\n')
+        wrap.chmod(0o755)
+        data["statusLine"] = {"type": "command", "command": f"sh {wrap}"}
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text(_json.dumps(data, indent=2))
-        print(f"status line wired into {cfg} (backup: settings.json.vbbak). "
+        kept = f"kept your existing line ({prev})" if prev else "no previous line"
+        print(f"status line wired into {cfg}; {kept}. "
+              "The voice state gets its OWN line under yours, and only while "
+              "voice is ON. "
+              "Backup: settings.json.vbbak · undo: vb statusline-uninstall. "
               "Restart Claude Code to see it.")
 
     elif cmd == "hush":

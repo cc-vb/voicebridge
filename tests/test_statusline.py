@@ -1,4 +1,4 @@
-"""The status line: ONE state + ONE rotating, behaviour-aware recommendation.
+"""The status line SEGMENT: one state, appended to a line we do not own.
 
 Run: python3 tests/test_statusline.py   (no pytest needed)
 """
@@ -9,61 +9,49 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from vb import core  # noqa: E402
 
 
-def test_line_is_state_plus_one_suggestion_only():
-    out = core.render_statusline({"phase": "listening"}, n=0)
-    assert out.startswith("vb ")
-    # exactly one " · " separator: "vb <state> · <one tip>"
-    assert out.count(" · ") == 1, out
+def test_segment_is_state_only():
+    out = core.render_statusline({"phase": "listening"})
+    assert out == "vb 🎙 voice on", out
 
 
-def test_update_is_not_a_permanent_prefix():
-    # With an update pending, most refreshes still show a normal tip; the
-    # update is just one of the rotating suggestions, not always shown.
-    outs = [core.render_statusline({"phase": "listening"}, n=i,
-                                   update_cmd="update: run vb update")
-            for i in range(6)]
-    with_update = [o for o in outs if "update" in o]
-    assert 0 < len(with_update) < len(outs), "update should rotate, not stick"
+def test_silent_when_voice_is_off():
+    # The common case. Someone who installed us months ago and isn't talking
+    # right now must see their own status line, unchanged, with nothing of
+    # ours in it.
+    assert core.render_statusline({"phase": "off"}) == ""
+    assert core.render_statusline({}) == ""
+    assert core.render_statusline({"phase": "nonsense"}) == ""
 
 
-def test_recommendations_rotate_one_at_a_time():
-    seen = {core.recommend("listening", n=i, speed_changed=True)
-            for i in range(4)}
-    assert len(seen) > 1, "should show different suggestions across refreshes"
+def test_no_tips_in_any_state():
+    # We used to rotate suggestions here. On a shared line they are noise:
+    # you read them once, then they compete with git/model/cost forever.
+    for phase in core.HUD_PHASES:
+        out = core.render_statusline({"phase": phase})
+        for noise in ("faster", "slower", "F9", "wake word mode",
+                      "stop listening", "cut in"):
+            assert noise not in out, f"{phase} leaked a tip: {out}"
 
 
-def test_stray_audio_surfaces_wake_suggestion():
-    # A burst of dropped captures in agent mode -> recommend wake mode.
-    tip_seen = any(
-        "wake word mode" in core.recommend("listening", n=i,
-                                            stats={"drops": 5, "prompts": 0},
-                                            speed_changed=True)
-        for i in range(6))
-    assert tip_seen, "high drops should surface the wake-mode recommendation"
+def test_every_live_phase_has_a_label():
+    for phase in core.HUD_PHASES:
+        out = core.render_statusline({"phase": phase})
+        assert out.startswith("vb "), phase
+        assert len(out) > 4, phase
 
 
-def test_no_wake_suggestion_when_capture_is_clean():
-    for i in range(6):
-        assert "wake word mode" not in core.recommend(
-            "listening", n=i, stats={"drops": 0, "prompts": 4},
-            speed_changed=True)
-
-
-def test_speed_tip_gone_once_user_used_speed():
-    for i in range(6):
-        assert "faster" not in core.recommend("listening", n=i,
-                                               speed_changed=True)
-    assert any("faster" in core.recommend("listening", n=i, speed_changed=False)
-               for i in range(6))
-
-
-def test_speaking_always_shows_cut_in():
-    for i in range(4):
-        assert "cut in" in core.recommend("speaking", n=i)
+def test_update_alert_is_the_one_exception():
+    out = core.render_statusline({"phase": "listening"},
+                                 update_cmd="update: run  vb update")
+    assert "update: run  vb update" in out
+    assert out.startswith("vb 🎙 voice on"), out
+    # ...but never when voice is off: an idle install stays silent.
+    assert core.render_statusline({"phase": "off"},
+                                  update_cmd="update: run  vb update") == ""
 
 
 if __name__ == "__main__":
     for fn in list(globals().values()):
         if callable(fn) and getattr(fn, "__name__", "").startswith("test_"):
             fn()
-    print("ok  status line: single behaviour-aware recommendation, rotating")
+    print("ok  status line: state-only segment, silent when off")

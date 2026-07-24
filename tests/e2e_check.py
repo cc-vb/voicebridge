@@ -93,8 +93,11 @@ def hud():
 
 
 def statusline():
-    out = core.render_statusline({"phase": "speaking"}, n=0)
-    return ("cut in" in out and out.count(" · ") == 1), out
+    # A state-only segment while speaking, and nothing at all when off (the
+    # line belongs to the user, not to us).
+    out = core.render_statusline({"phase": "speaking"})
+    quiet = core.render_statusline({"phase": "off"}) == ""
+    return (out == "vb 🔊 speaking" and quiet), f"{out!r} off-silent={quiet}"
 
 
 def isolation():
@@ -149,7 +152,7 @@ def main():
     check("TTS produces audio", tts_audio)
     check("modes all/wake/speak", modes)
     check("HUD set/read + staleness", hud)
-    check("status line (one state + one hint)", statusline)
+    check("status line (state only, silent when off)", statusline)
     check("per-session isolation (fail-closed)", isolation)
     check("cue dings once, not per cycle", cue)
     check("daemon lifecycle + mic release + stale-restart", lifecycle)
