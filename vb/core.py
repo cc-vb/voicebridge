@@ -440,13 +440,18 @@ def qr_text(url: str) -> str:
     try:
         import io
         import qrcode
-        qr = qrcode.QRCode(border=4,
+        # border=2 (not the spec's 4): every column counts in a terminal, a
+        # 41-char-wide QR wraps in narrow panes and a wrapped QR never scans.
+        # A 2-module quiet zone still scans reliably on a clean background.
+        qr = qrcode.QRCode(border=2,
                            error_correction=qrcode.constants.ERROR_CORRECT_L)
         qr.add_data(url)
         qr.make(fit=True)
         buf = io.StringIO()
         qr.print_ascii(invert=True, out=buf)
-        text = buf.getvalue()
+        # Strip trailing spaces per line: invisible padding is exactly what
+        # tips a line over the pane width and causes phantom wraps.
+        text = "\n".join(ln.rstrip() for ln in buf.getvalue().splitlines())
         try:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             (STATE_DIR / "phone_qr.txt").write_text(
