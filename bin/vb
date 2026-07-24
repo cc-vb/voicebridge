@@ -532,6 +532,10 @@ def main(argv) -> int:
         core.hush()
         print("hushed (voice only)")
 
+    elif cmd == "hold":
+        # Pause/resume, as opposed to hush, which ends the reply for good.
+        print(core.hold())
+
     elif cmd == "stop":
         # Real interrupt: silence the voice AND send Esc to the session so
         # Claude stops generating (its own stop key), not just pkill say.
@@ -828,7 +832,7 @@ def main(argv) -> int:
             else:
                 note = ""
             print(f"speed: {got:.2f}x  ({core.get_rate()} wpm){note}")
-            core.speak(f"This is {got:.2f} times speed.")
+            core.confirm_speed(got)
         else:
             got = int(core.get_rate()) / base
             print(f"speed: {got:.2f}x  ({core.get_rate()} wpm)")
@@ -851,7 +855,7 @@ def main(argv) -> int:
         edge = "   (engine max)" if x >= hi else (
                "   (minimum)" if x <= lo else "")
         print(f"speed: {got:.2f}x  ({core.get_rate()} wpm){edge}")
-        core.speak(f"{got:.2f} times speed.")
+        core.confirm_speed(got)
 
     elif cmd == "rate":
         if not rest:

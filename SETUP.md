@@ -54,14 +54,21 @@ skhd --stop-service       # disable the hotkey
 
 Change the key by editing `~/.skhdrc` then restarting the service.
 
-### Speaking speed hotkeys
+### Speaking speed and pause hotkeys
 
 ```
 F9  /  Cmd + Alt + Ctrl + F   speak faster (+0.25x)
 F7  /  Cmd + Alt + Ctrl + S   speak slower (-0.25x)
+F8  /  Cmd + Alt + Ctrl + H   pause the reply; press again to resume
 ```
 
-Both pairs run `vb faster` / `vb slower` (0.5x to 3.5x). Plain **F9/F7 only
+`vb hold` pauses mid-word and resumes from the same spot, which is the
+difference from `Cmd+Alt+Ctrl+X` (`vb hush`): hush ends the reply for good.
+
+Changing speed while a reply is playing takes effect on the next sentence,
+and confirms with a tick rather than speaking over itself.
+
+The first two run `vb faster` / `vb slower` (0.5x to 3.5x). Plain **F9/F7/F8 only
 reach skhd if the keyboard is in "standard function keys" mode** — otherwise
 macOS consumes them as media keys and you must press **Fn+F9**. Turn the mode
 on in System Settings -> Keyboard -> "Use F1, F2, etc. keys as standard

@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -557,13 +558,17 @@ def split_speech_chunks(text: str, first_max: int = 120,
 def _retime_wav(wav: str, factor: float) -> str:
     """Play a finished WAV `factor` times faster, keeping pitch (atempo).
 
-    atempo tops out at 2x per pass, so chain passes for more. ffmpeg is
-    already an install dependency; if it is missing or fails we return the
-    un-retimed file, so speech stays slower rather than stopping."""
+    atempo only accepts 0.5-2.0 per pass, so chain passes to reach beyond
+    that in either direction. ffmpeg is already an install dependency; if
+    it is missing or fails we return the un-retimed file, so speech plays
+    at the wrong speed rather than not at all."""
     chain, left = [], factor
     while left > 2.0:
         chain.append("atempo=2.0")
         left /= 2.0
+    while left < 0.5:
+        chain.append("atempo=0.5")
+        left /= 0.5
     chain.append(f"atempo={left:.4f}")
     fast = wav + ".fast.wav"
     try:
@@ -606,6 +611,69 @@ def _kokoro_wav(text: str, out: str = "") -> str:
     except Exception as e:
         log(f"kokoro synth failed: {e}")
     return ""
+
+
+def speech_active() -> bool:
+    """True while a reply is actually playing through the speakers."""
+    try:
+        os.kill(int(SPEECH_PID.read_text().strip()), 0)
+        return True
+    except Exception:
+        return False
+
+
+def spoken_speed(x: float) -> str:
+    """A speed a TTS voice can say cleanly.
+
+    "1.00"/"1.25" get read out as "one point zero zero" / "one point two
+    five", which is a mouthful for a confirmation you hear constantly.
+    Percent has no decimal point to trip over: "one hundred percent"."""
+    return f"{int(round(x * 100))} percent"
+
+
+def cue_tick() -> None:
+    """A short tick, for confirming something WITHOUT cutting off speech.
+
+    speak() hushes whatever is playing, so using it to confirm a speed
+    change mid-reply would kill the reply you were adjusting."""
+    try:
+        subprocess.Popen(["afplay", "/System/Library/Sounds/Tink.aiff"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except Exception:
+        pass
+
+
+def confirm_speed(x: float) -> None:
+    """Confirm a new speed: spoken when idle, a tick when already talking."""
+    if speech_active():
+        cue_tick()
+    else:
+        speak(f"{spoken_speed(x)} speed.")
+
+
+def hold() -> str:
+    """Freeze the current reply, or resume a frozen one. One key does both.
+
+    Unlike hush(), which kills the speech outright, SIGSTOP leaves the
+    player where it is so SIGCONT picks the sentence up mid-word. The
+    process group is stopped as a whole, so the chunked speaker cannot
+    move on to the next chunk while paused either.
+
+    Which way to go is read from the process itself ("T" = stopped) rather
+    than a flag file, so it cannot get out of step with reality."""
+    try:
+        pid = int(SPEECH_PID.read_text().strip())
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                              capture_output=True, text=True).stdout.strip()
+        if not stat:
+            return "nothing is speaking"
+        paused = stat.startswith("T")
+        os.killpg(pid, signal.SIGCONT if paused else signal.SIGSTOP)
+        return "resumed" if paused else "held"
+    except Exception:
+        # Speech finished between the read and the signal: nothing to do.
+        return "nothing is speaking"
 
 
 def hush() -> None:
@@ -691,11 +759,24 @@ def speak_chunks_blocking(text: str) -> None:
                 player = subprocess.Popen(
                     ["afplay", cur],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                nxt = ""
+                nxt, nxt_rate = "", ""
                 if i + 1 < len(chunks):
+                    nxt_rate = get_rate()
                     nxt = _kokoro_wav(chunks[i + 1],
                                       out=slots[(i + 1) % 2])
                 player.wait()
+                # The next chunk was rendered before this one finished, so a
+                # speed change during playback would not be heard for two
+                # sentences. Re-time the pending chunk instead of waiting for
+                # it to age out: pressing faster/slower now lands on the very
+                # next sentence.
+                if nxt and nxt_rate and get_rate() != nxt_rate:
+                    try:
+                        ratio = float(get_rate()) / float(nxt_rate)
+                        if abs(ratio - 1.0) > 0.01:
+                            _retime_wav(nxt, ratio)
+                    except (ValueError, ZeroDivisionError):
+                        pass
                 if i + 1 < len(chunks) and not nxt:
                     # A later chunk failed to synthesize , DON'T go silent.
                     # Speak the rest with `say` so the whole reply is heard.

@@ -127,7 +127,7 @@ def _adjust_speed(delta: float = 0.0, absolute: float = 0.0) -> str:
     core.bump_stat("speed")   # user knows speed control; stop suggesting it
     # Read back what was stored, so the spoken confirmation matches the
     # speed actually in effect rather than the requested one.
-    return f"{int(core.get_rate()) / 175.0:.2f} times speed"
+    return f"{core.spoken_speed(int(core.get_rate()) / 175.0)} speed"
 
 
 def alerts_on() -> bool:
