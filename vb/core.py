@@ -424,22 +424,38 @@ def print_qr(url: str) -> bool:
     Redundancy buys nothing here: the "print" is lossless, the failure mode
     is a camera that cannot resolve tiny modules.
     """
-    try:
-        import qrcode
-    except Exception:
+    text = qr_text(url)   # also persists phone_qr.txt for the slash command
+    if not text:
         return False
+    print(text)
+    return True
+
+
+def qr_text(url: str) -> str:
+    """The QR as terminal half-block text ('' on failure), also persisted to
+    STATE_DIR/phone_qr.txt. Claude Code COLLAPSES long tool output, so the
+    reliable way to show the QR inline is for the assistant (or the /phone
+    slash command) to re-print this text in its own reply, which is never
+    collapsed. The file is exactly what it should paste."""
     try:
+        import io
+        import qrcode
         qr = qrcode.QRCode(border=4,
                            error_correction=qrcode.constants.ERROR_CORRECT_L)
         qr.add_data(url)
         qr.make(fit=True)
-        # Half blocks: terminal cells are about twice as tall as they are
-        # wide, so two rows per character keeps the modules square.
-        qr.print_ascii(invert=True)
-        return True
-    except Exception as e:
-        log(f"print_qr failed: {e}")
-        return False
+        buf = io.StringIO()
+        qr.print_ascii(invert=True, out=buf)
+        text = buf.getvalue()
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            (STATE_DIR / "phone_qr.txt").write_text(
+                f"{text}\n  PHONE URL: {url}\n")
+        except Exception:
+            pass
+        return text
+    except Exception:
+        return ""
 
 
 def qr_image(url: str) -> str:
