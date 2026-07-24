@@ -454,15 +454,21 @@ def get_engine() -> str:
         return "say"
 
 
-def split_speech_chunks(text: str, first_max: int = 120,
+def split_speech_chunks(text: str, first_max: int = 60,
                         chunk_max: int = 220) -> list:
-    """Chunk a reply for smooth, gap-free streaming playback:
-    - a SMALL first chunk so the voice starts fast (~0.8s);
-    - then several ~chunk_max pieces at sentence boundaries.
-    Each piece synthesizes in ~1-2s while the previous (much longer) piece
-    is still playing, so the pipeline never runs dry, no mid-reply gap, and
-    nothing is one giant synth that lags. Sentences longer than chunk_max are
-    split on commas/spaces so a single long sentence can't stall it."""
+    """Chunk a reply for fast-starting, gap-free streaming playback.
+
+    Caps RAMP up: a tiny first chunk (measured: ~33 chars synthesizes in
+    ~0.75s vs ~2.1s for a 120-char one, so the voice starts ~1.3s sooner), a
+    medium second chunk, then full-size pieces. The ramp matters: each chunk
+    must finish synthesizing while the previous one is still PLAYING, and a
+    tiny first chunk only buys ~2s of playtime, not enough to hide a 220-char
+    synth, so the second chunk stays small too. Sentences longer than a cap
+    are split on commas/spaces so a single long sentence can't stall it."""
+    # Each step sized so its synth fits inside the PREVIOUS chunk's playtime
+    # (~15.5 chars/s speech, ~1s synth per 50 chars): 90 synths in ~1.7s
+    # under 60's ~3.9s of play; 150 in ~2.7s under 90's ~5.8s; 220 always fits.
+    caps = [first_max, min(90, chunk_max), min(150, chunk_max), chunk_max]
     sents = re.split(r"(?<=[.!?])\s+", text.strip())
     pieces = []
     for s in sents:
@@ -479,15 +485,27 @@ def split_speech_chunks(text: str, first_max: int = 120,
             pieces.append(s)
     if not pieces:
         return [text]
-    chunks, cur, cap = [], "", first_max
+    chunks, cur = [], ""
+    cap = caps[0]
     for p in pieces:
         if cur and len(cur) + len(p) + 1 > cap:
             chunks.append(cur)
-            cur, cap = p, chunk_max
+            cur = p
+            cap = caps[min(len(chunks), len(caps) - 1)]
         else:
             cur = f"{cur} {p}".strip()
     if cur:
         chunks.append(cur)
+    # A single long first SENTENCE dodges the ramp (pieces are only split at
+    # chunk_max), leaving a big, slow first synth. Force the first chunk small
+    # by breaking it at a comma/space near first_max.
+    if chunks and len(chunks[0]) > first_max + 30:
+        head = chunks[0]
+        cut = head.rfind(", ", 0, first_max + 30)
+        if cut < first_max // 2:
+            cut = head.rfind(" ", 0, first_max + 15)
+        if cut > 0:
+            chunks[0:1] = [head[:cut + 1].strip(), head[cut + 1:].strip()]
     return chunks
 
 
