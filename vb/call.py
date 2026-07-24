@@ -193,20 +193,59 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
-  voicebridge call page v4. Drop-in replacement for PAGE in vb/call.py.
+  voicebridge call page v5. Drop-in replacement for PAGE in vb/call.py.
   Embed as a RAW string (r prefix) so regex backslashes survive. This file
   contains no triple double-quote sequence anywhere, so it is safe inside
-  a Python raw triple-quoted string.
+  a Python raw triple-quoted string. 100% ASCII.
 
-  New in v4: the page opens on a HOME SCREEN (session list) instead of
-  auto-starting a call. Tapping a session card switches the relay to that
-  session and lands on the call screen's start overlay; a back chevron on
-  the call screen ends the call and returns home. A deep link with
-  &s=SESSION_ID (or ?s=) skips home and lands directly on that session's
-  start overlay. Everything from v3 is preserved on the call screen: the
-  orb, mute and end controls, the chat sheet, the control room sheet, the
-  permission yes/no panel, turn polling, heartbeat, background roster
-  toasts with a chime.
+  CHANGES v4 to v5:
+    1. BARGE-IN: while a reply is being spoken, the user starting to talk
+       interrupts it and becomes the next prompt. A mic monitor runs during
+       speechSynthesis playback (getUserMedia with echoCancellation and
+       noiseSuppression, AnalyserNode RMS; phone AEC removes the device's
+       own speaker output, so sustained voice means the human). RMS above
+       threshold for ~350ms (7 x 50ms frames, never a single spike) cancels
+       the synthesis, plays a tiny WebAudio acknowledgment tick, and routes
+       into the normal listening flow. The whisper path reuses the already
+       open stream. Guards: no barge in the first 600ms of speech (echo
+       settle); monitor stream released when speaking ends; if getUserMedia
+       fails the page degrades to no barge (v4 behavior).
+    2. PAUSE TOLERANCE / STITCHING: end-of-speech no longer sends the
+       prompt immediately. The transcript goes into a stitch buffer and a
+       follow-up window holds the send: 1.6s by default, 2.4s when the text
+       ends in a comma or a trailing conjunction (and/or/but/so/...), 0.9s
+       when it ends in . ? or !. The mic stays open; resuming speech
+       cancels the pending send, appends the continuation, and re-arms the
+       window. The whisper path now requires ~1.4s of RMS silence to end an
+       utterance (was 1.5s at a coarser tick, effectively shorter). The
+       status line shows "listening . . ." with shrinking dots as a subtle
+       countdown, orb stays in the listening color, so it never feels stuck.
+    3. ACTIVE vs INACTIVE SESSIONS: /sessions rows carry "active".
+       Home renders two groups: "Active" (normal cards, tappable to call)
+       and "Earlier" (dimmed, NOT tappable into a call; tapping opens a
+       small read-only sheet with the last reply and a closed-session
+       note). No call, prompt, or switch can target an inactive session,
+       from home, the control room, a toast, or an &s= deep link; a deep
+       link to an inactive session lands on the read-only sheet instead of
+       the call screen. Rows without "active" (older server) act live.
+    4. iOS HARDENING, each fix commented at the site:
+       - TTS warm-up utterance spoken inside the Start tap gesture
+       - AudioContext created/resumed inside the same tap
+       - voices load async: re-picked on voiceschanged, per chunk
+       - synthesis chunked to <=170 chars (a stall loses one chunk), a
+         resume pump for the screen-lock pause, a per-chunk watchdog for
+         utterances iOS drops without end or error events
+       - webkitSpeechRecognition needs Siri and Dictation: 2 consecutive
+         service-not-allowed errors permanently fall back to the whisper
+         path for this session
+       - /stt uploads send the real MediaRecorder mimeType (audio/mp4 on
+         iOS) as the Content-Type
+       - no Screen Wake Lock on older iOS: no fake keep-awake tricks, just
+         thorough visibilitychange recovery (resume TTS, re-arm lock where
+         supported, restart the mic, kick a heartbeat)
+       - Add to Home Screen standalone: body.standalone class from
+         navigator.standalone / display-mode, safe-area floors for the top
+         rows where older devices report a 0 inset
 
   Endpoint contract used (every call carries ?k=SECRET):
     GET  /            serves this page (401 recovery page without a valid k)
@@ -224,18 +263,22 @@ PAGE = r"""<!DOCTYPE html>
                       show the YES / NO pair (each sends POST /ask with text
                       "yes" or "no", the permission relay).
     GET  /sessions    {"sessions":[{"id":"...","name":"...","state":"...",
-                      "current":bool,"pending":bool,"last":"<one-line reply
-                      preview>","ago":<seconds since last activity>}]}.
-                      Renders the HOME cards (name, state, preview, age) and
-                      the control room sheet. Polled ~10s while home is
-                      visible, ~8s while the control room sheet is open,
-                      ~20s in the background of a live call, ~30s otherwise.
-                      "ago" is rendered as 45 "45s", 3000 "50m", 7200 "2h".
+                      "current":bool,"active":bool,"pending":bool,
+                      "last":"<one-line reply preview>","ago":<seconds since
+                      last activity>}]}. "active" true means a live Claude
+                      process owns the session; false means a leftover
+                      transcript that can be read but NOT talked to. Renders
+                      the HOME groups (Active / Earlier) and the control room
+                      sheet. Polled ~10s while home is visible, ~8s while the
+                      control room sheet is open, ~20s in the background of a
+                      live call, ~30s otherwise. "ago" renders 45 "45s",
+                      3000 "50m", 7200 "2h".
     GET  /last?q=NAME {"reply":"..."} latest reply of the named session,
-                      spoken WITHOUT switching the call.
+                      spoken WITHOUT switching the call; also fills the
+                      read-only sheet for inactive sessions.
     POST /switch      body {"id":"..."} repoints the call at that session.
                       Sent by home cards, the &s= deep link, toast taps, and
-                      the control room sheet.
+                      the control room sheet; never sent for inactive rows.
     GET  /chat        {"turns":[{"role":"user"|"assistant","text":"..."}]}
                       most recent last, cleaned for reading. Renders the chat
                       sheet; refreshed after each completed turn and on
@@ -244,14 +287,16 @@ PAGE = r"""<!DOCTYPE html>
     POST /heartbeat   empty body, every 5s while the call is live. Freshness
                       tells the Mac to keep its own speakers quiet; the page
                       shows the "audio on phone" chip while beats land.
-    POST /stt         audio blob (webm/mp4) returns {"text":"..."}, the
-                      whisper fallback when native SpeechRecognition is absent.
+    POST /stt         audio blob returns {"text":"..."}, the whisper fallback
+                      when native SpeechRecognition is absent or disabled.
+                      The page sets Content-Type to the recorder's real
+                      mimeType (audio/webm on Android, audio/mp4 on iOS).
 
   All inline, no external assets or CDNs. iOS Safari and Android Chrome
-  quirks handled: SpeechSynthesis chunking, visibilitychange recovery,
-  wake lock re-arm, data-URI manifest that preserves ?k= (and &s= when the
-  page was opened with one) on Add to Home Screen, safe-area insets,
-  prefers-reduced-motion.
+  quirks handled as listed above, plus the data-URI manifest that preserves
+  ?k= (and &s= when the page was opened with one) on Add to Home Screen,
+  safe-area insets, prefers-reduced-motion, and parked animations while the
+  home screen is visible (reduced battery burn).
 -->
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -319,6 +364,12 @@ body.home header, body.home main, body.home footer, body.home #decide { visibili
   flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch;
   overscroll-behavior:contain; padding:2px 14px 12px; min-height:0;
 }
+/* v5: group labels for the Active / Earlier split */
+.hgroup {
+  font-size:11.5px; letter-spacing:.15em; text-transform:uppercase;
+  color:#5b6479; margin:14px 8px 8px;
+}
+.hgroup:first-child { margin-top:4px; }
 .hcard {
   display:block; width:100%; text-align:left;
   background:var(--surface); border:1px solid var(--line); border-radius:18px;
@@ -327,6 +378,8 @@ body.home header, body.home main, body.home footer, body.home #decide { visibili
 }
 .hcard:active { transform:scale(.985); background:#182032; }
 .hcard.needs { border-color:rgba(229,72,77,.45); }
+/* v5: inactive (closed) sessions render dimmed and never start a call */
+.hcard.closed { opacity:.55; }
 .hcard .r1 { display:flex; align-items:baseline; gap:10px; }
 .hcard .r1 .n {
   flex:1; min-width:0; font-size:16.5px; font-weight:600;
@@ -337,6 +390,7 @@ body.home header, body.home main, body.home footer, body.home #decide { visibili
 .hcard .r2 .lbl { font-size:12.5px; letter-spacing:.04em; color:var(--dim); }
 .hcard .r2 .lbl.working { color:var(--amber); }
 .hcard .r2 .lbl.ready { color:#58cdb9; }
+.hcard .r2 .lbl.closed { color:#5b6479; }
 .hcard .last {
   margin-top:7px; font-size:13.5px; color:#7d8699; line-height:1.4;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
@@ -359,6 +413,13 @@ body.home header, body.home main, body.home footer, body.home #decide { visibili
 #backBtn:active { transform:scale(.92); }
 #backBtn svg { width:20px; height:20px; }
 body.home #backBtn { display:none; }
+
+/* iOS A2HS standalone quirk: with a black-translucent status bar the page
+   sits under the clock, and some older devices report a 0 top inset in
+   standalone mode. Give the top rows a hard floor so nothing hides. */
+body.standalone .hhead { padding-top:max(calc(env(safe-area-inset-top, 0px) + 24px), 46px); }
+body.standalone header { padding-top:max(calc(env(safe-area-inset-top, 0px) + 14px), 36px); }
+body.standalone #backBtn { top:max(calc(env(safe-area-inset-top, 0px) + 12px), 34px); }
 
 /* ==== top: session pill + audio-ownership chip ==== */
 header {
@@ -523,6 +584,13 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 }
 #sessSheet .scroll { flex:1; }
 
+/* v5: read-only sheet for closed (inactive) sessions */
+#closedSheet .closedtext {
+  font-size:15px; line-height:1.55; color:#c7cdd9; white-space:pre-wrap;
+  word-break:break-word; user-select:text; -webkit-user-select:text;
+  margin:0; padding:2px 4px 8px;
+}
+
 /* chat: non-modal, floats above the call controls so mute and end
    stay reachable while reading */
 #chatSheet {
@@ -554,6 +622,7 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
   border:1px solid transparent; margin-bottom:2px; padding-right:6px;
 }
 .card.current { background:rgba(255,255,255,.05); border-color:var(--line); }
+.card.closed { opacity:.55; }   /* v5: inactive rows are read-only */
 .card .main {
   flex:1; min-width:0; display:flex; align-items:center; gap:12px;
   text-align:left; padding:13px 8px 13px 12px; min-height:60px; border-radius:14px;
@@ -562,6 +631,7 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 .sdot { width:10px; height:10px; border-radius:50%; background:var(--mint); flex:none; }
 .sdot.working { background:var(--amber); animation:softpulse 1.6s ease-in-out infinite; }
 .sdot.needs { background:var(--danger); }
+.sdot.closed { background:#39435a; }   /* v5 */
 .card .meta { min-width:0; flex:1; }
 .card .meta .n { display:block; font-size:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .card .meta .c { display:block; font-size:12.5px; color:var(--dim); margin-top:2px;
@@ -625,7 +695,7 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
     <span id="homeDot" role="status" aria-label="relay connecting"></span>
   </div>
   <div class="hlist" id="homeList"></div>
-  <p class="hfoot">Tap a session to call it.</p>
+  <p class="hfoot">Tap an active session to call it. Earlier sessions are read-only.</p>
 </section>
 
 <button id="backBtn" aria-label="End the call and go back to sessions">
@@ -706,7 +776,14 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
   <div class="grab" aria-hidden="true"></div>
   <h2>Control room <span class="count" id="sessCount"></span></h2>
   <div class="scroll" id="sessList"></div>
-  <p class="hint">Tap a session to move the call there. The speaker icon plays its last reply without switching.</p>
+  <p class="hint">Tap a session to move the call there. The speaker icon plays its last reply without switching. Closed sessions are read-only.</p>
+</section>
+
+<section class="sheet" id="closedSheet" role="dialog" aria-label="Closed session">
+  <div class="grab" aria-hidden="true"></div>
+  <h2>Closed session <span class="count" id="closedName"></span></h2>
+  <div class="scroll"><p class="closedtext" id="closedBody"></p></div>
+  <p class="hint">This session is closed, you can read it but not talk to it.</p>
 </section>
 
 <div class="overlay hidden" id="startOverlay">
@@ -736,7 +813,8 @@ const statusEl=$('status'), pillName=$('pillName'), muteBtn=$('muteBtn'),
       pullHint=$('pullHint'), chipEl=$('chip'), decideEl=$('decide'),
       decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
       sessList=$('sessList'), sessCount=$('sessCount'),
-      homeList=$('homeList'), homeDot=$('homeDot');
+      homeList=$('homeList'), homeDot=$('homeDot'),
+      closedName=$('closedName'), closedBody=$('closedBody');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const TTS = 'speechSynthesis' in window;
 
@@ -749,6 +827,14 @@ let onHome = !S;           // which screen is up; body.home mirrors this
 let lastRoster = null;     // latest /sessions list, re-rendered on goHome
 let currentSid = S || '';  // which session the call screen is pointed at
 let wantStartName = !!S;   // deep link: name the start overlay once roster lands
+/* iOS: webkitSpeechRecognition needs Siri and Dictation enabled; when it is
+   off the recognizer errors service-not-allowed. After 2 consecutive such
+   errors we stop retrying for the REST OF THIS SESSION and use the whisper
+   path (srDead), instead of an infinite error-retry loop. */
+let srDead=false, srFails=0;
+
+/* rows without "active" come from an older server: treat them as live */
+function isActiveSess(s){ return !s || s.active !== false; }
 
 function setState(s, label){
   state=s;
@@ -803,14 +889,36 @@ function bumpLevel(v){ levelTarget = Math.max(levelTarget, v); }
   document.head.appendChild(l);
 })();
 
+/* iOS A2HS: standalone display reports via navigator.standalone (classic
+   Safari) or the display-mode media query (spec). Tag the body so CSS can
+   give the top rows a safe-area floor where the inset reports 0. */
+if(window.navigator.standalone === true ||
+   (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)){
+  document.body.classList.add('standalone');
+}
+
+/* Screen Wake Lock: not present on older iOS. Deliberately NO hidden-video
+   keep-awake hack; the screen may dim, and the visibilitychange handler
+   below recovers everything (TTS resume, lock re-arm, mic restart) when
+   the user returns. */
 async function acquireWakeLock(){
-  try { if('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); }
+  try {
+    if('wakeLock' in navigator){
+      wakeLock = await navigator.wakeLock.request('screen');
+      /* the OS releases the lock on lock/background; forget the handle so
+         visibilitychange knows to re-arm a fresh one */
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  }
   catch(e){ /* low battery or unsupported: fine, the call still works */ }
 }
 function releaseWakeLock(){ try{ wakeLock && wakeLock.release(); }catch(e){} wakeLock=null; }
 
 /* ============================================================ speech out */
 let voices=[];
+/* iOS: getVoices() is EMPTY until voiceschanged fires (voices load async).
+   Refresh the list on that event; pickVoice runs per chunk, so the first
+   reply after the list lands automatically gets the good voice. */
 function refreshVoices(){ if(TTS) voices = speechSynthesis.getVoices(); }
 if(TTS) speechSynthesis.onvoiceschanged = refreshVoices;
 refreshVoices();
@@ -820,8 +928,8 @@ function pickVoice(){
   return en.find(v => /siri|premium|enhanced|natural|neural/i.test(v.name)) || en[0] || voices[0];
 }
 /* Mobile browsers cut long utterances (a known engine bug), so split into
-   sentence-sized chunks and chain them; each chunk is short enough that the
-   per-utterance timeout never fires. */
+   sentence-sized chunks (<=170 chars, well under the 200-char danger zone)
+   and chain them; an iOS synthesis stall then loses at most one chunk. */
 function chunkText(text, max){
   const sents = text.match(/[^.!?\n]+[.!?]*\s*/g) || [text];
   const out = [];
@@ -832,21 +940,51 @@ function chunkText(text, max){
   }
   return out.map(x => x.trim()).filter(Boolean);
 }
-function stopSpeaking(){ speechCancelled = true; if(TTS) speechSynthesis.cancel(); }
+function stopSpeaking(){ speechCancelled = true; if(TTS) speechSynthesis.cancel(); stopBarge(); }
+/* iOS unlocks speechSynthesis only inside a user gesture: speak a silent
+   warm-up utterance AND create/resume the AudioContext in the start tap,
+   before any await breaks the gesture context. */
+function unlockAudio(){
+  try{
+    if(TTS){
+      const w = new SpeechSynthesisUtterance(' ');
+      w.volume = 0;
+      speechSynthesis.speak(w);
+    }
+  }catch(e){}
+  try{
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();  /* starts suspended on iOS */
+  }catch(e){}
+}
 function say(text, done){
   if(!TTS){ done && done(); return; }
   speechSynthesis.cancel();
   speechCancelled = false;
   const parts = chunkText(text, 170);
   let i = 0;
+  /* iOS PAUSES synthesis when the screen locks or the tab hides; besides the
+     visibilitychange resume, this pump pokes it back every 1.5s so a stall
+     mid-reply self-heals even without a visibility event. */
+  const pump = setInterval(() => {
+    if(speechCancelled){ clearInterval(pump); return; }
+    try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
+  }, 1500);
   (function next(){
-    if(speechCancelled) return;
-    if(i >= parts.length){ done && done(); return; }
-    const u = new SpeechSynthesisUtterance(parts[i++]);
+    if(speechCancelled){ clearInterval(pump); return; }
+    if(i >= parts.length){ clearInterval(pump); done && done(); return; }
+    const chunk = parts[i++];
+    const u = new SpeechSynthesisUtterance(chunk);
     const v = pickVoice(); if(v) u.voice = v;
     u.rate = 1.0;
-    u.onend = () => setTimeout(next, 50);
-    u.onerror = () => setTimeout(next, 50);
+    /* iOS sometimes drops an utterance with NEITHER end nor error: a
+       per-chunk watchdog advances the chain so the call never wedges in
+       the speaking state. speak() queues, so a late finish cannot overlap. */
+    let advanced = false;
+    const advance = () => { if(advanced) return; advanced = true; setTimeout(next, 50); };
+    u.onend = advance;
+    u.onerror = advance;
+    setTimeout(advance, 3000 + chunk.length * 90);
     speechSynthesis.speak(u);
   })();
 }
@@ -855,7 +993,8 @@ function say(text, done){
 function speakAside(text){
   stopListening(); stopSpeaking();
   setState('speaking');
-  say(text, resumeAfterSpeech);
+  if(live && !decisionOpen) startBarge();   /* asides are interruptible too */
+  say(text, () => { stopBarge(); resumeAfterSpeech(); });
 }
 function resumeAfterSpeech(){
   if(!live){ setState('ended', 'call ended'); return; }
@@ -866,13 +1005,23 @@ function resumeAfterSpeech(){
 }
 /* Backgrounding pauses synthesis on both platforms; resume when we return,
    re-arm the wake lock (released whenever the tab hides), kick a heartbeat,
-   and restart the mic if a listen was in flight. Home refreshes its list. */
+   and restart the mic if a listen was in flight. Home refreshes its list.
+   This is also the whole wake-lock fallback story on older iOS: recover
+   well, no fake keep-awake. */
 document.addEventListener('visibilitychange', () => {
   if(document.visibilityState !== 'visible') return;
   if(TTS && speechSynthesis.paused) speechSynthesis.resume();
   if(live){ acquireWakeLock(); beatOnce(); }
   if(live && !muted && state === 'listening' && !recActive) listen();
   if(onHome) pollSessions();
+});
+/* iOS bfcache restore: timers and speech come back stale; treat it like a
+   visibility return. */
+window.addEventListener('pageshow', e => {
+  if(!e.persisted) return;
+  if(TTS && speechSynthesis.paused) speechSynthesis.resume();
+  if(live){ acquireWakeLock(); beatOnce(); }
+  pollSessions();
 });
 
 /* soft chime for background-session news; WebAudio, no assets */
@@ -891,6 +1040,84 @@ function chime(){
       o.start(t + pair[1]); o.stop(t + pair[1] + .4);
     });
   }catch(e){}
+}
+
+/* ============================================================ barge-in */
+/* While a reply is speaking, a mic monitor watches for the HUMAN talking
+   over it. The stream is opened with echoCancellation on: the phone's AEC
+   subtracts the device's own speaker output, so sustained RMS means a real
+   voice, not our own TTS. Rules:
+     - no trigger in the first 600ms of speech (speaker echo settles)
+     - RMS must stay above threshold for 7 consecutive 50ms frames (~350ms);
+       a single spike (cough, clatter) never triggers
+     - on trigger: cancel synthesis, play a tiny acknowledgment tick, drop
+       into the normal listening flow (the whisper path reuses this stream)
+     - monitor + stream released the moment speaking ends
+     - getUserMedia failure = no barge, exactly the v4 behavior */
+const BARGE_RMS = .04;      // above the whisper speech floor (.02): talk, not rustle
+const BARGE_HOLD = 7;       // 7 x 50ms = ~350ms of sustained voice
+const BARGE_SETTLE = 600;   // ms of speech ignored up front
+let bargeIv = null, bargeSrc = null, bargeOwn = null, bargeArming = false;
+function ackTick(){
+  /* tiny WebAudio blip: "heard you, go ahead" */
+  try{
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    const t = audioCtx.currentTime + .01;
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = 'sine'; o.frequency.value = 1320;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(.06, t + .012);
+    g.gain.exponentialRampToValueAtTime(.0001, t + .12);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t); o.stop(t + .16);
+  }catch(e){}
+}
+function stopBarge(){
+  if(bargeIv){ clearInterval(bargeIv); bargeIv = null; }
+  if(bargeSrc){ try{ bargeSrc.disconnect(); }catch(e){} bargeSrc = null; }
+  if(bargeOwn){ try{ bargeOwn.getTracks().forEach(t => t.stop()); }catch(e){} bargeOwn = null; }
+}
+async function startBarge(){
+  if(bargeIv || bargeArming || !live || muted) return;
+  bargeArming = true;
+  let stream = media;   // whisper path: reuse the stream that is already open
+  if(!stream){
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio:{ echoCancellation:true, noiseSuppression:true } });
+    }catch(e){ bargeArming = false; return; }   // degrade: no barge this reply
+    if(SR && !srDead) bargeOwn = stream;   // SR path: ours alone, release after speech
+    else media = stream;                   // whisper path adopts it for listening
+  }
+  bargeArming = false;
+  /* speech may have finished while getUserMedia was up */
+  if(!live || muted || speechCancelled || state !== 'speaking'){ stopBarge(); return; }
+  try{
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    bargeSrc = audioCtx.createMediaStreamSource(stream);
+    const an = audioCtx.createAnalyser(); an.fftSize = 2048;
+    bargeSrc.connect(an);
+    const buf = new Float32Array(an.fftSize);
+    const t0 = Date.now();
+    let hot = 0;
+    bargeIv = setInterval(() => {
+      if(!live || muted || speechCancelled || state !== 'speaking'){ stopBarge(); return; }
+      if(Date.now() - t0 < BARGE_SETTLE) return;   // echo settle window
+      an.getFloatTimeDomainData(buf);
+      let s = 0; for(const v of buf) s += v * v;
+      const rms = Math.sqrt(s / buf.length);
+      if(rms > BARGE_RMS) hot++; else hot = 0;     // must be SUSTAINED voice
+      if(hot >= BARGE_HOLD){
+        stopBarge();
+        stopSpeaking();          // cut the reply mid-sentence
+        ackTick();               // audible "go ahead"
+        setState('listening');
+        setTimeout(listen, 120); // straight into the normal listening flow
+      }
+    }, 50);
+  }catch(e){ stopBarge(); }
 }
 
 /* ============================================================ chat */
@@ -1048,7 +1275,9 @@ function finishTurn(id, reply){
   refreshChat();                  // swap in the server's cleaned transcript
   pollSessions();                 // states likely changed with the turn
   setState('speaking');
+  startBarge();                   // v5: talking over the reply interrupts it
   say(reply, () => {
+    stopBarge();
     if(!live) return;
     if(muted){ setState('muted'); }
     else { setState('listening'); setTimeout(listen, 300); }
@@ -1135,6 +1364,88 @@ function stopHeartbeat(){
   chipEl.classList.remove('on');
 }
 
+/* ============================================================ stitching */
+/* Pause tolerance: end-of-speech does NOT send the prompt. The transcript
+   lands in stitchBuf and a follow-up window holds the send:
+     - 0.9s when it sounded finished (ends in . ? !)
+     - 2.4s when it is clearly mid-thought (trailing comma or conjunction)
+     - 1.6s otherwise
+   The mic STAYS OPEN during the window; if the user resumes, the pending
+   send is cancelled, the continuation appends, and the window re-arms. The
+   status line counts down with shrinking dots so it never feels stuck. */
+let stitchBuf = '', stitchTimer = null, stitchTick = null, stitchDeadline = 0;
+let sttPending = 0;          // whisper segments still transcribing on the Mac
+let flushWaits = 0;          // bounded wait for those segments at flush time
+let whisperVoice = () => false;   // is the CURRENT whisper segment already voiced?
+const CMD_RE = /^(stop listening|end call|hang up|goodbye)[.!]?$/i;
+
+function holdMs(t){
+  t = String(t || '').trim();
+  if(/[.?!]$/.test(t)) return 900;                    // sounded finished
+  if(/(,|\b(and|or|but|so|because|then|plus|also|with))$/i.test(t)) return 2400;  // mid-thought
+  return 1600;                                        // default follow-up window
+}
+function stopStitchTick(){ if(stitchTick){ clearInterval(stitchTick); stitchTick = null; } }
+function armStitch(){
+  if(stitchTimer) clearTimeout(stitchTimer);
+  flushWaits = 0;
+  const ms = holdMs(stitchBuf);
+  stitchDeadline = Date.now() + ms;
+  stitchTimer = setTimeout(flushStitch, ms);
+  stopStitchTick();
+  stitchTick = setInterval(() => {   // ". . ." shrinking toward the send
+    if(!stitchTimer || state !== 'listening'){ stopStitchTick(); return; }
+    const left = Math.max(0, stitchDeadline - Date.now());
+    const dots = 1 + Math.min(3, Math.floor(left / 600));
+    statusEl.textContent = 'listening ' + '. '.repeat(dots).trim();
+  }, 200);
+}
+function holdStitchOnSpeech(){
+  /* the user resumed inside the window: cancel the pending send, keep buffer */
+  if(stitchTimer){ clearTimeout(stitchTimer); stitchTimer = null; }
+  stopStitchTick();
+  if(state === 'listening') statusEl.textContent = 'listening';
+}
+function clearStitch(){
+  if(stitchTimer){ clearTimeout(stitchTimer); stitchTimer = null; }
+  stopStitchTick();
+  stitchBuf = '';
+}
+function stitchAppend(t){
+  t = String(t || '').trim();
+  if(!t){
+    if(!stitchBuf && live && !muted && state === 'listening' && !recActive) listen();
+    return;
+  }
+  stitchBuf += (stitchBuf ? ' ' : '') + t;
+  const whole = stitchBuf.trim();
+  if(CMD_RE.test(whole)){   // "end call" should not sit in a hold window
+    clearStitch(); stopListening(); handleUtterance(whole); return;
+  }
+  /* whisper path: if the user is ALREADY talking again, that segment will
+     append and re-arm when it lands; arming a timer now would race it */
+  if(whisperVoice()) return;
+  armStitch();
+}
+function flushStitch(){
+  stitchTimer = null;
+  stopStitchTick();
+  if(sttPending > 0 && flushWaits < 32){   // a segment is still transcribing
+    flushWaits++;
+    stitchTimer = setTimeout(flushStitch, 250);
+    return;
+  }
+  flushWaits = 0;
+  const t = stitchBuf.trim();
+  stitchBuf = '';
+  if(!t){
+    if(live && !muted && state === 'listening' && !recActive) listen();
+    return;
+  }
+  stopListening();       // close the mic; the turn engine owns the call now
+  handleUtterance(t);
+}
+
 /* ============================================================ speech in */
 /* ---- path A: native speech recognition (Chrome Android, iOS Safari 14.5+) */
 function listenSR(){
@@ -1146,28 +1457,46 @@ function listenSR(){
   rec.maxAlternatives = 1;
   recActive = true;
   setState('listening');
-  let finalText = '';
   rec.onresult = e => {
     if(myGen !== gen) return;
     bumpLevel(.65);
-    for(let i = e.resultIndex; i < e.results.length; i++)
-      if(e.results[i].isFinal) finalText += e.results[i][0].transcript;
-    if(finalText){
-      const t = finalText.trim(); finalText = '';
-      try{ rec.stop(); }catch(_){}
-      handleUtterance(t);
+    let finals = '', interim = false;
+    for(let i = e.resultIndex; i < e.results.length; i++){
+      if(e.results[i].isFinal) finals += e.results[i][0].transcript;
+      else interim = true;
+    }
+    /* interim speech inside a follow-up window = the user resumed */
+    if(interim && stitchTimer) holdStitchOnSpeech();
+    if(finals){
+      srFails = 0;   // the service clearly works
+      /* v5: do NOT stop and send; hold a follow-up window and keep the
+         recognizer running so a continuation stitches on */
+      stitchAppend(finals.trim());
     }
   };
-  rec.onspeechstart = () => { if(myGen === gen) bumpLevel(.6); };
+  rec.onspeechstart = () => {
+    if(myGen !== gen) return;
+    bumpLevel(.6);
+    if(stitchTimer) holdStitchOnSpeech();
+  };
   rec.onerror = ev => {
     recActive = false;
     if(myGen !== gen) return;
-    if(ev.error === 'not-allowed' || ev.error === 'service-not-allowed'){ micDenied(); return; }
+    if(ev.error === 'not-allowed'){ micDenied(); return; }
+    if(ev.error === 'service-not-allowed'){
+      /* iOS: Siri and Dictation is off, the recognizer can never work.
+         Two consecutive failures flip this session to the whisper path
+         permanently instead of looping on errors. */
+      if(++srFails >= 2) srDead = true;
+      if(live && !muted && state === 'listening') setTimeout(listen, srDead ? 200 : 900);
+      return;
+    }
     if(live && !muted && state === 'listening') setTimeout(listen, 900);
   };
   rec.onend = () => {
     recActive = false;
     if(myGen !== gen) return;
+    /* restart keeps the mic open through pauses and hold windows */
     if(live && !muted && state === 'listening') setTimeout(listen, 400);
   };
   rec.start();
@@ -1178,7 +1507,10 @@ async function listenWhisper(){
   if(recActive) return;
   const myGen = gen;
   setState('listening');
-  try{ media = media || await navigator.mediaDevices.getUserMedia({ audio:true }); }
+  /* echoCancellation also serves the barge-in monitor, which shares this
+     stream while replies speak */
+  try{ media = media || await navigator.mediaDevices.getUserMedia(
+    { audio:{ echoCancellation:true, noiseSuppression:true } }); }
   catch(e){ micDenied(); return; }
   if(myGen !== gen) return;
   audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
@@ -1190,35 +1522,66 @@ async function listenWhisper(){
   mr.ondataavailable = e => chunks.push(e.data);
   recActive = true;
   let spoke = false, quiet = 0, idle = 0;
+  /* stitching peeks at this: a voiced current segment means "the user is
+     already continuing", so no hold timer should race it */
+  whisperVoice = () => (myGen === gen && recActive && spoke);
   const iv = setInterval(() => {
     if(myGen !== gen){ clearInterval(iv); try{ mr.stop(); }catch(_){} return; }
     an.getFloatTimeDomainData(buf);
     let s = 0; for(const v of buf) s += v*v;
     const rms = Math.sqrt(s / buf.length);
     levelTarget = Math.max(levelTarget, Math.min(1, rms * 10));
-    if(rms > .02){ spoke = true; quiet = 0; } else if(spoke) quiet++;
-    if((spoke && quiet >= 6) || (!spoke && ++idle > 200)){ clearInterval(iv); mr.stop(); }
-  }, 250);
-  mr.onstop = async () => {
+    if(rms > .02){
+      spoke = true; quiet = 0;
+      if(stitchTimer) holdStitchOnSpeech();   // resumed inside the window
+    } else if(spoke) quiet++;
+    /* ~1.4s of RMS silence ends the utterance (7 x 200ms); thinking pauses
+       shorter than that stay inside ONE segment, and longer ones are caught
+       by the stitch window that follows */
+    if((spoke && quiet >= 7) || (!spoke && ++idle > 250)){ clearInterval(iv); mr.stop(); }
+  }, 200);
+  mr.onstop = () => {
     src.disconnect(); recActive = false;
     if(myGen !== gen) return;
-    if(!spoke){ if(live && !muted) listen(); return; }
-    setState('thinking', 'thinking');
-    const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
-    try{
-      const r = await fetch(urlFor('/stt'), { method:'POST', body:blob });
-      const j = await r.json();
-      if(myGen !== gen) return;
-      handleUtterance((j.text || '').trim());
-    }catch(e){
-      if(live && !muted) setTimeout(listen, 1600);
+    if(!spoke){
+      /* silence-only segment: keep the mic open; a pending stitch window
+         (if any) will fire and send on its own */
+      if(live && !muted && state === 'listening') listen();
+      return;
     }
+    /* REOPEN the mic immediately so a continuation spoken while whisper
+       chews on this segment is never lost */
+    if(live && !muted && state === 'listening') setTimeout(listen, 60);
+    sttPending++;
+    /* iOS MediaRecorder emits audio/mp4 (not webm): send the REAL mimeType
+       so the server-side ffmpeg knows what arrived */
+    const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+    fetch(urlFor('/stt'), { method:'POST',
+      headers:{ 'Content-Type': blob.type || 'application/octet-stream' },
+      body:blob })
+    .then(r => r.json())
+    .then(j => {
+      sttPending = Math.max(0, sttPending - 1);
+      if(myGen !== gen) return;   // muted / ended / flushed while transcribing
+      stitchAppend(String(j.text || '').trim());
+    })
+    .catch(() => {
+      sttPending = Math.max(0, sttPending - 1);
+      /* transcription failed: if something is already stitched, still send
+         it after a window rather than dropping the user's words */
+      if(myGen === gen && stitchBuf && !stitchTimer && !whisperVoice()) armStitch();
+    });
   };
   mr.start();
 }
-function listen(){ if(!live || muted || turnActive || decisionOpen) return; (SR ? listenSR : listenWhisper)(); }
+function listen(){
+  if(!live || muted || turnActive || decisionOpen) return;
+  /* srDead: SR proved unusable this session (iOS service-not-allowed twice) */
+  ((SR && !srDead) ? listenSR : listenWhisper)();
+}
 function stopListening(){
   gen++;
+  clearStitch();   // a half-held prompt dies with the listener
   if(rec){ try{ rec.onend = null; rec.onerror = null; rec.stop(); }catch(_){} rec = null; }
   recActive = false;
 }
@@ -1246,9 +1609,13 @@ function micDenied(){
   startOverlay.classList.remove('hidden');
 }
 async function startCall(){
+  /* iOS: everything audio must be unlocked INSIDE the tap, before any await:
+     silent TTS warm-up + AudioContext resume (it starts suspended) */
+  unlockAudio();
   startOverlay.classList.add('hidden');
   live = true; muted = false;
   liveGen++;
+  srFails = 0;   // a fresh call gets a fresh chance (srDead stays for the session)
   muteBtn.classList.remove('muted');
   muteBtn.setAttribute('aria-pressed', 'false');
   refreshVoices();
@@ -1258,8 +1625,9 @@ async function startCall(){
      clear context; on the native-SR path release the stream right away so it
      never fights the recognizer for the device. */
   try{
-    const s = await navigator.mediaDevices.getUserMedia({ audio:true });
-    if(SR) s.getTracks().forEach(t => t.stop()); else media = s;
+    const s = await navigator.mediaDevices.getUserMedia(
+      { audio:{ echoCancellation:true, noiseSuppression:true } });
+    if(SR && !srDead) s.getTracks().forEach(t => t.stop()); else media = s;
   }catch(e){ micDenied(); return; }
   startHeartbeat();
   statusLoop(liveGen);
@@ -1289,6 +1657,7 @@ muteBtn.addEventListener('click', () => {
   muteBtn.setAttribute('aria-label', muted ? 'Unmute microphone' : 'Mute microphone');
   if(muted){
     stopListening();
+    stopBarge();   // muted means muted: no barge monitor either
     if(state === 'listening') setState('muted');
   }else if(state === 'muted' || state === 'listening'){
     setState('listening'); listen();
@@ -1296,9 +1665,11 @@ muteBtn.addEventListener('click', () => {
 });
 
 /* ============================================================ sheets */
-const scrim=$('scrim'), chatSheet=$('chatSheet'), sessSheet=$('sessSheet');
-let sessOpen = false;
-/* control room is modal (scrim); chat is an independent toggle */
+const scrim=$('scrim'), chatSheet=$('chatSheet'), sessSheet=$('sessSheet'),
+      closedSheet=$('closedSheet');
+let sessOpen = false, closedOpen = false;
+/* control room and the closed-session sheet are modal (scrim); chat is an
+   independent toggle */
 function openSessSheet(){
   sessOpen = true;
   sessSheet.classList.add('open');
@@ -1308,7 +1679,31 @@ function openSessSheet(){
 function closeSessSheet(){
   sessOpen = false;
   sessSheet.classList.remove('open');
-  document.body.classList.remove('sheet-open');
+  if(!closedOpen) document.body.classList.remove('sheet-open');
+}
+/* v5: read-only sheet for a closed (inactive) session; never starts a call */
+async function openClosedSheet(s){
+  closedOpen = true;
+  closedName.textContent = s.name || 'session';
+  closedBody.textContent = String(s.last || '').trim() || 'Loading the last reply...';
+  closedSheet.classList.add('open');
+  document.body.classList.add('sheet-open');
+  try{
+    const rep = String((await jget('/last?q=' +
+      encodeURIComponent(s.name || s.id || ''))).reply || '').trim();
+    if(!closedOpen) return;
+    if(rep) closedBody.textContent = rep;
+    else if(!String(s.last || '').trim())
+      closedBody.textContent = 'No reply recorded for this session.';
+  }catch(e){
+    if(closedOpen && !String(s.last || '').trim())
+      closedBody.textContent = 'Could not load the last reply.';
+  }
+}
+function closeClosedSheet(){
+  closedOpen = false;
+  closedSheet.classList.remove('open');
+  if(!sessOpen) document.body.classList.remove('sheet-open');
 }
 function closeChatSheet(){
   chatSheet.classList.remove('open');
@@ -1316,7 +1711,7 @@ function closeChatSheet(){
   chatBtn.setAttribute('aria-pressed', 'false');
   chatBtn.setAttribute('aria-label', 'Show chat');
 }
-scrim.addEventListener('click', closeSessSheet);
+scrim.addEventListener('click', () => { closeSessSheet(); closeClosedSheet(); });
 $('pill').addEventListener('click', () => { sessOpen ? closeSessSheet() : openSessSheet(); });
 chatBtn.addEventListener('click', () => {
   const open = chatSheet.classList.toggle('open');
@@ -1335,6 +1730,7 @@ async function fetchSessions(){
   }catch(e){ return null; }
 }
 function stateLabel(s){
+  if(!isActiveSess(s)) return 'closed, read-only';
   if(s.pending) return 'waiting on a decision';
   if(isWorkingState(s.state)) return 'working';
   return s.state || 'idle';
@@ -1351,10 +1747,12 @@ function fmtAgo(sec){
   return Math.floor(s / 86400) + 'd';
 }
 function homeCard(s){
+  const closed = !isActiveSess(s);
   const b = document.createElement('button');
-  b.className = 'hcard' + (s.pending ? ' needs' : '');
-  b.setAttribute('aria-label', 'Call ' + (s.name || 'session') +
-    (s.pending ? ', needs you' : ''));
+  b.className = 'hcard' + (closed ? ' closed' : (s.pending ? ' needs' : ''));
+  b.setAttribute('aria-label', closed
+    ? ((s.name || 'session') + ', closed, read only')
+    : ('Call ' + (s.name || 'session') + (s.pending ? ', needs you' : '')));
 
   const r1 = document.createElement('div'); r1.className = 'r1';
   const n = document.createElement('span'); n.className = 'n';
@@ -1365,9 +1763,14 @@ function homeCard(s){
 
   const r2 = document.createElement('div'); r2.className = 'r2';
   const dot = document.createElement('span');
-  dot.className = 'sdot' + (s.pending ? ' needs' : (isWorkingState(s.state) ? ' working' : ''));
+  dot.className = 'sdot' + (closed ? ' closed'
+    : (s.pending ? ' needs' : (isWorkingState(s.state) ? ' working' : '')));
   r2.appendChild(dot);
-  if(s.pending){
+  if(closed){
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl closed'; lbl.textContent = 'closed, read-only';
+    r2.appendChild(lbl);
+  }else if(s.pending){
     const badge = document.createElement('span');
     badge.className = 'badge needs'; badge.textContent = 'needs you';
     r2.appendChild(badge);
@@ -1386,8 +1789,15 @@ function homeCard(s){
     last.textContent = preview;
     b.appendChild(last);
   }
-  b.addEventListener('click', () => openSession(s));
+  /* closed cards NEVER route into a call: read-only sheet instead */
+  b.addEventListener('click', () => { closed ? openClosedSheet(s) : openSession(s); });
   return b;
+}
+function groupLabel(text){
+  const g = document.createElement('div');
+  g.className = 'hgroup';
+  g.textContent = text;
+  return g;
 }
 function renderHome(list){
   const keep = homeList.scrollTop;
@@ -1400,33 +1810,56 @@ function renderHome(list){
     homeList.appendChild(p);
     return;
   }
-  list.forEach(s => homeList.appendChild(homeCard(s)));
+  /* v5: two groups. Active = a live Claude process owns it, tappable to
+     call. Earlier = leftover transcript, dimmed and read-only. */
+  const act = list.filter(isActiveSess);
+  const old = list.filter(s => !isActiveSess(s));
+  if(act.length){
+    if(old.length) homeList.appendChild(groupLabel('Active'));
+    act.forEach(s => homeList.appendChild(homeCard(s)));
+  }else{
+    const p = document.createElement('p'); p.className = 'hempty';
+    p.textContent = 'No live sessions right now. Earlier sessions below are read-only.';
+    homeList.appendChild(p);
+  }
+  if(old.length){
+    homeList.appendChild(groupLabel('Earlier'));
+    old.forEach(s => homeList.appendChild(homeCard(s)));
+  }
   homeList.scrollTop = keep;
 }
 
 /* ============================================================ control room */
 function sessionCard(s){
+  const closed = !isActiveSess(s);
   const card = document.createElement('div');
-  card.className = 'card' + (s.current ? ' current' : '');
+  card.className = 'card' + (s.current ? ' current' : '') + (closed ? ' closed' : '');
 
   const main = document.createElement('button');
   main.className = 'main';
-  main.setAttribute('aria-label', (s.current ? 'On call with ' : 'Move the call to ') + (s.name || 'session'));
+  main.setAttribute('aria-label', closed
+    ? ((s.name || 'session') + ', closed, read only')
+    : ((s.current ? 'On call with ' : 'Move the call to ') + (s.name || 'session')));
   const dot = document.createElement('span');
-  dot.className = 'sdot' + (s.pending ? ' needs' : (isWorkingState(s.state) ? ' working' : ''));
+  dot.className = 'sdot' + (closed ? ' closed'
+    : (s.pending ? ' needs' : (isWorkingState(s.state) ? ' working' : '')));
   const meta = document.createElement('span'); meta.className = 'meta';
   const n = document.createElement('span'); n.className = 'n'; n.textContent = s.name || 'session';
   const c = document.createElement('span'); c.className = 'c'; c.textContent = stateLabel(s);
   meta.append(n, c);
   main.append(dot, meta);
-  if(s.pending){
+  if(!closed && s.pending){
     const b = document.createElement('span'); b.className = 'badge needs'; b.textContent = 'needs you';
     main.appendChild(b);
-  }else if(s.current){
+  }else if(!closed && s.current){
     const b = document.createElement('span'); b.className = 'badge oncall'; b.textContent = 'on call';
     main.appendChild(b);
   }
-  main.addEventListener('click', () => switchTo(s));
+  /* closed rows open the read-only sheet; the call NEVER moves to them */
+  main.addEventListener('click', () => {
+    if(closed){ closeSessSheet(); openClosedSheet(s); }
+    else switchTo(s);
+  });
 
   const hear = document.createElement('button');
   hear.className = 'hear';
@@ -1498,6 +1931,7 @@ async function pollSessions(){
     }
   }
   for(const s of list){
+    if(!isActiveSess(s)) continue;   // closed transcripts never flip state
     const key = s.id || s.name;
     if(!key) continue;
     const prev = prevSess[key];
@@ -1533,6 +1967,7 @@ toastEl.addEventListener('click', () => {
   toastEl.classList.remove('show');
   const s = toastSess; toastSess = null;
   if(s){
+    if(!isActiveSess(s)){ openClosedSheet(s); return; }   // belt and braces
     if(live) switchTo(s);
     else openSession(s);
     return;
@@ -1544,6 +1979,8 @@ toastEl.addEventListener('click', () => {
 const switchOverlay=$('switchOverlay'), switchMsg=$('switchMsg');
 async function switchTo(s){
   closeSessSheet();
+  /* never point the call at a closed session: read-only sheet instead */
+  if(!isActiveSess(s)){ openClosedSheet(s); return; }
   if(s.current) return;
   /* the "ending previous call" affordance: freeze the loops, show intent */
   switchMsg.textContent = 'ending previous call';
@@ -1573,10 +2010,12 @@ async function switchTo(s){
 
 /* ============================================================ navigation */
 /* HOME is the resting screen; the call screen (orb and controls) sits under
-   it. Tapping a home card repoints the relay and lands on the start overlay,
-   where the Start call tap grants the mic; a needs-you card works the same
-   and the permission panel surfaces right after connecting (immediate
-   /status check). The back chevron ends any live call and returns home. */
+   it. Tapping an ACTIVE home card repoints the relay and lands on the start
+   overlay, where the Start call tap grants the mic; a needs-you card works
+   the same and the permission panel surfaces right after connecting
+   (immediate /status check). Closed cards open the read-only sheet and go
+   nowhere near the call screen. The back chevron ends any live call and
+   returns home. */
 function goCall(name){
   onHome = false;
   document.body.classList.remove('home');
@@ -1591,7 +2030,7 @@ function goCall(name){
 function goHome(){
   onHome = true;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
-  hideDecision(); closeSessSheet(); closeChatSheet();
+  hideDecision(); closeSessSheet(); closeClosedSheet(); closeChatSheet();
   startOverlay.classList.add('hidden');
   setState('ended', 'call ended');
   document.body.classList.add('home');
@@ -1599,6 +2038,7 @@ function goHome(){
   pollSessions();
 }
 async function openSession(s){
+  if(!isActiveSess(s)){ openClosedSheet(s); return; }   // guard every entry path
   goCall(s.name || 'session');
   if(s.id && s.id !== currentSid) resetChat();
   if(s.id) currentSid = s.id;
@@ -1625,12 +2065,25 @@ $('backBtn').addEventListener('click', backHome);
 
 /* ============================================================ boot */
 /* No auto-call: the page opens on home (roster primed below). A deep link
-   with &s= skips home, repoints the relay at that session, and rests on the
-   start overlay; if the switch fails the page falls back to home. */
+   with &s= checks the roster FIRST: a deep link to a CLOSED session must
+   never reach the call screen, it lands on home with the read-only sheet.
+   A live target skips home, repoints the relay, and rests on the start
+   overlay; if the switch fails the page falls back to home. */
 if(S){
   document.body.classList.remove('home');
   startOverlay.classList.remove('hidden');
   (async () => {
+    let row = null;
+    try{
+      const list = await fetchSessions();
+      if(list){ lastRoster = list; row = list.find(x => x.id === S) || null; }
+    }catch(e){}
+    if(row && !isActiveSess(row)){
+      wantStartName = false;
+      goHome();
+      openClosedSheet(row);
+      return;
+    }
     let ok = false;
     try{ ok = (await jpost('/switch', { id: S })).ok; }catch(e){}
     if(!ok){ wantStartName = false; goHome(); return; }
