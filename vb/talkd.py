@@ -286,7 +286,10 @@ def hotkey_up() -> None:
     skhd = shutil.which("skhd")
     if not skhd:
         return
-    if subprocess.run(["pgrep", "-x", "skhd"],
+    # OUR user's skhd only: on a shared Mac, another account's skhd made this
+    # check pass, so ours never started and every hotkey silently did nothing
+    # (their instance reads THEIR config, not ours).
+    if subprocess.run(["pgrep", "-U", str(os.getuid()), "-x", "skhd"],
                       capture_output=True).returncode == 0:
         return
     try:
