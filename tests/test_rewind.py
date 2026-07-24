@@ -61,7 +61,7 @@ def test_nothing_playing_is_safe():
 if __name__ == "__main__":
     test_back_respeaks_from_previous_sentence()
     test_skip_jumps_to_next_sentence()
-    test_skip_at_end_is_a_noop()
+    test_skip_at_end_ends_the_reply()
     test_back_at_start_clamps()
     test_nothing_playing_is_safe()
     print("ok  rewind: back / skip / end-noop / start-clamp / safe-when-idle")
