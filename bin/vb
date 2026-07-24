@@ -169,7 +169,7 @@ FLEET (control many sessions by voice, or from the terminal)
 STATUS    vb statusline-install   show voice state right in Claude Code's
                                   status line: listening / hearing / speaking
                                   (restart Claude Code once after installing)
-PHONE     /vb-phone               scan the QR, talk from anywhere
+PHONE     /voice-phone               scan the QR, talk from anywhere
 VOICE     vb voice <name>         change voice   |   vb speed 1.5  (0.5-3.5x;
                                   or say "speak faster"; or tap Fn+F9 faster /
                                   Fn+F7 slower, ⌃⌥⌘F / ⌃⌥⌘S without Fn)
@@ -425,7 +425,7 @@ def main(argv) -> int:
             print(".", end="", flush=True)
         print("")
         full = f"{url}/?k={secret}"
-        # Deep-link the QR to the session /vb-phone was run in: scanning lands
+        # Deep-link the QR to the session /voice-phone was run in: scanning lands
         # straight in that session's call screen instead of the generic home.
         try:
             from vb import talkd as _td

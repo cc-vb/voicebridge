@@ -20,7 +20,7 @@ Do not paraphrase or shorten the tables. Do not run any other command.
 | `/voice-wake` | Hands-free, but only reacts to "hey Claude ..."; speaks a one-sentence answer |
 | `/voice-off` | Stop voice, this session only |
 | `/voice-off-all` | Stop voice everywhere and release the mic, from any terminal |
-| `/vb-phone` | Talk from your phone: prints a QR to scan |
+| `/voice-phone` | Talk from your phone: prints a QR to scan |
 | `/voice-help` | This list |
 
 **Interrupt me** (least to most forceful)
@@ -55,7 +55,7 @@ Cmd+Alt+Ctrl chords work either way.
 | Command | What it does |
 |---|---|
 | `vb talkd status` | Is voice on? Which session, which app, mic state |
-| `/vb-phone` | Phone access: QR code + link |
+| `/voice-phone` | Phone access: QR code + link |
 | `vb remote on` | Telegram bridge: text or voice-note your bot |
 | `vb call on` | A real phone call to your live session (needs Vapi) |
 | `vb sessions` | List running sessions |

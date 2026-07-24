@@ -2267,6 +2267,38 @@ class Handler(BaseHTTPRequestHandler):
                         "application/json")
             return
 
+        if path == "/tts":
+            # Synthesize with the Mac's Kokoro voice and return the WAV, so
+            # the phone can play the SAME natural voice as the desktop
+            # instead of the browser's robotic default. Body: {"text": ...}.
+            try:
+                text = (json.loads(raw or b"{}").get("text") or "").strip()
+            except Exception:
+                self._reply(400, b"bad request", "text/plain")
+                return
+            import tempfile
+            wav = ""
+            if text and core.kokoro_up():
+                # Per-request temp file: the relay is threaded, a shared
+                # output path would let concurrent chunks clobber each other.
+                fd, tmp = tempfile.mkstemp(suffix=".wav")
+                os.close(fd)
+                wav = core._kokoro_wav(text[:600], out=tmp)
+            if wav:
+                try:
+                    with open(wav, "rb") as f:
+                        self._reply(200, f.read(), "audio/wav")
+                    return
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        os.remove(wav)
+                    except OSError:
+                        pass
+            self._reply(503, b"kokoro unavailable", "text/plain")
+            return
+
         if path == "/heartbeat":
             # The page pings this every ~5s during a live call. While fresh,
             # the phone OWNS the audio: core.start_speech stays silent on the

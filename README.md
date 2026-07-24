@@ -41,7 +41,7 @@ you code by conversation instead. See [ACCESSIBILITY.md](ACCESSIBILITY.md).
   streamed so it starts speaking in ~0.4s, with macOS `say` as fallback.
   Podcast-style speed: `vb speed 1.5` (0.5x-3.5x), say "speak faster", or
   tap Fn+F9 / Fn+F7 while it talks; Fn+F8 pauses and resumes mid-word.
-- **Phone, free**: `/vb-phone` prints a QR , scan it, tap Start, talk from
+- **Phone, free**: `/voice-phone` prints a QR , scan it, tap Start, talk from
   anywhere. Plus a Telegram bridge (`vb remote on`) for voice notes.
 - **Smart listening**: thinking-pauses don't split your prompt, background
   chatter and foreign-language media are filtered out, and it never hears
@@ -103,7 +103,7 @@ States: `🎙 voice on`, `🎙 hearing you`, `✍ working`, `🔊 speaking`,
 | `vb statusline-install` | show the voice state , listening / hearing / speaking , as one extra line under your Claude Code status line; yours is left exactly as it is (`vb statusline-uninstall` undoes it) |
 | `vb meter` | live level meter for a second terminal tab; the bar moves as you talk |
 | `vb orb` | opt-in floating indicator that pulses with your voice; nothing pops it up for you |
-| `/vb-phone` | use it from your phone (prints a QR to scan) |
+| `/voice-phone` | use it from your phone (prints a QR to scan) |
 | `vb voice <name>` | change the voice (`vb voice` lists all) |
 
 (Cloned directly instead of the plugin? Same commands without the
