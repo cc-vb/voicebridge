@@ -28,7 +28,8 @@ voice services, no per-minute fees.
   its Esc to stop generating, not just muting audio.
 - **Natural voice**: Kokoro neural TTS (54 voices, on-CPU, Apache),
   streamed so it starts speaking in ~0.4s, with macOS `say` as fallback.
-  Podcast-style speed: `vb speed 1.5` (0.5x-3.5x), or say "speak faster".
+  Podcast-style speed: `vb speed 1.5` (0.5x-3.5x), say "speak faster", or
+  tap Fn+F9 / Fn+F7 while it talks; Fn+F8 pauses and resumes mid-word.
 - **Phone, free**: `vb phone` prints a QR , scan it, tap Start, talk from
   anywhere. Plus a Telegram bridge (`vb remote on`) for voice notes.
 - **Smart listening**: thinking-pauses don't split your prompt, background
@@ -68,6 +69,8 @@ Speak. That's it.
 | `/voicebridge:voice-off` | stop, for this session |
 | `/voicebridge:voice-off-all` | stop everywhere and release the mic, from any terminal |
 | **Cmd+Alt+Ctrl+X** | **silence the voice instantly** (or just start typing) |
+| **Fn+F8** (or Cmd+Alt+Ctrl+H) | pause the reply mid-word; press again to resume |
+| **Fn+F9 / Fn+F7** (or Cmd+Alt+Ctrl+F / S) | speak faster / slower, without cutting the reply off |
 | `vb orb` | floating indicator that pulses with your voice, so you can see at a glance whether the mic is actually open (auto-shows on voice-on) |
 | `vb phone` | use it from your phone (prints a QR to scan) |
 | `vb voice <name>` | change the voice (`vb voice` lists all) |

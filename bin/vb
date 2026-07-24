@@ -155,6 +155,7 @@ START (type inside a Claude Code session)
 
 STOP / INTERRUPT (least to most)
   just start typing      cut the voice off, take your new prompt
+  Fn+F8  (or ⌃⌥⌘H)       pause the reply, press again to resume (vb hold)
   Cmd+Alt+Ctrl+X         silence the voice now (vb hush)
   Cmd+Alt+Ctrl+Z         silence AND stop Claude mid-answer (vb stop)
   /voice-stop            stop listening everywhere (vb off)
@@ -169,8 +170,9 @@ STATUS    vb statusline-install   show voice state right in Claude Code's
                                   status line: listening / hearing / speaking
                                   (restart Claude Code once after installing)
 PHONE     vb phone  (or /phone)   scan the QR, talk from anywhere
-VOICE     vb voice <name>         change voice   |   vb speed 1.5  (or say
-                                  "speak faster"; or tap F9 faster / F7 slower)
+VOICE     vb voice <name>         change voice   |   vb speed 1.5  (0.5-3.5x;
+                                  or say "speak faster"; or tap Fn+F9 faster /
+                                  Fn+F7 slower, ⌃⌥⌘F / ⌃⌥⌘S without Fn)
 AGENTS    vb agent add <name> <glob> <kind>      use with Codex/Cursor/etc.
 SETUP     vb doctor               health check   |   see README for install
 DEBUG     vb selftest             not hearing you? this says exactly why

@@ -31,7 +31,12 @@ Do not paraphrase or shorten the tables. Do not run any other command.
 | Talk over the reply | Barge-in: stops speaking and takes your words |
 | **Cmd+Alt+Ctrl+X** | Silences the voice immediately (`vb hush`) |
 | **Cmd+Alt+Ctrl+Z** | Silences AND stops Claude mid-answer (`vb stop`) |
-| **F9 / F7** | Speak faster / slower |
+| **Fn+F9 / Fn+F7** | Speak faster / slower (or Cmd+Alt+Ctrl+F / S) |
+| **Fn+F8** | Pause the reply, press again to resume (or Cmd+Alt+Ctrl+H) |
+
+Hold **Fn**: the top row sends media keys unless System Settings -> Keyboard
+-> "Use F1, F2, etc. keys as standard function keys" is on. The
+Cmd+Alt+Ctrl chords work either way.
 
 **Say these out loud** (no typing needed)
 
@@ -57,7 +62,7 @@ Do not paraphrase or shorten the tables. Do not run any other command.
 | `vb alerts on\|off` | Announce when another agent finishes |
 | `vb voice <name>` | Change the voice (`vb voice` lists all) |
 | `vb speed 1.5` | Playback speed, 0.5x to 3.5x |
-| `vb hold` | Pause the reply; run again to resume (F8) |
+| `vb hold` | Pause the reply; run again to resume (Fn+F8) |
 | `vb pause <secs>` | Silence that ends an utterance (default 2.5) |
 | `vb doctor` | Health check |
 | `vb selftest` | Not hearing you? This says exactly why |

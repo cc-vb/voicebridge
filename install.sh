@@ -124,17 +124,41 @@ else
   echo "  skipped (enable later per README 'Better voice: Kokoro')"
 fi
 
-say_step "7/8 Silence hotkey (Cmd+Alt+Ctrl+X to hush the voice)"
+say_step "7/8 Hotkeys (hush, interrupt, speed, pause)"
 if brew list skhd >/dev/null 2>&1 || brew install koekeishiya/formulae/skhd; then
   SKHDRC="$HOME/.skhdrc"
-  if ! grep -q "vb hush" "$SKHDRC" 2>/dev/null; then
-    printf '\n# voicebridge: silence the voice instantly\ncmd + alt + ctrl - x : %s hush\n# voicebridge: real interrupt (silence + stop generating)\ncmd + alt + ctrl - z : %s stop\n# voicebridge: playback speed (fast-forward / rewind)\nf9 : %s faster\nf7 : %s slower\n' "$BIN_DIR/vb" "$BIN_DIR/vb" "$BIN_DIR/vb" "$BIN_DIR/vb" >> "$SKHDRC"
-  fi
+  touch "$SKHDRC"
+  # Add each binding on its own. The old guard asked "has voicebridge ever
+  # written here?" and skipped everything if so, which meant an install
+  # predating a new key never got that key, no matter how often it updated.
+  # Keying off the individual shortcut also means a shortcut you rebound
+  # yourself is left exactly as you set it.
+  add_key() {   # add_key <shortcut> <vb subcommand> <comment>
+    grep -qF "$1 :" "$SKHDRC" && return 0
+    printf '\n# voicebridge: %s\n%s : %s %s\n' "$3" "$1" "$BIN_DIR/vb" "$2" \
+      >> "$SKHDRC"
+  }
+  add_key "cmd + alt + ctrl - x" hush   "silence the voice instantly"
+  add_key "cmd + alt + ctrl - z" stop   "silence AND stop Claude generating"
+  add_key "f9"                   faster "speak faster (+0.25x)"
+  add_key "f7"                   slower "speak slower (-0.25x)"
+  add_key "f8"                   hold   "pause the reply; press again to resume"
+  # F7/F8/F9 are the media-key row unless the keyboard is in standard
+  # function-key mode, in which case they never reach skhd and the keys look
+  # broken. These chords are immune to that setting, so there is always a
+  # combination that works without changing a system preference.
+  add_key "cmd + alt + ctrl - f" faster "speak faster (works without Fn)"
+  add_key "cmd + alt + ctrl - s" slower "speak slower (works without Fn)"
+  add_key "cmd + alt + ctrl - h" hold   "pause/resume (works without Fn)"
   # Deliberately not `skhd --start-service`: that leaves a keyboard hook
   # running at login forever for a key that only matters while we speak.
   # voice-on starts skhd, voice-off stops it.
-  echo "  hotkey ready: Cmd+Alt+Ctrl+X  (runs only while voice is on;"
-  echo "  grant skhd Accessibility the first time it starts)"
+  echo "  hush/interrupt : Cmd+Alt+Ctrl+X  ·  Cmd+Alt+Ctrl+Z"
+  echo "  speed / pause  : Fn+F9 faster · Fn+F7 slower · Fn+F8 pause"
+  echo "                   (or Cmd+Alt+Ctrl+F / S / H, no Fn needed)"
+  echo "  Plain F7/F8/F9 work once System Settings -> Keyboard ->"
+  echo "  'Use F1, F2, etc. keys as standard function keys' is on."
+  echo "  Grant skhd Accessibility the first time it starts."
 else
   echo "  (skhd optional; typing a prompt also interrupts instantly)"
 fi

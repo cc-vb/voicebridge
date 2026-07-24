@@ -56,23 +56,32 @@ Change the key by editing `~/.skhdrc` then restarting the service.
 
 ### Speaking speed and pause hotkeys
 
-```
-F9  /  Cmd + Alt + Ctrl + F   speak faster (+0.25x)
-F7  /  Cmd + Alt + Ctrl + S   speak slower (-0.25x)
-F8  /  Cmd + Alt + Ctrl + H   pause the reply; press again to resume
-```
+`install.sh` writes all of these, and adds any that are missing when you
+re-run it, so an older install picks up new keys on the next update.
 
-`vb hold` pauses mid-word and resumes from the same spot, which is the
-difference from `Cmd+Alt+Ctrl+X` (`vb hush`): hush ends the reply for good.
+| Do this | Press | Or press | Runs |
+|---|---|---|---|
+| Speak faster (+0.25x) | **Fn + F9** | Cmd+Alt+Ctrl+**F** | `vb faster` |
+| Speak slower (-0.25x) | **Fn + F7** | Cmd+Alt+Ctrl+**S** | `vb slower` |
+| Pause / resume | **Fn + F8** | Cmd+Alt+Ctrl+**H** | `vb hold` |
+| Silence the voice | — | Cmd+Alt+Ctrl+**X** | `vb hush` |
+| Silence + stop Claude | — | Cmd+Alt+Ctrl+**Z** | `vb stop` |
 
-Changing speed while a reply is playing takes effect on the next sentence,
-and confirms with a tick rather than speaking over itself.
+**Why Fn.** On a Mac the top row sends media keys by default, so a bare F8
+reaches the music player rather than skhd and the shortcut looks dead. Hold
+**Fn** and the real F-key gets through. To drop the Fn, switch on System
+Settings -> Keyboard -> "Use F1, F2, etc. keys as standard function keys";
+plain F7/F8/F9 then work. The Cmd+Alt+Ctrl chords ignore that setting
+entirely and always fire, so use them if you would rather not change it.
 
-The first two run `vb faster` / `vb slower` (0.5x to 3.5x). Plain **F9/F7/F8 only
-reach skhd if the keyboard is in "standard function keys" mode** — otherwise
-macOS consumes them as media keys and you must press **Fn+F9**. Turn the mode
-on in System Settings -> Keyboard -> "Use F1, F2, etc. keys as standard
-function keys", or just use the Cmd+Alt+Ctrl chords, which always fire.
+**Pause is not the same as silence.** `vb hold` freezes the reply mid-word
+and the second press carries on from that word. `vb hush` ends the reply
+for good. Both are worth having; they are not two names for one thing.
+
+Speed runs 0.5x to 3.5x. Changing it mid-reply lands on the next sentence
+and confirms with a tick, so it never talks over the reply you are
+adjusting. You can also say **"speak faster"**, **"slow down"**, or
+**"normal speed"** in agent or wake mode, or run `vb speed 1.5`.
 
 You can also say **"speak faster"** / **"speak slower"**, or run `vb speed 1.5`.
 
