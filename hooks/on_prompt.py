@@ -160,24 +160,25 @@ def main() -> int:
     # English-only now: only inject a non-English directive if the user
     # explicitly pinned one; otherwise just the spoken-tone note.
     if lang and lang not in ("english", "auto", "en"):
-        print(directive(lang) + gist)
+        context = directive(lang) + gist
     else:
-        print(TONE + gist)
+        context = TONE + gist
 
-    # When voice is ON for THIS session, surface a compact status + ONE
-    # rotating discovery hint in the gray hook area. Unlike the shared status
-    # bar (which must stay quiet), this line scrolls away with history, so it
-    # can carry a tip without becoming permanent clutter. Silent otherwise, so
-    # a non-voice session never sees it.
+    # The gray line you actually SEE has to go in `systemMessage` (that's how
+    # Claude Code renders a hook note to the user, as PromptGuard does); plain
+    # stdout only reaches the model as context, invisibly. So: the tone note
+    # goes to the model via additionalContext, and the "voice on · <tip>" line
+    # goes to YOU via systemMessage, shown only while this session is voiced.
+    payload = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                      "additionalContext": context}}
     try:
         if voiced:
             line = _teach_line()
-            if line:
-                print(f"[voicebridge] \U0001f399 voice on · {line}")
-            else:
-                print("[voicebridge] \U0001f399 voice on")
+            payload["systemMessage"] = (f"\U0001f399 voice on · {line}"
+                                        if line else "\U0001f399 voice on")
     except Exception:
         pass
+    print(json.dumps(payload))
     return 0
 
 

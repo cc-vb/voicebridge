@@ -34,11 +34,13 @@ def test_skip_jumps_to_next_sentence():
     assert spoke["t"] == "Three. Four."
 
 
-def test_skip_at_end_is_a_noop():
+def test_skip_at_end_ends_the_reply():
     tmp = Path(tempfile.mkdtemp())
-    spoke = _wire(tmp, pos=3)                 # last one
-    assert core.rewind_speech(1) == "already at the last sentence"
-    assert "t" not in spoke                   # nothing re-spoken
+    spoke = _wire(tmp, pos=3)                 # last sentence
+    # Skipping off the end ends the current reply (daemon then plays the next
+    # queued one); it does not re-speak anything itself.
+    assert core.rewind_speech(1) == "skipped to the end"
+    assert "t" not in spoke
 
 
 def test_back_at_start_clamps():

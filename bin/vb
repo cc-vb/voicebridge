@@ -589,6 +589,15 @@ def main(argv) -> int:
         # Pause/resume, as opposed to hush, which ends the reply for good.
         print(core.hold())
 
+    elif cmd == "replies":
+        # Toggle "don't speak replies" while keeping the mic on (one key, all
+        # modes). For when you want to talk to Claude but not hear it back,
+        # e.g. you're listening to music. Say it again / press again to re-enable.
+        want = rest[0] if rest else ("off" if not core.replies_muted() else "on")
+        new = core.set_replies_muted(want == "off")
+        print("replies muted , mic still on (say/press again to unmute)"
+              if new else "replies on , I'll read them aloud again")
+
     elif cmd in ("back", "skip"):
         # Sentence-level rewind while a reply is being read (keyboard recovery
         # for speak-only mode). back = re-speak from the previous sentence,

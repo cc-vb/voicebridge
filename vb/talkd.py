@@ -1159,8 +1159,11 @@ def run_daemon() -> int:
             if len(pending) > 1:
                 core.log(f"talkd: {len(pending)} replies queued while listening")
             barge = ""
+            muted = core.replies_muted()   # "talk to me, don't talk back"
             for uid, text in pending:
                 prev[tp] = uid      # marked read before speaking: a crash mid
+                if muted:
+                    continue        # keep listening/injecting, just stay silent
                 if mode == "speak":
                     core.speak(text, blocking=True)   # no mic, no barge-in
                 else:

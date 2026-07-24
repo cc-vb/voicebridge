@@ -30,6 +30,36 @@ MIC_FLAG = STATE_DIR / "mic_on"
 REMAINDER = STATE_DIR / "speech_remainder"   # what the cap cut off, for `vb continue`
 SPEECH_CHUNKS = STATE_DIR / "speech_chunks"  # current reply, split into chunks
 SPEECH_POS = STATE_DIR / "speech_pos"        # index of the chunk playing now
+REPLIES_OFF = STATE_DIR / "replies_off"      # speak nothing while set (one key)
+
+
+def replies_muted() -> bool:
+    return REPLIES_OFF.exists()
+
+
+def set_replies_muted(off: bool) -> bool:
+    """Toggle/set 'don't speak replies' (mic stays on). Returns the new state."""
+    try:
+        if off:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            REPLIES_OFF.write_text("1")
+        else:
+            REPLIES_OFF.unlink()
+    except Exception:
+        pass
+    return off
+
+
+def speech_held() -> bool:
+    """True if the current reply is PAUSED (SIGSTOP'd), so callers don't speak
+    newer replies over a deliberate pause."""
+    try:
+        pid = int(SPEECH_PID.read_text().strip())
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                              capture_output=True, text=True).stdout.strip()
+        return stat.startswith("T")
+    except Exception:
+        return False
 
 
 def is_voiced(session_id: str) -> bool:
@@ -662,7 +692,10 @@ def rewind_speech(delta: int) -> str:
     if not chunks:
         return "nothing is speaking"
     if delta > 0 and pos >= len(chunks) - 1:
-        return "already at the last sentence"
+        # Skipping off the end just ends this reply; the daemon then speaks the
+        # next queued reply, so repeated skip walks you forward to the latest.
+        hush()
+        return "skipped to the end"
     target = max(0, min(len(chunks) - 1, pos + delta))
     hush()
     speak(" ".join(chunks[target:]))

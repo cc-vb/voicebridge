@@ -150,10 +150,14 @@ if brew list skhd >/dev/null 2>&1 || brew install koekeishiya/formulae/skhd; the
   add_key "cmd + alt + ctrl - f" faster "speak faster (works without Fn)"
   add_key "cmd + alt + ctrl - s" slower "speak slower (works without Fn)"
   add_key "cmd + alt + ctrl - h" hold   "pause/resume (works without Fn)"
-  add_key "f6"                   repeat "re-speak the last reply"
-  add_key "cmd + alt + ctrl - r" repeat "re-speak the last reply (no Fn)"
-  add_key "cmd + alt + ctrl - b" back   "go back one sentence"
-  add_key "cmd + alt + ctrl - n" skip   "skip ahead one sentence"
+  # Shorter 2-modifier chords (Ctrl+Option+letter, mnemonic) for the newer
+  # controls. Single-modifier combos (Cmd+M, Ctrl+M...) collide with the OS and
+  # terminal (Ctrl+M is Return), so Ctrl+Option is the shortest safe namespace.
+  add_key "f6"            repeat  "re-speak the last reply"
+  add_key "ctrl + alt - r" repeat "re-speak the last reply"
+  add_key "ctrl + alt - b" back   "go back one sentence"
+  add_key "ctrl + alt - n" skip   "skip ahead one sentence (again to move on)"
+  add_key "ctrl + alt - m" replies "mute/unmute replies (mic stays on)"
   # Deliberately not `skhd --start-service`: that leaves a keyboard hook
   # running at login forever for a key that only matters while we speak.
   # voice-on starts skhd, voice-off stops it.
