@@ -873,7 +873,16 @@ def echo_residue(text: str, window_s: float = 90.0) -> "tuple[str, float]":
 # ordinary capture: one stray word (a cough transcribed as a word, someone
 # else in the room, a clipped "adios") must never cut Claude off. Attention
 # words are the deliberate exception, since that is how you interrupt.
-BARGE_MIN_WORDS = 3
+#
+# The bar scales with how much of the capture was our own voice, because the
+# two failure modes pull in opposite directions. A flat low ceiling drops a
+# genuine interruption that happens to reuse the reply's words ("no, use the
+# OTHER branch"); a flat high one lets imperfect echo subtraction cut our own
+# long replies off mid-sentence. So: the more it sounds like us, the more
+# clearly-new words we demand before believing anyone is talking.
+BARGE_MIN_WORDS = 3          # at low overlap, three new words is a person
+BARGE_PARTIAL_OVERLAP = 0.60  # above this it is our reply coming back
+BARGE_PARTIAL_WORDS = 5      # ...below it, five new words still count
 
 
 def barge_decision(heard: str, conf: float, loud: float) -> str:
@@ -890,13 +899,15 @@ def barge_decision(heard: str, conf: float, loud: float) -> str:
     residue, overlap = echo_residue(heard)
     if ATTENTION_RE.search(residue):
         return residue          # "stop"/"wait" cuts through at any length
-    # Only CLEARLY-new speech interrupts otherwise. The old "overlap < 0.6"
-    # path false-cut our OWN long replies: over a long utterance the mic
-    # hears our voice, echo-subtraction is imperfect, and leftover words
-    # looked like a barge-in and killed playback mid-reply. Require very low
-    # overlap (genuinely different words) AND enough of them.
-    if overlap < 0.25 and len(residue.split()) >= BARGE_MIN_WORDS:
-        return heard
+    new_words = len(residue.split())
+    # Barely any shared words: they are talking about something else entirely.
+    if overlap < 0.25 and new_words >= BARGE_MIN_WORDS:
+        return residue
+    # Half our words came back, but there is a sentence of new ones underneath
+    # -- someone interrupting with the reply's own vocabulary ("no, use the
+    # OTHER branch"). Echo alone does not invent five substantive new words.
+    if overlap < BARGE_PARTIAL_OVERLAP and new_words >= BARGE_PARTIAL_WORDS:
+        return residue
     return ""                   # mostly our own voice; keep talking
 
 

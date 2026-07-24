@@ -86,23 +86,48 @@ def test_our_own_speech_echoing_back_never_barges(isolated_state):
     assert talkd.barge_decision(reply, CONF, LOUD) == ""
 
 
-@pytest.mark.xfail(
-    reason="Deliberate tradeoff: barge_decision requires overlap < 0.25 (very "
-    "few shared words) so our own long reply echoing back can't false-cut "
-    "playback mid-sentence. That also drops a real barge-in that REUSES words "
-    "from the reply (here 0.44 overlap), unless it carries an attention word "
-    "like 'stop'/'wait' (which always cuts through). Whether to relax this is "
-    "an open product decision; see the echo/self-interrupt notes in talkd.py.",
-    strict=True)
 def test_user_talking_over_our_echo_is_heard_first_try(isolated_state):
-    """Echo subtraction: their words survive, ours are stripped. Currently
-    xfail: the anti-self-interrupt overlap gate rejects a partial-overlap
-    barge-in that has no attention word."""
+    """Echo subtraction: their words survive, ours are stripped.
+
+    They interrupt using the reply's own vocabulary, so overlap is 0.44 --
+    too high for the strict tier, but five new words is a person talking,
+    not echo bleed. Caught by the partial-overlap tier."""
     spoken(isolated_state, "the migration script rewrites the index")
     heard = "the migration script no use the other branch instead"
     barge = talkd.barge_decision(heard, CONF, LOUD)
     assert "other branch" in barge
     assert "migration" not in barge
+
+
+def test_partial_overlap_needs_a_sentence_of_new_words(isolated_state):
+    """The tier that makes the test above pass must not open the door to
+    echo bleed. Same 0.44-ish overlap, but only a couple of stray words --
+    which is what imperfect echo subtraction leaves behind -- stays rejected.
+    Five new words is a person; two is our own voice coming back."""
+    spoken(isolated_state, "the migration script rewrites the index")
+    assert talkd.barge_decision("the migration script rewrites no use",
+                                CONF, LOUD) == ""
+
+
+def test_mostly_our_own_voice_never_barges(isolated_state):
+    """Above the partial ceiling it is our reply, however many words the
+    transcriber hallucinates on top. This is the regression that forced the
+    strict gate originally: long replies cutting themselves off mid-sentence."""
+    reply = ("the deployment pipeline builds the container and pushes it to "
+             "the registry before the rollout begins")
+    spoken(isolated_state, reply)
+    assert talkd.barge_decision(reply + " uh huh yeah okay right",
+                                CONF, LOUD) == ""
+
+
+def test_barge_returns_their_words_not_ours(isolated_state):
+    """A barge-in becomes the next prompt, so it must not carry our own
+    sentence into it. Every accepting path returns the echo-stripped residue."""
+    spoken(isolated_state, "i will rewrite the index in the migration script")
+    barge = talkd.barge_decision(
+        "no use the other branch instead please", CONF, LOUD)
+    assert barge, "a clear interruption should be heard"
+    assert "migration" not in barge and "index" not in barge
 
 
 # ---------- screen_capture: what may become a prompt -------------------------
