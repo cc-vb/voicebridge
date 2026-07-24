@@ -60,6 +60,19 @@ def _secret() -> str:
 SECRET = _secret()   # kept for status(); auth checks call _secret() live
 
 
+def _write_secret(s: str) -> None:
+    """Persist the shared secret readable by this account only. It is the
+    whole authentication of a URL that can type into your Mac, so it has no
+    business sitting in a world-readable file."""
+    path = core.STATE_DIR / "call_secret"
+    core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(s)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def _target_transcript() -> str:
     active = _read_json(ACTIVE)
     if active and os.path.exists(active.get("transcript_path", "")):
@@ -2361,7 +2374,12 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self) -> bool:
         secret = _secret()   # live: a rotated secret works without restart
         if not secret:
-            return True
+            # Fail CLOSED. This used to serve everything unauthenticated when
+            # no secret was configured, and "no secret" is not a rare state:
+            # deleting the state file or running `vb call on` by hand reaches
+            # it. Behind a public tunnel that is an open door for typing into
+            # someone's Mac, so an unconfigured relay answers nothing instead.
+            return False
         from urllib.parse import urlparse, parse_qs
         q = parse_qs(urlparse(self.path).query)
         if q.get("k", [""])[0] == secret:
@@ -2626,7 +2644,7 @@ def on() -> str:
     # it live, so the link `vb phone` prints works without a restart.
     s = os.environ.get("VB_CALL_SECRET", "")
     if s:
-        (core.STATE_DIR / "call_secret").write_text(s)
+        _write_secret(s)
     if _alive():
         return "call relay already running"
     if _health_local():
@@ -2654,6 +2672,64 @@ def on() -> str:
             f"Try `vb call off`, then `vb phone` again.")
 
 
+def tunnel_pids(ps_output: str, port: int) -> list:
+    """Every cloudflared in `ps -axo pid=,args=` output that is tunnelling OUR
+    relay port. Matching on the port (not just the name) is deliberate: a
+    cloudflared you run for your own work must survive `vb call off`."""
+    want = (f"--url http://127.0.0.1:{port}", f"--url http://localhost:{port}")
+    pids = []
+    for line in ps_output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        head, _, args = line.partition(" ")
+        if "cloudflared" not in args:
+            continue
+        if any(w in args for w in want):
+            try:
+                pids.append(int(head))
+            except ValueError:
+                pass
+    return pids
+
+
+def reap_tunnels(keep: int = 0) -> int:
+    """Stop every tunnel pointing at this relay, not just the last one.
+
+    Only the pid in tunnel.pid was ever killed, so each `vb phone` orphaned the
+    tunnel before it: publicly reachable URLs into this Mac that nothing would
+    ever close, still live days later. Returns how many were stopped."""
+    import signal
+
+    def _ours() -> list:
+        try:
+            out = subprocess.run(["ps", "-axo", "pid=,args="],
+                                 capture_output=True, text=True,
+                                 timeout=5).stdout
+        except Exception:
+            return []
+        return [p for p in tunnel_pids(out, PORT)
+                if p not in (keep, os.getpid())]
+
+    victims = _ours()
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        # cloudflared drains connections on SIGTERM and can sit there for a
+        # while. "The link is closed" has to be true the moment we say it, so
+        # anything still serving after the grace period is killed outright.
+        if not _ours():
+            break
+        for pid in _ours():
+            try:
+                os.kill(pid, sig)
+            except Exception:
+                pass
+        time.sleep(0.4)
+    n = len(victims) - len(_ours())
+    if n:
+        core.log(f"call: stopped {n} tunnel(s) on port {PORT}")
+    return n
+
+
 def off() -> str:
     try:
         os.kill(int(PID.read_text().strip()), 15)
@@ -2663,9 +2739,9 @@ def off() -> str:
         PID.unlink()
     except FileNotFoundError:
         pass
-    # Kill the quick tunnel too: orphaned cloudflareds used to pile up, each
-    # pointing old QRs at whatever owns the port next (confusing half-working
-    # links). vb phone records tunnel.pid for exactly this.
+    # Every tunnel on our port, not only the recorded one: the recorded pid is
+    # just the most recent, and an old QR still routes into this Mac.
+    n = reap_tunnels()
     tp = core.STATE_DIR / "tunnel.pid"
     try:
         os.kill(int(tp.read_text().strip()), 15)
@@ -2675,7 +2751,7 @@ def off() -> str:
         tp.unlink()
     except FileNotFoundError:
         pass
-    return "call relay OFF (tunnel stopped)"
+    return f"call relay OFF ({n or 'no'} tunnel(s) stopped)"
 
 
 def status() -> str:

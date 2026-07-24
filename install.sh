@@ -70,6 +70,9 @@ WANTED = {
     "Stop": f"{repo}/hooks/on_stop.py",
     "Notification": f"{repo}/hooks/on_notify.py",
     "UserPromptSubmit": f"{repo}/hooks/on_prompt.py",
+    # Voice must not outlive the session it was bound to: this is what stops
+    # the mic and the speech when you close a session instead of /voice-off.
+    "SessionEnd": f"{repo}/hooks/on_session_end.py",
 }
 changed = False
 for event, script in WANTED.items():

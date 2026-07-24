@@ -168,6 +168,33 @@ We are the only stack combining: free robust pipe + narrating two-way voice
 + barge-in + trustworthy mobile review. And we skip rebuilding sync, so we
 get there faster.
 
+## When voice stops (the lifetime guarantee)
+
+Voice belongs to the session you switched it on in, and it does not outlive
+that session. Whichever way a session ends, the microphone is released, any
+speech is cut off mid-word, the hotkeys come down and a phone link opened from
+that session is closed:
+
+| How the session ends | What stops it |
+|---|---|
+| `/voice-off`, `vb off` | you asked; immediate |
+| `/exit`, Ctrl+C, closing the tab | the `SessionEnd` hook, immediate |
+| `kill -9`, a crash, a closed terminal window | the daemon's own owner watchdog, within ~5s |
+| you switch to another app | mic released and speech stopped until you switch back |
+
+The watchdog is the backstop for the endings no hook ever sees: every prompt
+records the pid of the Claude Code process that owns the session, and the
+daemon checks it is still alive a few times a minute. When it is gone, the
+daemon silences itself, drops its scratch recordings and exits.
+
+**The phone link.** `vb phone` opens a public URL into this Mac, so it is
+treated like one: the URL is authenticated by a 128-bit secret (an
+unconfigured relay answers nothing at all rather than serving openly), the
+server itself only listens on `127.0.0.1`, speech only ever pastes into the
+terminal voice was bound to, and starting a new link stops every previous
+tunnel instead of leaving old QRs alive. Check what is running at any time
+with `vb call status`, and close everything with `vb call off`.
+
 ## Design rules (learned from everyone's mistakes)
 
 - **Hybrid, never voice-first.** Voice is for *direction* and *approval*.

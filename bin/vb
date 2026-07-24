@@ -367,13 +367,29 @@ def main(argv) -> int:
         # Deterministic secret: read-before-generate, generated ONCE with real
         # randomness and persisted. (The old str(hash(...)) changed every run,
         # Python salts hashes per process, causing surprise 401s.)
+        # 128 bits, not 32. This one string is the entire authentication of a
+        # URL that can type into your Mac, and it travels the public internet;
+        # `vb-` + 8 hex characters was small enough to be worth guessing. A
+        # stored short secret is upgraded here (the QR is reprinted anyway).
+        _stored = core._read(core.STATE_DIR / "call_secret").strip()
+        if len(_stored) < 24:
+            _stored = ""
         secret = (_os.environ.get("VB_CALL_SECRET", "")
-                  or core._read(core.STATE_DIR / "call_secret")
-                  or "vb-" + _secrets.token_hex(4))
+                  or _stored
+                  or "vb-" + _secrets.token_hex(16))
         _os.environ["VB_CALL_SECRET"] = secret
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        (core.STATE_DIR / "call_secret").write_text(secret)
         from vb import call as _call
+        _call._write_secret(secret)
+        # Remember whose session this link belongs to: when that session ends,
+        # the relay and the tunnel end with it instead of staying reachable.
+        try:
+            from vb import talkd as _td
+            _owner = (_td._read_json(_td.LAST) or {}).get("session_id", "")
+            if _owner:
+                _td.CALL_OWNER.write_text(_owner)
+        except Exception:
+            pass
         msg = _call.on()
         print(msg)
         if msg.startswith("ERROR"):
@@ -394,6 +410,10 @@ def main(argv) -> int:
         if not cf:
             print("cloudflared missing: brew install cloudflared")
             return 1
+        # Stop whatever tunnels are already pointing here before opening
+        # another one. Without this every `vb phone` left the previous public
+        # URL alive, so old QRs kept routing into this Mac indefinitely.
+        _call.reap_tunnels()
         print("starting tunnel", end="", flush=True)
         with open(logf, "w") as lf:
             p = subprocess.Popen([cf, "tunnel", "--url",

@@ -5,6 +5,7 @@ New users didn't know which command to run first. This prints the starter
 commands once per machine (a flag file suppresses it forever after), so the
 very first Claude Code session after install shows the way in.
 """
+import os
 import sys
 from pathlib import Path
 

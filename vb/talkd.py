@@ -238,12 +238,152 @@ def _foreign_script(text: str) -> bool:
 
 # ---------- state helpers (called from the hook and the CLI) -----------------
 
+# ---------- session ownership -------------------------------------------------
+#
+# Voice must never outlive the session it was bound to. Closing a session with
+# Ctrl+C, quitting the terminal or a crash leaves nobody to run /voice-off, and
+# the marker files stay behind: the daemon kept the microphone open and kept
+# reading replies aloud out of a transcript no one was watching any more.
+#
+# The fix is to know WHO owns the voiced session. Hooks run as descendants of
+# the Claude Code process, so walking up the parent chain from the hook finds
+# that process exactly, no guessing from a process list. Its pid is recorded
+# with every prompt, which gives the daemon a one-syscall liveness test and a
+# definite moment to shut everything down.
+
+CALL_OWNER = core.STATE_DIR / "call_owner"   # session `vb phone` was run in
+
+
+def owner_pid() -> int:
+    """The pid of the Claude Code process this code is running under, or 0.
+    Only meaningful from inside a hook (a descendant of that process)."""
+    pid = os.getpid()
+    for _ in range(12):
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                                 capture_output=True, text=True,
+                                 timeout=3).stdout.strip()
+        except Exception:
+            return 0
+        if not out:
+            return 0
+        parts = out.split(None, 1)
+        comm = parts[1].strip() if len(parts) > 1 else ""
+        if os.path.basename(comm) == "claude":
+            return pid
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            return 0
+        if pid <= 1:
+            return 0
+    return 0
+
+
+def _is_claude_pid(pid: int) -> bool:
+    """Is this pid still a live Claude Code session? The name check is what
+    makes it safe against pid reuse: an unrelated program that inherits the
+    number must not read as 'your session is still open'."""
+    if pid <= 0:
+        return False
+    try:
+        out = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return True   # can't tell -> assume alive; never tear down on a doubt
+    return os.path.basename(out.strip()) == "claude"
+
+
+def _any_claude_running() -> bool:
+    """Is ANY Claude Code session open on this machine? The fallback for
+    sessions voiced before their owner was recorded: if there is no Claude at
+    all, an open mic cannot belong to anything."""
+    try:
+        out = subprocess.run(["ps", "-axo", "comm="], capture_output=True,
+                             text=True, timeout=3).stdout
+    except Exception:
+        return True
+    return any(os.path.basename(ln.strip()) == "claude"
+               for ln in out.splitlines())
+
+
+def session_alive(payload: dict) -> bool:
+    """Is the session described by an active.json/last_prompt.json payload
+    still open?"""
+    if not payload:
+        return False
+    try:
+        pid = int(payload.get("owner_pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid:
+        return _is_claude_pid(pid)
+    return _any_claude_running()
+
+
+def call_owner() -> str:
+    """Which session started the phone link, if any."""
+    try:
+        return CALL_OWNER.read_text().strip()
+    except Exception:
+        return ""
+
+
+def session_closed(sid: str = "", why: str = "session closed") -> str:
+    """Tear voice down for a session that ENDED instead of turning voice off.
+
+    Silences speech mid-sentence, drops the session's marker and, once no
+    voiced session is left, stops the daemon so the microphone is released and
+    the hotkeys come down. A phone link opened from that session goes with it:
+    a public tunnel into this Mac must not survive the window that opened it.
+    """
+    if not sid:
+        sid = (_read_json(ACTIVE) or {}).get("session_id", "")
+    marker = (VOICED / sid) if sid else None
+    was_voiced = bool(marker and marker.exists())
+    done = []
+    if was_voiced:
+        core.hush()   # stop mid-sentence, before anything slower runs
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+        active = _read_json(ACTIVE)
+        if active and active.get("session_id") == sid:
+            try:
+                ACTIVE.unlink()
+            except FileNotFoundError:
+                pass
+        done.append("voice off")
+    if sid and call_owner() == sid:
+        try:
+            from . import call
+            call.off()
+            CALL_OWNER.unlink()
+        except Exception as e:
+            core.log(f"session_closed: phone teardown failed: {e}")
+        else:
+            done.append("phone link closed")
+    remaining = list(VOICED.iterdir()) if VOICED.exists() else []
+    if was_voiced and not remaining:
+        stop_daemon()   # daemon + recorder + skhd: the mic is actually freed
+        done.append("mic released")
+    if not done:
+        return ""
+    core.log(f"talkd: {sid[:8]} {why} -> {', '.join(done)}")
+    return f"{sid[:8]} {why}: {', '.join(done)}."
+
+
 def record_prompt(session_id: str, transcript_path: str) -> None:
     """Called by the UserPromptSubmit hook on every prompt, any session."""
     try:
         STATE.mkdir(parents=True, exist_ok=True)
         payload = {"session_id": session_id,
-                   "transcript_path": transcript_path, "ts": time.time()}
+                   "transcript_path": transcript_path, "ts": time.time(),
+                   # Recorded from the hook, where the parent chain is still
+                   # reachable: this is what lets the daemon notice the
+                   # session going away.
+                   "owner_pid": owner_pid()}
         LAST.write_text(json.dumps(payload))
         # If this session is voiced, the mic follows it (most recent wins).
         if (VOICED / session_id).exists():
@@ -505,6 +645,20 @@ def ensure_daemon() -> None:
     _start_daemon()
 
 
+def _wipe_recordings() -> None:
+    """Delete the scratch audio the moment listening stops.
+
+    These files are recordings of the room. They were only swept at the next
+    daemon start, and only once an hour old, so 'the mic is off' still left
+    your voice sitting on disk. Nothing here is needed after a turn ends."""
+    for name in ("talkd.wav", "talkd_cont.wav", "talkd_probe.wav",
+                 "barge.wav"):
+        try:
+            (STATE / name).unlink()
+        except OSError:
+            pass
+
+
 def stop_daemon() -> None:
     _kill_all_daemons()
     core.hush()   # a Kokoro reply plays via a detached worker; killing the
@@ -521,6 +675,7 @@ def stop_daemon() -> None:
     # user's survives.
     subprocess.run(["pkill", "-f", str(STATE / "talkd.wav")],
                    capture_output=True)
+    _wipe_recordings()   # the mic is off; the recordings of the room go too
     hotkey_down()
 
 
@@ -1080,6 +1235,7 @@ def run_daemon() -> int:
     fleet_next = 0.0     # next fleet-check time
     first_fleet = True   # skip alerts on the very first scan (no baseline)
     unfocused_since = 0.0   # when the bound app lost focus (0.0 = focused)
+    owner_next = 0.0        # next owner-liveness check (see the watchdog below)
     cue_armed = True   # ding once when listening (re)starts for a turn; armed
     #                    at boot and after each reply, never on idle re-records
     while True:
@@ -1095,6 +1251,19 @@ def run_daemon() -> int:
             time.sleep(0.5)
             continue
         sid, tp = active["session_id"], active["transcript_path"]
+
+        # Owner watchdog. The session voice belongs to has to still be open.
+        # Ctrl+C, a closed terminal or a crash leaves nobody to run /voice-off,
+        # and this loop would otherwise keep the mic and keep speaking replies
+        # into an empty room. Checked every few seconds (one `ps`), and BEFORE
+        # the focus gate below, since a closed terminal is never frontmost and
+        # would park us in the dormant branch forever.
+        if time.time() >= owner_next:
+            owner_next = time.time() + 4.0
+            if not session_alive(active):
+                session_closed(sid, "session closed")
+                core.log(f"talkd: exiting, {sid[:8]} is gone (pid {os.getpid()})")
+                return 0
 
         # Focus gate. While you're in another app we hold no mic at all, so
         # a meeting or any other recorder gets a free input device, and we
