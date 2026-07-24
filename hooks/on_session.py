@@ -16,12 +16,13 @@ HINT = """\
 
   Not sure where to start? Pick by how you want to work:
 
-    /voice-on     Heads-down pairing. Everything you say goes to Claude,
+    /voice-agent  Fully hands-free. Everything you say goes to Claude,
                   replies spoken back. Headphones recommended.
-    /voice-wake   Multitasking or others around. Stays quiet until you say
-                  "hey Claude ...", ignores everything else.
+    /voice-wake   Others around? Stays quiet until you say "hey Claude ...".
+    /voice-on     Replies read aloud, mic stays OFF. You type (or use
+                  Claude's own space-to-talk) to send prompts.
 
-  New here? Just run /voice-on and start talking.
+  New here? Run /voice-agent and just start talking.
 
   To stop, least to most:
     Cmd+Alt+Ctrl+X   silence the voice now (or just start typing)

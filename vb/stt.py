@@ -147,11 +147,22 @@ def _transcribe_server(wav: str) -> "tuple[str, float] | None":
         core.log(f"whisper server inference failed: {e}")
         return None
     text = _clean_text(data.get("text", "") or "")
+    segs = data.get("segments", []) or []
+    # Prefer per-word probabilities, but the server (started with -nt) usually
+    # omits the words array, which left conf=0.0 and SILENTLY DISABLED the
+    # confidence noise-gate on the warm path (loud TV/chatter could inject).
+    # Fall back to the segment avg_logprob, which is always present: exp() of
+    # it is a 0..1 confidence on the same scale the token-prob path produces.
+    import math
     probs = [w.get("probability", 0.0)
-             for seg in data.get("segments", [])
-             for w in seg.get("words", [])
+             for seg in segs for w in seg.get("words", [])
              if isinstance(w.get("probability", None), (int, float))]
-    conf = sum(probs) / len(probs) if probs else 0.0
+    if probs:
+        conf = sum(probs) / len(probs)
+    else:
+        lps = [math.exp(seg["avg_logprob"]) for seg in segs
+               if isinstance(seg.get("avg_logprob"), (int, float))]
+        conf = sum(lps) / len(lps) if lps else 0.0
     return text, conf
 
 

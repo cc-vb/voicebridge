@@ -199,14 +199,20 @@ def read_last(query: str) -> str:
     return f"{r['label']} said: {reply}"
 
 
-def newly_idle(prev: dict) -> "tuple[list, dict]":
+def newly_idle(prev: dict, exclude_sid: str = "") -> "tuple[list, dict]":
     """Given prior {sid: state}, return (labels that just went idle, new map).
-    Used by the daemon to announce 'X is ready for you' when an agent
-    finishes, the fleet-supervision payoff."""
+    Used by the daemon to announce 'X is ready for you' when an OTHER agent
+    finishes, the fleet-supervision payoff.
+
+    exclude_sid is the session you're actively voiced in: never announce it.
+    Its reply is already spoken to you, and without this the daemon said
+    "Heads up: <this session> is ready" after every single reply."""
     now = {}
     freshly = []
     for r in roster():
         now[r["sid"]] = r["state"]
+        if r["sid"] == exclude_sid:
+            continue
         if r["state"] == "idle" and prev.get(r["sid"]) == "working":
             freshly.append(r["label"])
     return freshly, now

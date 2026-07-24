@@ -504,6 +504,8 @@ def ensure_daemon() -> None:
 
 def stop_daemon() -> None:
     _kill_all_daemons()
+    core.hush()   # a Kokoro reply plays via a detached worker; killing the
+    #               daemon orphans it, so silence it or "mic released" lies.
     try:
         PID.unlink()
     except FileNotFoundError:
@@ -1125,7 +1127,9 @@ def run_daemon() -> int:
         # watching terminals. Skipped while speaking.
         if alerts_on() and time.time() >= fleet_next and not _any_speech_playing():
             from . import sessions as _sess
-            fresh, fleet_states = _sess.newly_idle(fleet_states)
+            # Never announce the session you're voiced in (sid): its reply is
+            # already spoken, and announcing it fired "X is ready" every turn.
+            fresh, fleet_states = _sess.newly_idle(fleet_states, exclude_sid=sid)
             fleet_next = time.time() + 12
             others = [n for n in fresh if n]  # labels only
             if fleet_states and others and not first_fleet:
@@ -1216,6 +1220,11 @@ def run_daemon() -> int:
                 continue
             cut = False
             last_probe = 0.0     # throttle for the mid-recording wake probe
+            # Only probe mid-recording when the warm STT server is up: the CLI
+            # fallback takes ~2s and would block this loop (stalling the meter
+            # and end-of-speech detection). Checked once per capture, not per
+            # probe. Without the server, the wake ding just fires at end-of-turn.
+            probe_wake = (mode == "wake" and not in_follow and stt.whisper_up())
             while p.poll() is None:
                 time.sleep(0.15)
                 # Live mic meter: once your voice registers, the indicator
@@ -1228,7 +1237,7 @@ def run_daemon() -> int:
                 # Wake mode: transcribe the partial recording every ~0.45s and
                 # ding the INSTANT "hey Claude" is heard, while you keep
                 # talking, instead of after the whole sentence is captured.
-                if (mode == "wake" and not in_follow and not winked
+                if (probe_wake and not winked
                         and time.time() - last_probe > 0.30):
                     last_probe = time.time()
                     if _snapshot_wav(wav, wav_probe, min_s=0.3):
