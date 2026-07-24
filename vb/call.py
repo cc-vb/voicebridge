@@ -1444,11 +1444,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             from . import sessions as _sess
             active = (_read_json(ACTIVE) or {}).get("session_id", "")
+            now = time.time()
             rows = [{"id": r.get("sid", ""), "name": r.get("label", ""),
                      "state": r.get("state", ""),
                      "current": r.get("sid", "") == active,
                      "pending": bool(core.get_pending_notice(
-                         r.get("sid", "") or "-"))}
+                         r.get("sid", "") or "-")),
+                     "last": _sess.last_preview(r.get("path", "")),
+                     "ago": int(max(0, now - r.get("mtime", now)))}
                     for r in _sess.roster()]
             self._reply(200, json.dumps({"sessions": rows}).encode(),
                         "application/json")

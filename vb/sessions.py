@@ -218,6 +218,32 @@ def newly_idle(prev: dict, exclude_sid: str = "") -> "tuple[list, dict]":
     return freshly, now
 
 
+def last_preview(path: str, cap: int = 96) -> str:
+    """A short last-message preview for the phone's session cards. Reads only
+    the file TAIL (transcripts grow to many MB and the phone polls the roster
+    every ~10s, whole-file reads would burn CPU for a one-line preview)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            tail = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    for line in reversed(tail.splitlines()):
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if rec.get("type") != "assistant":
+            continue
+        text = core._blocks_to_text(rec.get("message", {}).get("content", ""))
+        text = core.clean_for_speech(text, max_chars=400).strip()
+        if text:
+            return text[:cap] + ("..." if len(text) > cap else "")
+    return ""
+
+
 def switch_sid(sid: str) -> str:
     """switch() by exact session id (the phone page sends ids, not labels)."""
     from . import talkd

@@ -1314,6 +1314,8 @@ def run_daemon() -> int:
             if why and not (mode == "wake" and wake_accept(text, why, winked)):
                 if text:
                     core.log(f"talkd dropped ({why}): {text[:80]}")
+                    core.bump_stat("drops")   # signal for the recommender:
+                    #                           stray audio -> suggest wake
                 continue
 
         # Fleet control by voice: roster + switch across all sessions.

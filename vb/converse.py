@@ -61,6 +61,9 @@ NADA = "/System/Library/Sounds/Basso.aiff"
 
 
 def _beep(sound: str) -> None:
+    from . import core
+    if core.call_live():
+        return   # a phone call owns the audio; no cues to an empty room
     try:
         subprocess.Popen(["afplay", sound], stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)

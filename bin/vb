@@ -425,6 +425,15 @@ def main(argv) -> int:
             print(".", end="", flush=True)
         print("")
         full = f"{url}/?k={secret}"
+        # Deep-link the QR to the session /phone was run in: scanning lands
+        # straight in that session's call screen instead of the generic home.
+        try:
+            from vb import talkd as _td
+            last = _td._read_json(_td.LAST) or {}
+            if last.get("session_id"):
+                full += f"&s={last['session_id']}"
+        except Exception:
+            pass
         print(f"\n  PHONE URL: {full}\n")
         # A QR in its own window is the reliable one: terminal QRs wrap,
         # collapse inside Claude Code's tool output, and invert on light

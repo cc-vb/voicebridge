@@ -82,6 +82,8 @@ def _pool():
          lambda: _safe(core.get_engine) == "kokoro", 2),
         ("voice", 'change my voice with  vb voice  (dozens of options)',
          lambda: False, 1),
+        ("phone", 'take this call anywhere: run  vb phone  and scan the QR',
+         lambda: (core.STATE_DIR / "call_secret").exists(), 2),
         ("off", 'say "stop listening" to mute, or /voice-off to end',
          lambda: False, 2),
     ]
@@ -118,6 +120,24 @@ def _teach_line() -> str:
         shown["_intro"] = i + 1
         save()
         return _INTRO[i]
+    # Behaviour-driven recommendations: what THIS user is struggling with
+    # right now beats any generic tip. Signals come from rolling counters
+    # (core.bump_stat) written by the daemon and this hook.
+    from vb import talkd as _td
+    stats = core.get_stats()
+    triggers = []
+    if stats.get("drops", 0) >= 3 and _safe(_td.get_mode) == "all":
+        triggers.append(("ctx_wake", 'hearing things you didn\'t say? say '
+                         '"wake word mode", I\'ll only listen after '
+                         '"hey Claude"', 3))
+    if stats.get("typed_over", 0) >= 3:
+        triggers.append(("ctx_hush", "you keep typing over me, "
+                         "Ctrl+Alt+Cmd+X silences me instantly", 2))
+    for tid, text, cap in triggers:
+        if shown.get(tid, 0) < cap:
+            shown[tid] = shown.get(tid, 0) + 1
+            save()
+            return text
     # Steady state: show the least-shown tip that's neither learned nor capped.
     elig = []
     for tid, text, learned, cap in _pool():
@@ -148,6 +168,13 @@ def main() -> int:
     # mid-sentence. Only when THIS session is voiced, so a prompt typed in some
     # OTHER (non-voice) session never silences the session you're listening to.
     if voiced:
+        try:
+            if core.speech_active():
+                # Signal for the recommender: they keep typing over the voice,
+                # so the instant-silence key is worth teaching.
+                core.bump_stat("typed_over")
+        except Exception:
+            pass
         core.hush()
 
     # Gist-first (only when replies are being spoken): leading with a one-line

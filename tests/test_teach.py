@@ -17,6 +17,7 @@ def _fresh(tmp):
     core.REMAINDER = tmp / "speech_remainder"
     core.RATE_FILE = tmp / "rate"
     core.ENGINE_FILE = tmp / "engine"
+    core.STATS_FILE = tmp / "stats.json"   # keep real behaviour counters out
     op.core = core
     op.TEACH_DIR = tmp / "teach"
     op.SHOWN = op.TEACH_DIR / "shown.json"
@@ -62,6 +63,31 @@ def test_context_trigger_preempts_with_remainder():
     _fresh(tmp)
     core.REMAINDER.write_text("the rest of the reply")
     assert "continue" in op._teach_line()      # preempts the intro
+
+
+def test_behaviour_trigger_stray_audio_suggests_wake():
+    tmp = Path(tempfile.mkdtemp())
+    _fresh(tmp)
+    for _ in range(5):
+        op._teach_line()                       # burn the intro
+    for _ in range(4):
+        core.bump_stat("drops")                # stray captures piling up
+    line = op._teach_line()
+    assert "wake word mode" in line, line
+    # capped: after its shows are spent it stops nagging
+    for _ in range(5):
+        op._teach_line()
+    assert "wake word mode" not in op._teach_line()
+
+
+def test_behaviour_trigger_typing_over_suggests_hush():
+    tmp = Path(tempfile.mkdtemp())
+    _fresh(tmp)
+    for _ in range(5):
+        op._teach_line()
+    for _ in range(3):
+        core.bump_stat("typed_over")
+    assert "Ctrl+Alt+Cmd+X" in op._teach_line()
 
 
 if __name__ == "__main__":

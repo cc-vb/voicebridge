@@ -33,6 +33,35 @@ SPEECH_POS = STATE_DIR / "speech_pos"        # index of the chunk playing now
 REPLIES_OFF = STATE_DIR / "replies_off"      # speak nothing while set (one key)
 PENDING_NOTICE = STATE_DIR / "pending_notice"   # Claude is waiting on you
 CALL_HEARTBEAT = STATE_DIR / "call_heartbeat"   # phone call is live right now
+STATS_FILE = STATE_DIR / "stats.json"           # rolling behaviour counters
+
+
+def bump_stat(key: str, window: float = 900.0) -> None:
+    """Count a behaviour event in a rolling ~15min window. These are the
+    signals the gray-line recommender reads: 'drops' (stray captures),
+    'typed_over' (typed while speech played), 'long_replies', etc."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            d = json.loads(STATS_FILE.read_text())
+            if time.time() - float(d.get("since", 0)) > window:
+                d = {"since": time.time()}
+        except Exception:
+            d = {"since": time.time()}
+        d[key] = int(d.get(key, 0)) + 1
+        STATS_FILE.write_text(json.dumps(d))
+    except Exception:
+        pass
+
+
+def get_stats(window: float = 900.0) -> dict:
+    try:
+        d = json.loads(STATS_FILE.read_text())
+        if time.time() - float(d.get("since", 0)) > window:
+            return {}
+        return d
+    except Exception:
+        return {}
 
 
 def mark_call_live() -> None:
