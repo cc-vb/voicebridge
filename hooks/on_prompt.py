@@ -164,21 +164,24 @@ def main() -> int:
     else:
         context = TONE + gist
 
-    # The gray line you actually SEE has to go in `systemMessage` (that's how
-    # Claude Code renders a hook note to the user, as PromptGuard does); plain
-    # stdout only reaches the model as context, invisibly. So: the tone note
-    # goes to the model via additionalContext, and the "voice on · <tip>" line
-    # goes to YOU via systemMessage, shown only while this session is voiced.
-    payload = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
-                                      "additionalContext": context}}
+    # The gray line you actually SEE must be a bare `systemMessage` (that's how
+    # Claude Code renders a hook note to the user, exactly as PromptGuard does).
+    # Emitting it ALONGSIDE hookSpecificOutput.additionalContext suppressed it,
+    # so when voiced we emit systemMessage on its own; the model still gets the
+    # spoken-tone steering from the SessionStart hint and prior turns.
+    tip = ""
     try:
         if voiced:
             line = _teach_line()
-            payload["systemMessage"] = (f"\U0001f399 voice on · {line}"
-                                        if line else "\U0001f399 voice on")
+            tip = (f"\U0001f399 voice on · {line}" if line
+                   else "\U0001f399 voice on")
     except Exception:
-        pass
-    print(json.dumps(payload))
+        tip = ""
+    if tip:
+        print(json.dumps({"systemMessage": tip}))
+    else:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit", "additionalContext": context}}))
     return 0
 
 
