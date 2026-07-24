@@ -647,10 +647,32 @@ def main(argv) -> int:
         # Toggle "don't speak replies" while keeping the mic on (one key, all
         # modes). For when you want to talk to Claude but not hear it back,
         # e.g. you're listening to music. Say it again / press again to re-enable.
+        from vb import talkd as _td
         want = rest[0] if rest else ("off" if not core.replies_muted() else "on")
         new = core.set_replies_muted(want == "off")
-        print("replies muted , mic still on (say/press again to unmute)"
-              if new else "replies on , I'll read them aloud again")
+        if new:
+            # Remember where we muted, so unmuting can pick up what was missed.
+            try:
+                a = _td._read_json(_td.ACTIVE) or {}
+                tp = a.get("transcript_path", "")
+                (core.STATE_DIR / "muted_at").write_text(
+                    core.latest_assistant_uuid(tp) if tp else "")
+            except Exception:
+                pass
+            print("replies muted , mic still on (say/press again to unmute)")
+        else:
+            # Unmute CONTINUES the conversation: if replies arrived while
+            # muted, speak the newest one now instead of dropping it forever.
+            print("replies on , I'll read them aloud again")
+            try:
+                a = _td._read_json(_td.ACTIVE) or {}
+                tp = a.get("transcript_path", "")
+                baseline = core._read(core.STATE_DIR / "muted_at")
+                if tp and core.latest_assistant_uuid(tp) != baseline:
+                    core.speak(core.last_assistant_text(tp))
+                    print("(speaking the reply you missed while muted)")
+            except Exception:
+                pass
 
     elif cmd in ("back", "skip"):
         # Sentence-level rewind while a reply is being read (keyboard recovery
