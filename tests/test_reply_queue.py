@@ -141,9 +141,13 @@ def test_latest_uuid_of_an_empty_session_is_blank(tmp_path):
 
 # ---------- the phone QR must actually scan ----------------------------------
 
-def test_qr_has_the_quiet_zone_a_scanner_needs(capsys):
-    """border=1 shipped for a long time: below the 4-module quiet zone the
-    spec requires, so cameras could not find the code's edges."""
+def test_qr_has_a_quiet_zone_and_never_wraps(capsys):
+    """Two real failures pull opposite ways here. border=1 once shipped and
+    cameras could not find the code's edges (needs a quiet zone). Later,
+    border=4 made the TERMINAL QR 41 chars wide, which wrapped in narrow
+    panes, and a wrapped QR never scans at all (worse). The terminal QR now
+    uses border=2 (compact, still scannable); the spec's full 4-module quiet
+    zone lives in the qr_image PNG/SVG window, which cannot wrap."""
     import qrcode
     captured = {}
     real = qrcode.QRCode
@@ -157,7 +161,10 @@ def test_qr_has_the_quiet_zone_a_scanner_needs(capsys):
         assert core.print_qr("https://example.trycloudflare.com/?k=vb-1") is True
     finally:
         qrcode.QRCode = real
-    assert captured["border"] >= 4
+    assert captured["border"] >= 2          # never again border=1
+    out = capsys.readouterr().out
+    width = max(len(ln) for ln in out.splitlines() if ln.strip())
+    assert width <= 38, f"terminal QR {width} chars wide wraps in narrow panes"
 
 
 def test_qr_uses_low_error_correction_for_bigger_modules(capsys):
