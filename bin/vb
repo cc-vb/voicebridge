@@ -352,28 +352,58 @@ def main(argv) -> int:
     elif cmd == "phone":
         # One command: relay + tunnel + QR, non-blocking (slash-command safe).
         import os as _os
+        import secrets as _secrets
+        import shutil as _sh
         import time as _t
+        import urllib.request as _ur
+
+        def _up(u, timeout=3.0):
+            try:
+                with _ur.urlopen(f"{u}/health", timeout=timeout) as r:
+                    return r.read() == b"ok"
+            except Exception:
+                return False
+
+        # Deterministic secret: read-before-generate, generated ONCE with real
+        # randomness and persisted. (The old str(hash(...)) changed every run,
+        # Python salts hashes per process, causing surprise 401s.)
         secret = (_os.environ.get("VB_CALL_SECRET", "")
                   or core._read(core.STATE_DIR / "call_secret")
-                  or "vb-" + str(abs(hash(str(core.STATE_DIR))))[:8])
+                  or "vb-" + _secrets.token_hex(4))
         _os.environ["VB_CALL_SECRET"] = secret
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (core.STATE_DIR / "call_secret").write_text(secret)
         from vb import call as _call
-        print(_call.on())
+        msg = _call.on()
+        print(msg)
+        if msg.startswith("ERROR"):
+            return 1
         saved = core._read(core.STATE_DIR / "public_url")
         if saved:
-            return main(["call", "tunnel"])   # permanent link: instant, no wait
-        cf = "/opt/homebrew/bin/cloudflared"
+            # Permanent link: but VERIFY it's actually reachable before
+            # printing a beautiful QR to a dead endpoint.
+            if _up(saved):
+                return main(["call", "tunnel"])
+            print(f"saved link {saved} isn't responding; starting a fresh "
+                  f"tunnel instead (clear it with: vb call link off)")
+        cf = _sh.which("cloudflared") or next(
+            (p for p in ("/opt/homebrew/bin/cloudflared",
+                         "/usr/local/bin/cloudflared") if Path(p).exists()), "")
         port = _os.environ.get("VB_CALL_PORT", "8790")
         logf = core.STATE_DIR / "tunnel.log"
-        if not Path(cf).exists():
+        if not cf:
             print("cloudflared missing: brew install cloudflared")
             return 1
+        print("starting tunnel", end="", flush=True)
         with open(logf, "w") as lf:
-            subprocess.Popen([cf, "tunnel", "--url", f"http://127.0.0.1:{port}"],
-                             stdout=lf, stderr=lf, start_new_session=True)
+            p = subprocess.Popen([cf, "tunnel", "--url",
+                                  f"http://127.0.0.1:{port}"],
+                                 stdout=lf, stderr=lf, start_new_session=True)
+        (core.STATE_DIR / "tunnel.pid").write_text(str(p.pid))
         url = ""
         for _ in range(60):
             _t.sleep(0.5)
+            print(".", end="", flush=True)
             try:
                 import re as _re
                 m = _re.search(r"https://[a-z0-9-]+\.trycloudflare\.com",
@@ -384,8 +414,16 @@ def main(argv) -> int:
             except Exception:
                 pass
         if not url:
-            print("tunnel didn't come up; try again or check network")
+            print("\ntunnel didn't come up; try again or check network")
             return 1
+        # Don't print the QR until the URL actually routes: quick-tunnel DNS
+        # takes a few seconds, and users scan the instant the QR appears.
+        for _ in range(30):
+            if _up(url, timeout=2.0):
+                break
+            _t.sleep(0.5)
+            print(".", end="", flush=True)
+        print("")
         full = f"{url}/?k={secret}"
         print(f"\n  PHONE URL: {full}\n")
         if not core.print_qr(full):

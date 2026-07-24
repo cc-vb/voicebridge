@@ -33,13 +33,31 @@ from . import core, inject
 from .talkd import ACTIVE, _read_json
 
 PID = core.STATE_DIR / "call.pid"
+EPOCH = core.STATE_DIR / "call_epoch"   # bumped by /switch: aborts stale turns
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 if not os.path.exists(FFMPEG):
     FFMPEG = "/usr/local/bin/ffmpeg"
 PORT = int(os.environ.get("VB_CALL_PORT", "8790"))
-SECRET = os.environ.get("VB_CALL_SECRET", "")
 TIMEOUT = float(os.environ.get("VB_CALL_TIMEOUT", "90"))
 DRYRUN = bool(os.environ.get("VB_CALL_DRYRUN"))
+
+
+def _secret() -> str:
+    """The shared secret, re-read per use, FILE first, env as fallback.
+    The daemon's env is frozen at spawn, so file-first is what makes live
+    rotation work: `vb phone` persists the (possibly new) secret and a relay
+    that's already running accepts the new link immediately, no restart, no
+    surprise 401s. on() always persists an env-provided secret to the file."""
+    try:
+        s = (core.STATE_DIR / "call_secret").read_text().strip()
+        if s:
+            return s
+    except Exception:
+        pass
+    return os.environ.get("VB_CALL_SECRET", "")
+
+
+SECRET = _secret()   # kept for status(); auth checks call _secret() live
 
 
 def _target_transcript() -> str:
@@ -65,6 +83,13 @@ def _extract_user_text(body: dict) -> str:
     return ""
 
 
+def _epoch() -> str:
+    try:
+        return EPOCH.read_text().strip()
+    except Exception:
+        return ""
+
+
 def _ask_session(text: str) -> str:
     """Inject a turn into the live session and wait for the reply."""
     if DRYRUN:
@@ -74,10 +99,20 @@ def _ask_session(text: str) -> str:
         return "I can't find an open session on the Mac."
     prev = core.last_assistant_text(tp)
     core.log(f"call you: {text}")
-    inject.paste_text(text, send=True)
+    # Guard the paste: it lands in the FRONTMOST Mac app, so if the bound
+    # terminal isn't focused (or the screen is locked) refuse loudly instead
+    # of typing into Slack / waiting 90s for a reply that can never come.
+    from .talkd import bound_app
+    if not inject.paste_text(text, send=True, expect_app=bound_app()):
+        return ("I couldn't type into the session, the terminal isn't the "
+                "focused window on your Mac. Bring it to the front, or check "
+                "the screen isn't locked, then try again.")
+    ep = _epoch()
     t0 = time.time()
     while time.time() - t0 < TIMEOUT:
         time.sleep(1.0)
+        if _epoch() != ep:
+            return "Okay, switched. Go ahead."   # /switch ended this turn
         cur = core.last_assistant_text(tp)
         if cur and cur != prev:
             # Phone answers should be speech-shaped: no markdown/code.
@@ -233,6 +268,34 @@ btn.onclick=()=>{
 };
 </script></body></html>"""
 
+# Shown on 401 for "/": the installed PWA loses ?k= (a manifest start_url
+# must not carry the secret), so this page auto-recovers from localStorage,
+# or asks once and remembers. Dark and calm, not a bare error string.
+AUTH_PAGE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>voicebridge</title><style>
+body{margin:0;background:#0e1116;color:#e5e7eb;font:16px -apple-system,system-ui;
+display:flex;flex-direction:column;align-items:center;justify-content:center;
+height:100vh;gap:14px;padding:24px;box-sizing:border-box;text-align:center}
+input{background:#1a2029;color:#e5e7eb;border:1px solid #2d3644;border-radius:12px;
+padding:14px;font-size:17px;width:min(320px,80vw);text-align:center}
+button{background:#2f6df6;color:#fff;border:0;border-radius:12px;padding:14px 28px;
+font-size:17px}
+</style></head><body>
+<div style="font-size:40px">&#127897;</div>
+<div>Enter the key from <b>vb phone</b> on your Mac<br>
+<span style="color:#8b95a5;font-size:14px">(the part after ?k= in the link)</span></div>
+<input id="k" placeholder="vb-xxxxxxxx" autocapitalize="none" autocorrect="off">
+<button onclick="go()">Connect</button>
+<script>
+var qs=new URLSearchParams(location.search), s=localStorage.getItem('vbk');
+if(qs.get('k')){localStorage.removeItem('vbk');}     /* that key was wrong */
+else if(s){location.href='/?k='+encodeURIComponent(s);}
+function go(){var v=document.getElementById('k').value.trim();
+if(v){localStorage.setItem('vbk',v);location.href='/?k='+encodeURIComponent(v);}}
+</script></body></html>"""
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # keep the daemon quiet
@@ -246,16 +309,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _authed(self) -> bool:
-        if not SECRET:
+        secret = _secret()   # live: a rotated secret works without restart
+        if not secret:
             return True
         from urllib.parse import urlparse, parse_qs
         q = parse_qs(urlparse(self.path).query)
-        if q.get("k", [""])[0] == SECRET:
+        if q.get("k", [""])[0] == secret:
             return True
         got = (self.headers.get("x-vapi-secret", "")
                or self.headers.get("Authorization", "")
                .removeprefix("Bearer ").strip())
-        return got == SECRET
+        return got == secret
 
     def do_GET(self):
         path = self.path.split("?")[0]
@@ -281,9 +345,47 @@ class Handler(BaseHTTPRequestHandler):
                 ' fill="none" stroke-linecap="round"/>'
                 '<rect x="47" y="72" width="6" height="12" fill="#fff"/>'
                 '</svg>').encode(), "image/svg+xml")
+        elif path == "/sessions":
+            # Fleet roster for the phone: which agents exist, who's idle.
+            if not self._authed():
+                self._reply(401, b"unauthorized", "text/plain")
+                return
+            from . import sessions as _sess
+            rows = [{"sid": r.get("sid", ""), "label": r.get("label", ""),
+                     "state": r.get("state", "")} for r in _sess.roster()]
+            active = _read_json(ACTIVE) or {}
+            self._reply(200, json.dumps(
+                {"sessions": rows,
+                 "active": active.get("session_id", "")}).encode(),
+                "application/json")
+        elif path == "/last":
+            # Hear another session's latest reply WITHOUT switching/injecting.
+            if not self._authed():
+                self._reply(401, b"unauthorized", "text/plain")
+                return
+            from urllib.parse import urlparse, parse_qs
+            from . import sessions as _sess
+            q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
+            self._reply(200, json.dumps(
+                {"reply": _sess.read_last(q)}).encode(), "application/json")
+        elif path == "/poll":
+            # Latest reply of the active session, no injection: lets the page
+            # check back after a long turn instead of dead-ending on timeout.
+            if not self._authed():
+                self._reply(401, b"unauthorized", "text/plain")
+                return
+            tp = _target_transcript()
+            cur = core.last_assistant_text(tp) if tp else ""
+            self._reply(200, json.dumps(
+                {"reply": core.clean_for_speech(cur, max_chars=2500)}
+            ).encode(), "application/json")
         elif path == "/":
             if not self._authed():
-                self._reply(401, b"add ?k=<secret> to the URL", "text/plain")
+                # A friendly recovery page: the installed PWA drops ?k= (its
+                # start_url can't carry the secret), so redirect from
+                # localStorage when the page saved it, else ask for it once.
+                self._reply(401, AUTH_PAGE.encode(),
+                            "text/html; charset=utf-8")
                 return
             self._reply(200, PAGE.encode(), "text/html; charset=utf-8")
         else:
@@ -306,6 +408,22 @@ class Handler(BaseHTTPRequestHandler):
             answer = (_ask_session(text) if text
                       else "Sorry, I didn't catch that.")
             self._reply(200, json.dumps({"reply": answer}).encode(),
+                        "application/json")
+            return
+
+        if path == "/switch":  # {"query": "jobhunt"} -> move the call there
+            try:
+                q = (json.loads(raw or b"{}").get("query") or "").strip()
+            except Exception:
+                self._reply(400, b"bad request", "text/plain")
+                return
+            from . import sessions as _sess
+            msg = _sess.switch(q) if q else "Which session?"
+            try:
+                EPOCH.write_text(str(time.time()))   # end any in-flight turn
+            except Exception:
+                pass
+            self._reply(200, json.dumps({"result": msg}).encode(),
                         "application/json")
             return
 
@@ -366,12 +484,29 @@ def _alive() -> bool:
         return False
 
 
+def _health_local(timeout: float = 0.6) -> bool:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{PORT}/health", timeout=timeout) as r:
+            return r.read() == b"ok"
+    except Exception:
+        return False
+
+
 def on() -> str:
+    core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # ALWAYS persist the secret (even if the relay is already up): auth reads
+    # it live, so the link `vb phone` prints works without a restart.
+    s = os.environ.get("VB_CALL_SECRET", "")
+    if s:
+        (core.STATE_DIR / "call_secret").write_text(s)
     if _alive():
         return "call relay already running"
-    core.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    if SECRET:   # persist so `vb call tunnel` builds the correct ?k= link
-        (core.STATE_DIR / "call_secret").write_text(SECRET)
+    if _health_local():
+        # Something else (a stale orphan) owns the port and answers /health.
+        # Adopt it: auth reads the secret file live, so it serves fine.
+        return f"call relay already running on port {PORT} (adopted)"
     vb = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "bin", "vb")
     env = dict(os.environ)
@@ -379,9 +514,18 @@ def on() -> str:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True, env=env)
     PID.write_text(str(p.pid))
-    return (f"call relay ON (pid {p.pid}, port {PORT}). Tunnel it "
-            f"(`ngrok http {PORT}`) and point your Vapi assistant's Custom "
-            f"LLM at https://<tunnel>/chat/completions. See mobile/vapi/VAPI.md.")
+    # Verify it actually came up: a silent bind failure (port in use) used to
+    # print "relay ON" and leave the phone hitting a corpse through the tunnel.
+    t0 = time.time()
+    while time.time() - t0 < 4.0:
+        if _health_local(0.4):
+            return (f"call relay ON (pid {p.pid}, port {PORT}). Tunnel it "
+                    f"(`ngrok http {PORT}`) or run `vb phone`.")
+        if p.poll() is not None:
+            break
+        time.sleep(0.2)
+    return (f"ERROR: relay did not come up on port {PORT} (in use?). "
+            f"Try `vb call off`, then `vb phone` again.")
 
 
 def off() -> str:
@@ -393,7 +537,19 @@ def off() -> str:
         PID.unlink()
     except FileNotFoundError:
         pass
-    return "call relay OFF"
+    # Kill the quick tunnel too: orphaned cloudflareds used to pile up, each
+    # pointing old QRs at whatever owns the port next (confusing half-working
+    # links). vb phone records tunnel.pid for exactly this.
+    tp = core.STATE_DIR / "tunnel.pid"
+    try:
+        os.kill(int(tp.read_text().strip()), 15)
+    except Exception:
+        pass
+    try:
+        tp.unlink()
+    except FileNotFoundError:
+        pass
+    return "call relay OFF (tunnel stopped)"
 
 
 def status() -> str:
