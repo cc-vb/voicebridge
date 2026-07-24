@@ -983,7 +983,9 @@ class Handler(BaseHTTPRequestHandler):
             active = (_read_json(ACTIVE) or {}).get("session_id", "")
             rows = [{"id": r.get("sid", ""), "name": r.get("label", ""),
                      "state": r.get("state", ""),
-                     "current": r.get("sid", "") == active}
+                     "current": r.get("sid", "") == active,
+                     "pending": bool(core.get_pending_notice(
+                         r.get("sid", "") or "-"))}
                     for r in _sess.roster()]
             self._reply(200, json.dumps({"sessions": rows}).encode(),
                         "application/json")
@@ -997,6 +999,16 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
             self._reply(200, json.dumps(
                 {"reply": _sess.read_last(q)}).encode(), "application/json")
+        elif path == "/chat":
+            # The conversation as chat bubbles: the phone user can READ what
+            # happened (and catch up on anything they missed hearing).
+            if not self._authed():
+                self._reply(401, b"unauthorized", "text/plain")
+                return
+            tp = _target_transcript()
+            turns = core.recent_turns(tp, n=30) if tp else []
+            self._reply(200, json.dumps({"turns": turns}).encode(),
+                        "application/json")
         elif path == "/status":
             # Is Claude waiting on a decision right now? (For page/app polls.)
             if not self._authed():
@@ -1047,6 +1059,15 @@ class Handler(BaseHTTPRequestHandler):
                       else "Sorry, I didn't catch that.")
             self._reply(200, json.dumps({"reply": answer}).encode(),
                         "application/json")
+            return
+
+        if path == "/heartbeat":
+            # The page pings this every ~5s during a live call. While fresh,
+            # the phone OWNS the audio: core.start_speech stays silent on the
+            # Mac, so replies speak on the phone only (the whole point when
+            # you're away from the laptop).
+            core.mark_call_live()
+            self._reply(200, b"{}", "application/json")
             return
 
         if path == "/switch":  # {"id": sid} or {"query": "jobhunt"}

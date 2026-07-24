@@ -32,6 +32,26 @@ SPEECH_CHUNKS = STATE_DIR / "speech_chunks"  # current reply, split into chunks
 SPEECH_POS = STATE_DIR / "speech_pos"        # index of the chunk playing now
 REPLIES_OFF = STATE_DIR / "replies_off"      # speak nothing while set (one key)
 PENDING_NOTICE = STATE_DIR / "pending_notice"   # Claude is waiting on you
+CALL_HEARTBEAT = STATE_DIR / "call_heartbeat"   # phone call is live right now
+
+
+def mark_call_live() -> None:
+    """The phone page pings this every ~5s during a call."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        CALL_HEARTBEAT.write_text(str(time.time()))
+    except Exception:
+        pass
+
+
+def call_live(max_age: float = 15.0) -> bool:
+    """True while a phone call is active (fresh heartbeat). While live, the
+    PHONE owns the audio: the Mac must not speak, or the user hears replies
+    on the laptop they're away from (or double, when they're next to it)."""
+    try:
+        return time.time() - float(CALL_HEARTBEAT.read_text()) < max_age
+    except Exception:
+        return False
 
 
 def set_pending_notice(sid: str, message: str) -> None:
@@ -533,6 +553,53 @@ def assistant_replies_after(transcript_path: str, after_uuid: str = ""):
     return replies[-1:]
 
 
+def recent_turns(transcript_path: str, n: int = 30) -> list:
+    """The last `n` conversation turns as [{'role','text'}, ...] (oldest
+    first), for the phone's chat view. Skips tool-only records and the
+    machinery that lands in transcripts as user records (command wrappers,
+    caveats, task notifications), the phone wants the conversation, not
+    the plumbing."""
+    p = Path(transcript_path)
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(errors="ignore").splitlines()
+    except Exception:
+        return []
+    turns = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        kind = rec.get("type")
+        if kind not in ("user", "assistant"):
+            continue
+        content = rec.get("message", {}).get("content", "")
+        if kind == "user":
+            if isinstance(content, list):
+                content = " ".join(b.get("text", "") for b in content
+                                   if isinstance(b, dict)
+                                   and b.get("type") == "text")
+            text = (content or "").strip() if isinstance(content, str) else ""
+            # Machinery, not conversation: hook wrappers, caveats, interrupts.
+            # (Tool results are content-list records with no text blocks, so
+            # they already fall out empty above.)
+            if not text or text.startswith(("<", "Caveat:", "[Request")):
+                continue
+        else:
+            text = _blocks_to_text(content).strip()
+            if not text:
+                continue
+        if len(text) > 2000:
+            text = text[:2000] + " ..."
+        turns.append({"role": kind, "text": text})
+    return turns[-n:]
+
+
 def latest_assistant_uuid(transcript_path: str) -> str:
     """The uuid of the newest reply, for marking a session read on join."""
     replies = assistant_replies_after(transcript_path)
@@ -926,6 +993,11 @@ def start_speech(text: str):
     Spawns the chunked-speech worker in its own process group so hush()
     and terminate take the audio down with it. Every utterance is recorded
     for the echo guard first."""
+    if call_live():
+        # A phone call owns the audio: the page speaks replies on the phone,
+        # so the Mac stays silent (the user may be nowhere near it).
+        log("speech suppressed: phone call is live")
+        return None
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         (STATE_DIR / "last_spoken_text").write_text(
