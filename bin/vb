@@ -873,14 +873,22 @@ def main(argv) -> int:
                 show_link(saved)
                 return 0
             port = _os.environ.get("VB_CALL_PORT", "8790")
-            cf = "/opt/homebrew/bin/cloudflared"
-            if not Path(cf).exists():
+            cf = _sh.which("cloudflared") or next(
+                (p for p in ("/opt/homebrew/bin/cloudflared",
+                             "/usr/local/bin/cloudflared")
+                 if Path(p).exists()), "")
+            if not cf:
                 print("cloudflared missing: brew install cloudflared")
                 return 1
             print(f"tunneling 127.0.0.1:{port} ... (Ctrl-C to stop)")
+            from vb import call as _call
+            _call.reap_tunnels()   # never stack a second link on this port
             p = subprocess.Popen([cf, "tunnel", "--url",
                                   f"http://127.0.0.1:{port}"],
                                  stderr=subprocess.PIPE, text=True)
+            # Recorded so `vb call off` (and a closing session) can stop this
+            # one too: Ctrl-C is not the only way this command ends.
+            (core.STATE_DIR / "tunnel.pid").write_text(str(p.pid))
             try:
                 for line in p.stderr:
                     if "trycloudflare.com" in line and "https://" in line:
