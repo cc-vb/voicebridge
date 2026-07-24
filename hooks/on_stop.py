@@ -16,6 +16,9 @@ def main() -> int:
     data = core.read_hook_input()
     sid = data.get("session_id", "")
     transcript = data.get("transcript_path", "")
+    # The turn finished, so any recorded "Claude is waiting on you" decision
+    # moment is resolved; clear it so the phone stops offering a stale yes/no.
+    core.clear_pending_notice()
     # Strictly per-session: only speak if THIS session was voiced. Not a
     # global flag, so a session you never turned voice on for stays silent.
     if not core.is_voiced(sid):

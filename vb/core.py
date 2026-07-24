@@ -31,6 +31,38 @@ REMAINDER = STATE_DIR / "speech_remainder"   # what the cap cut off, for `vb con
 SPEECH_CHUNKS = STATE_DIR / "speech_chunks"  # current reply, split into chunks
 SPEECH_POS = STATE_DIR / "speech_pos"        # index of the chunk playing now
 REPLIES_OFF = STATE_DIR / "replies_off"      # speak nothing while set (one key)
+PENDING_NOTICE = STATE_DIR / "pending_notice"   # Claude is waiting on you
+
+
+def set_pending_notice(sid: str, message: str) -> None:
+    """Record 'Claude is waiting for a decision' (from the Notification hook)
+    so the phone relay can surface it and take a spoken yes/no."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        PENDING_NOTICE.write_text(json.dumps(
+            {"sid": sid, "message": message, "ts": time.time()}))
+    except Exception:
+        pass
+
+
+def get_pending_notice(sid: str = "", max_age: float = 300.0) -> str:
+    """The pending decision's message, '' if none/stale/for another session."""
+    try:
+        d = json.loads(PENDING_NOTICE.read_text())
+        if time.time() - float(d.get("ts", 0)) > max_age:
+            return ""
+        if sid and d.get("sid") and d["sid"] != sid:
+            return ""
+        return (d.get("message") or "").strip()
+    except Exception:
+        return ""
+
+
+def clear_pending_notice() -> None:
+    try:
+        PENDING_NOTICE.unlink()
+    except Exception:
+        pass
 
 
 def replies_muted() -> bool:

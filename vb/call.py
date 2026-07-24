@@ -90,6 +90,34 @@ def _epoch() -> str:
         return ""
 
 
+import re as _re
+YES_RE = _re.compile(r"^\s*(yes|yeah|yep|ok(ay)?|sure|go ahead|approve[d]?|"
+                     r"allow( it)?|do it|confirm)[.!\s]*$", _re.IGNORECASE)
+NO_RE = _re.compile(r"^\s*(no|nope|deny|don'?t( do it)?|reject|cancel|"
+                    r"stop)[.!\s]*$", _re.IGNORECASE)
+
+
+def _active_sid() -> str:
+    return (_read_json(ACTIVE) or {}).get("session_id", "")
+
+
+def _handle_pending(text: str, pending: str) -> str:
+    """A decision is blocking the session. Spoken yes -> Enter (accept the
+    highlighted default), spoken no -> Escape (dismiss). Anything else gets
+    told what Claude is asking, typing prose into a permission dialog would
+    go nowhere anyway."""
+    if YES_RE.match(text):
+        core.clear_pending_notice()
+        inject.press_enter()
+        return ""   # approved: fall through to waiting for the reply
+    if NO_RE.match(text):
+        core.clear_pending_notice()
+        inject.press_escape()
+        return "Okay, declined. What next?"
+    q = core.clean_for_speech(pending, max_chars=300)
+    return f"Claude is waiting on you: {q}. Say yes to allow, or no to decline."
+
+
 def _ask_session(text: str) -> str:
     """Inject a turn into the live session and wait for the reply."""
     if DRYRUN:
@@ -99,20 +127,36 @@ def _ask_session(text: str) -> str:
         return "I can't find an open session on the Mac."
     prev = core.last_assistant_text(tp)
     core.log(f"call you: {text}")
-    # Guard the paste: it lands in the FRONTMOST Mac app, so if the bound
-    # terminal isn't focused (or the screen is locked) refuse loudly instead
-    # of typing into Slack / waiting 90s for a reply that can never come.
-    from .talkd import bound_app
-    if not inject.paste_text(text, send=True, expect_app=bound_app()):
-        return ("I couldn't type into the session, the terminal isn't the "
-                "focused window on your Mac. Bring it to the front, or check "
-                "the screen isn't locked, then try again.")
+    # Permission relay: if Claude is blocked on a decision, a spoken yes/no
+    # answers it with the right KEYSTROKE (text pasted into a permission
+    # dialog goes nowhere); anything else hears what's being asked.
+    pending = core.get_pending_notice(_active_sid())
+    if pending:
+        out = _handle_pending(text, pending)
+        if out:
+            return out
+    else:
+        # Guard the paste: it lands in the FRONTMOST Mac app, so if the bound
+        # terminal isn't focused (or the screen is locked) refuse loudly
+        # instead of typing into Slack / waiting 90s for nothing.
+        from .talkd import bound_app
+        if not inject.paste_text(text, send=True, expect_app=bound_app()):
+            return ("I couldn't type into the session, the terminal isn't "
+                    "the focused window on your Mac. Bring it to the front, "
+                    "or check the screen isn't locked, then try again.")
     ep = _epoch()
     t0 = time.time()
     while time.time() - t0 < TIMEOUT:
         time.sleep(1.0)
         if _epoch() != ep:
             return "Okay, switched. Go ahead."   # /switch ended this turn
+        fresh = core.get_pending_notice(_active_sid())
+        if fresh:
+            # Claude hit a decision moment mid-turn: surface it NOW instead
+            # of timing out with "still working" while it sits blocked.
+            q = core.clean_for_speech(fresh, max_chars=300)
+            return (f"Claude is waiting on you: {q}. Say yes to allow, "
+                    f"or no to decline.")
         cur = core.last_assistant_text(tp)
         if cur and cur != prev:
             # Phone answers should be speech-shaped: no markdown/code.
@@ -953,6 +997,15 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
             self._reply(200, json.dumps(
                 {"reply": _sess.read_last(q)}).encode(), "application/json")
+        elif path == "/status":
+            # Is Claude waiting on a decision right now? (For page/app polls.)
+            if not self._authed():
+                self._reply(401, b"unauthorized", "text/plain")
+                return
+            pend = core.get_pending_notice(_active_sid())
+            self._reply(200, json.dumps(
+                {"pending": core.clean_for_speech(pend, max_chars=300)
+                 if pend else ""}).encode(), "application/json")
         elif path == "/poll":
             # Latest reply of the active session, no injection: lets the page
             # check back after a long turn instead of dead-ending on timeout.
