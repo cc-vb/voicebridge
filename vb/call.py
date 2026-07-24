@@ -1680,6 +1680,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # Never cache: phones held onto old page versions ("I see no change")
+        # and stale rosters. The page is one request; freshness wins.
+        self.send_header("Cache-Control", "no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1731,6 +1734,7 @@ class Handler(BaseHTTPRequestHandler):
             rows = [{"id": r.get("sid", ""), "name": r.get("label", ""),
                      "state": r.get("state", ""),
                      "current": r.get("sid", "") == active,
+                     "active": bool(r.get("active")),
                      "pending": bool(core.get_pending_notice(
                          r.get("sid", "") or "-")),
                      "last": _sess.last_preview(r.get("path", "")),

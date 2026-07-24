@@ -137,7 +137,7 @@ def roster(max_age_h: float = 12.0, limit: int = 12) -> list:
     except Exception as e:
         core.log(f"roster failed: {e}")
     rows.sort(key=lambda r: r["mtime"], reverse=True)
-    return rows[:limit]
+    return mark_active(rows[:limit], _live_cwds())
 
 
 def speak_roster() -> str:
@@ -218,6 +218,53 @@ def newly_idle(prev: dict, exclude_sid: str = "") -> "tuple[list, dict]":
     return freshly, now
 
 
+def _live_cwds() -> dict:
+    """{cwd: count} of RUNNING Claude Code processes (each open session is a
+    process named `claude`; lsof gives its working directory). This is the
+    real 'can I talk to it?' signal: closed sessions leave transcripts behind
+    but no process."""
+    import subprocess as _sp
+    cwds = {}
+    try:
+        # ps, not pgrep: Claude Code rewrites its process identity in a way
+        # pgrep cannot match on macOS (verified: ps sees comm "claude",
+        # pgrep -x/-f "claude" both return nothing).
+        out = _sp.run(["ps", "-axo", "pid=,comm="], capture_output=True,
+                      text=True).stdout
+        pids = [ln.split(None, 1)[0] for ln in out.splitlines()
+                if ln.strip() and ln.split(None, 1)[-1].strip()
+                .split("/")[-1] == "claude"]
+        for pid in pids[:16]:
+            r = _sp.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+                        capture_output=True, text=True, timeout=3)
+            for ln in r.stdout.splitlines():
+                if ln.startswith("n"):
+                    cwds[ln[1:]] = cwds.get(ln[1:], 0) + 1
+    except Exception:
+        pass
+    return cwds
+
+
+def _munge(cwd: str) -> str:
+    """A cwd as Claude Code names its project dir (/Users/x/y -> -Users-x-y)."""
+    return cwd.replace("/", "-").replace(".", "-")
+
+
+def mark_active(rows: list, live: dict) -> list:
+    """Set row['active']: within each project dir that has N live claude
+    processes, the N most recently touched transcripts are the open sessions
+    (best possible mapping; a dir's sessions share one munged name)."""
+    budget = {_munge(c): n for c, n in live.items()}
+    for r in sorted(rows, key=lambda r: r.get("mtime", 0), reverse=True):
+        proj = Path(r.get("path", "")).parent.name
+        if budget.get(proj, 0) > 0:
+            budget[proj] -= 1
+            r["active"] = True
+        else:
+            r["active"] = False
+    return rows
+
+
 def last_preview(path: str, cap: int = 96) -> str:
     """A short last-message preview for the phone's session cards. Reads only
     the file TAIL (transcripts grow to many MB and the phone polls the roster
@@ -250,6 +297,9 @@ def switch_sid(sid: str) -> str:
     r = next((x for x in roster() if x.get("sid") == sid), None)
     if not r:
         return f"No session with id {sid[:8]}."
+    if not r.get("active"):
+        return (f"{r['label']} is closed, no live session to talk to. "
+                f"You can hear its last reply, but not send prompts.")
     talkd.VOICED.mkdir(parents=True, exist_ok=True)
     for f in talkd.VOICED.iterdir():
         try:
@@ -269,6 +319,9 @@ def switch(query: str) -> str:
     r = find(query)
     if not r:
         return f"No session matching '{query}'."
+    if not r.get("active"):
+        return (f"{r['label']} is closed, no live session to talk to. "
+                f"Say 'read me {r['label']}'s last reply' to hear it.")
     talkd.VOICED.mkdir(parents=True, exist_ok=True)
     for f in talkd.VOICED.iterdir():
         try:
