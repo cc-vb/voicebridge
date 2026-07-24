@@ -193,10 +193,20 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
-  voicebridge call page v3. Drop-in replacement for PAGE in vb/call.py.
+  voicebridge call page v4. Drop-in replacement for PAGE in vb/call.py.
   Embed as a RAW string (r prefix) so regex backslashes survive. This file
   contains no triple double-quote sequence anywhere, so it is safe inside
   a Python raw triple-quoted string.
+
+  New in v4: the page opens on a HOME SCREEN (session list) instead of
+  auto-starting a call. Tapping a session card switches the relay to that
+  session and lands on the call screen's start overlay; a back chevron on
+  the call screen ends the call and returns home. A deep link with
+  &s=SESSION_ID (or ?s=) skips home and lands directly on that session's
+  start overlay. Everything from v3 is preserved on the call screen: the
+  orb, mute and end controls, the chat sheet, the control room sheet, the
+  permission yes/no panel, turn polling, heartbeat, background roster
+  toasts with a chime.
 
   Endpoint contract used (every call carries ?k=SECRET):
     GET  /            serves this page (401 recovery page without a valid k)
@@ -208,16 +218,24 @@ PAGE = r"""<!DOCTYPE html>
                       Snapshot, no injection. The page records this BEFORE an
                       ask and polls until the text changes, then speaks it.
     GET  /status      {"pending":"<question>"} empty string when Claude is not
-                      blocked on a permission decision. Polled ~4s while a turn
-                      is working, ~8s while idle on a live call. Non-empty:
-                      speak it and show the YES / NO pair (each sends POST /ask
-                      with text "yes" or "no", the permission relay).
-    GET  /sessions    {"sessions":[{"id","name","state","current",
-                      "pending":bool}]}. Control room roster. Polled ~8s while
-                      the sheet is open, ~20s in the background of a live call.
+                      blocked on a permission decision. Checked immediately at
+                      call start, then every ~4s while a turn is working and
+                      ~8s while idle on a live call. Non-empty: speak it and
+                      show the YES / NO pair (each sends POST /ask with text
+                      "yes" or "no", the permission relay).
+    GET  /sessions    {"sessions":[{"id":"...","name":"...","state":"...",
+                      "current":bool,"pending":bool,"last":"<one-line reply
+                      preview>","ago":<seconds since last activity>}]}.
+                      Renders the HOME cards (name, state, preview, age) and
+                      the control room sheet. Polled ~10s while home is
+                      visible, ~8s while the control room sheet is open,
+                      ~20s in the background of a live call, ~30s otherwise.
+                      "ago" is rendered as 45 "45s", 3000 "50m", 7200 "2h".
     GET  /last?q=NAME {"reply":"..."} latest reply of the named session,
                       spoken WITHOUT switching the call.
     POST /switch      body {"id":"..."} repoints the call at that session.
+                      Sent by home cards, the &s= deep link, toast taps, and
+                      the control room sheet.
     GET  /chat        {"turns":[{"role":"user"|"assistant","text":"..."}]}
                       most recent last, cleaned for reading. Renders the chat
                       sheet; refreshed after each completed turn and on
@@ -231,8 +249,9 @@ PAGE = r"""<!DOCTYPE html>
 
   All inline, no external assets or CDNs. iOS Safari and Android Chrome
   quirks handled: SpeechSynthesis chunking, visibilitychange recovery,
-  wake lock re-arm, data-URI manifest that preserves ?k= on Add to Home
-  Screen, safe-area insets, prefers-reduced-motion.
+  wake lock re-arm, data-URI manifest that preserves ?k= (and &s= when the
+  page was opened with one) on Add to Home Screen, safe-area insets,
+  prefers-reduced-motion.
 -->
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -243,7 +262,7 @@ PAGE = r"""<!DOCTYPE html>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="voicebridge">
 <link rel="apple-touch-icon" href="/icon.svg">
-<title>voicebridge call</title>
+<title>voicebridge</title>
 <style>
 /* Registered custom properties so state hue changes tween instead of snap.
    Old browsers skip @property and simply cut to the new color. */
@@ -277,6 +296,70 @@ body[data-state="ended"]     { --o1:#b9bfca; --o2:#464c5a; --o3:#14171f; --glow:
 button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; padding:0; }
 button:focus-visible { outline:2px solid #9db9ff; outline-offset:3px; border-radius:14px; }
 
+/* ==== home screen: the session list ==== */
+#home {
+  position:fixed; inset:0; z-index:45; background:#0a0d14;
+  display:flex; flex-direction:column;
+  opacity:1; transition:opacity .28s ease;
+}
+body:not(.home) #home { opacity:0; pointer-events:none; }
+/* park the orb and controls while home is up: no animations burning battery */
+body.home header, body.home main, body.home footer, body.home #decide { visibility:hidden; }
+.hhead {
+  flex:none; display:flex; align-items:center; gap:10px;
+  padding:calc(env(safe-area-inset-top, 0px) + 24px) 22px 14px;
+}
+.hhead h1 { font-size:21px; font-weight:650; letter-spacing:-.01em; margin:0; }
+#homeDot {
+  width:8px; height:8px; border-radius:50%; background:#39435a; margin-top:2px;
+  transition:background .4s ease, box-shadow .4s ease;
+}
+#homeDot.ok { background:var(--mint); box-shadow:0 0 8px rgba(70,215,195,.55); }
+.hlist {
+  flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain; padding:2px 14px 12px; min-height:0;
+}
+.hcard {
+  display:block; width:100%; text-align:left;
+  background:var(--surface); border:1px solid var(--line); border-radius:18px;
+  padding:14px 16px 13px; margin-bottom:10px;
+  transition:transform .1s ease, background .2s ease;
+}
+.hcard:active { transform:scale(.985); background:#182032; }
+.hcard.needs { border-color:rgba(229,72,77,.45); }
+.hcard .r1 { display:flex; align-items:baseline; gap:10px; }
+.hcard .r1 .n {
+  flex:1; min-width:0; font-size:16.5px; font-weight:600;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.hcard .r1 .ago { flex:none; font-size:12.5px; color:#5b6479; font-variant-numeric:tabular-nums; }
+.hcard .r2 { display:flex; align-items:center; gap:8px; margin-top:7px; min-height:20px; }
+.hcard .r2 .lbl { font-size:12.5px; letter-spacing:.04em; color:var(--dim); }
+.hcard .r2 .lbl.working { color:var(--amber); }
+.hcard .r2 .lbl.ready { color:#58cdb9; }
+.hcard .last {
+  margin-top:7px; font-size:13.5px; color:#7d8699; line-height:1.4;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.hempty { color:var(--dim); font-size:14px; line-height:1.6; text-align:center; padding:52px 30px; }
+.hfoot {
+  flex:none; text-align:center; font-size:12px; color:#5b6479; margin:0;
+  padding:8px 20px calc(env(safe-area-inset-bottom, 0px) + 14px);
+}
+
+/* ==== back chevron: call screen only, floats over the start overlay too ==== */
+#backBtn {
+  position:fixed; z-index:65;
+  top:calc(env(safe-area-inset-top, 0px) + 12px);
+  left:calc(env(safe-area-inset-left, 0px) + 12px);
+  width:44px; height:44px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.07); border:1px solid var(--line);
+}
+#backBtn:active { transform:scale(.92); }
+#backBtn svg { width:20px; height:20px; }
+body.home #backBtn { display:none; }
+
 /* ==== top: session pill + audio-ownership chip ==== */
 header {
   padding:calc(env(safe-area-inset-top, 0px) + 14px) 16px 6px;
@@ -286,7 +369,7 @@ header {
   display:flex; align-items:center; gap:8px;
   min-height:44px; padding:10px 16px; border-radius:999px;
   background:rgba(255,255,255,.055); border:1px solid var(--line);
-  font-size:15px; color:#dfe4ee; max-width:80vw;
+  font-size:15px; color:#dfe4ee; max-width:62vw;
 }
 #pill .dot { width:8px; height:8px; border-radius:50%; background:var(--o2); flex:none;
   transition:background .9s ease; }
@@ -530,11 +613,25 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
   body[data-state="thinking"] .ripple,
   body[data-state="needs"] .ripple { animation:none; opacity:.35; transform:scale(1.25); }
   #orbscale { transition:none; transform:none; }
-  .sheet, #decide, #toast { transition:none; }
+  .sheet, #decide, #toast, #home, .hcard { transition:none; }
   #switchOverlay .spin { animation:none; border-top-color:var(--line); }
   .sdot.working, .badge.needs, #chip .cdot, #decide .eyebrow .ddot { animation:none; }
 }
-</style></head><body data-state="ended">
+</style></head><body data-state="ended" class="home">
+
+<section id="home" aria-label="Sessions">
+  <div class="hhead">
+    <h1>voicebridge</h1>
+    <span id="homeDot" role="status" aria-label="relay connecting"></span>
+  </div>
+  <div class="hlist" id="homeList"></div>
+  <p class="hfoot">Tap a session to call it.</p>
+</section>
+
+<button id="backBtn" aria-label="End the call and go back to sessions">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+</button>
 
 <header>
   <button id="pill" aria-haspopup="dialog" aria-label="Session: live session. Open control room.">
@@ -612,7 +709,7 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
   <p class="hint">Tap a session to move the call there. The speaker icon plays its last reply without switching.</p>
 </section>
 
-<div class="overlay" id="startOverlay">
+<div class="overlay hidden" id="startOverlay">
   <div class="glyph" aria-hidden="true"></div>
   <h1 id="startTitle">voicebridge</h1>
   <p id="startBody">A live call with your coding session. Your phone will ask to use the
@@ -630,13 +727,16 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 <script>
 'use strict';
 /* ============================================================ state */
-const K = new URLSearchParams(location.search).get('k') || '';
+const PARAMS = new URLSearchParams(location.search);
+const K = PARAMS.get('k') || '';
+const S = PARAMS.get('s') || '';   /* deep link: skip home, land on this session */
 const $ = id => document.getElementById(id);
 const statusEl=$('status'), pillName=$('pillName'), muteBtn=$('muteBtn'),
       chatBtn=$('chatBtn'), chatLines=$('chatLines'), chatScroll=$('chatScroll'),
       pullHint=$('pullHint'), chipEl=$('chip'), decideEl=$('decide'),
       decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
-      sessList=$('sessList'), sessCount=$('sessCount');
+      sessList=$('sessList'), sessCount=$('sessCount'),
+      homeList=$('homeList'), homeDot=$('homeDot');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const TTS = 'speechSynthesis' in window;
 
@@ -645,6 +745,10 @@ let gen=0;                 // listen generation: bump to invalidate in-flight mi
 let turnId=0, turnActive=false;   // turn generation: bump to invalidate stale turn work
 let rec=null, recActive=false, media=null, audioCtx=null;
 let wakeLock=null, speechCancelled=false;
+let onHome = !S;           // which screen is up; body.home mirrors this
+let lastRoster = null;     // latest /sessions list, re-rendered on goHome
+let currentSid = S || '';  // which session the call screen is pointed at
+let wantStartName = !!S;   // deep link: name the start overlay once roster lands
 
 function setState(s, label){
   state=s;
@@ -658,6 +762,11 @@ async function jget(path){
   const r = await fetch(urlFor(path));
   if(!r.ok) throw new Error('http ' + r.status);
   return r.json();
+}
+function jpost(path, body){
+  return fetch(urlFor(path), {
+    method:'POST', headers:{ 'Content-Type':'application/json' },
+    body:JSON.stringify(body) });
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -674,7 +783,10 @@ function bumpLevel(v){ levelTarget = Math.max(levelTarget, v); }
 
 /* ============================================================ PWA polish */
 /* Data-URI manifest so Add to Home Screen keeps the ?k= secret in start_url
-   (the server's /manifest.json points start_url at "/" and would land on 401). */
+   (the server's /manifest.json points start_url at "/" and would land on 401).
+   location.href also carries &s= when the page was deep-linked, so an icon
+   added from a deep link reopens straight into that session; a plain open
+   has no s and the icon lands on home. */
 (function(){
   const icon = 'data:image/svg+xml,' + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
@@ -754,12 +866,13 @@ function resumeAfterSpeech(){
 }
 /* Backgrounding pauses synthesis on both platforms; resume when we return,
    re-arm the wake lock (released whenever the tab hides), kick a heartbeat,
-   and restart the mic if a listen was in flight. */
+   and restart the mic if a listen was in flight. Home refreshes its list. */
 document.addEventListener('visibilitychange', () => {
   if(document.visibilityState !== 'visible') return;
   if(TTS && speechSynthesis.paused) speechSynthesis.resume();
   if(live){ acquireWakeLock(); beatOnce(); }
   if(live && !muted && state === 'listening' && !recActive) listen();
+  if(onHome) pollSessions();
 });
 
 /* soft chime for background-session news; WebAudio, no assets */
@@ -811,6 +924,10 @@ function chatAdd(role, text){
   if(empty) empty.remove();
   chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive));
   chatScrollBottom();
+}
+function resetChat(){
+  localTurns = []; chatHasServer = false;
+  renderChat();
 }
 async function refreshChat(){
   try{
@@ -898,9 +1015,7 @@ async function startTurn(text){
   pollUntilChanged(id, baseline);
 }
 function sendAsk(id, text){
-  fetch(urlFor('/ask'), {
-    method:'POST', headers:{ 'Content-Type':'application/json' },
-    body:JSON.stringify({ text: text }) })
+  jpost('/ask', { text: text })
   .then(r => r.json())
   .then(j => {
     if(id !== turnId || !live) return;
@@ -976,15 +1091,14 @@ function hideDecision(){
 $('yesBtn').addEventListener('click', () => { hideDecision(); cancelTurn(); startTurn('yes'); });
 $('noBtn').addEventListener('click', () => { hideDecision(); cancelTurn(); startTurn('no'); });
 
-/* /status poll: every ~4s while a turn is working, ~8s while idle on a live
-   call, so a permission prompt surfaces even when Claude hits it mid-turn or
-   between turns. An empty pending while the panel is open means it was
-   answered elsewhere (for example on the Mac): put the call back where it was. */
+/* /status poll: checked right away at call start (so a needs-you card tapped
+   on home surfaces its question within a beat of connecting), then every ~4s
+   while a turn is working and ~8s while idle on a live call. An empty pending
+   while the panel is open means it was answered elsewhere (for example on the
+   Mac): put the call back where it was. */
 let liveGen = 0;
 async function statusLoop(myGen){
   while(live && myGen === liveGen){
-    await sleep(turnActive ? 4000 : 8000);
-    if(!live || myGen !== liveGen) return;
     try{
       const p = String((await jget('/status')).pending || '').trim();
       if(!live || myGen !== liveGen) return;
@@ -995,6 +1109,8 @@ async function statusLoop(myGen){
         if(state === 'needs') resumeAfterSpeech();
       }
     }catch(e){}
+    await sleep(turnActive ? 4000 : 8000);
+    if(!live || myGen !== liveGen) return;
   }
 }
 
@@ -1109,6 +1225,16 @@ function stopListening(){
 
 /* ============================================================ call lifecycle */
 const startOverlay=$('startOverlay'), startBtn=$('startBtn');
+const START_BODY = 'A live call with your coding session. Your phone will ask to use the ' +
+  'microphone; audio goes only to your Mac and nowhere else.';
+const START_FINE = 'Speech is transcribed on-device when the browser supports it, ' +
+  'otherwise on your Mac with whisper. Say "end call" any time to hang up.';
+function resetStartOverlay(name){
+  $('startTitle').textContent = name || 'voicebridge';
+  $('startBody').textContent = START_BODY;
+  $('startFine').textContent = START_FINE;
+  startBtn.textContent = 'Start call';
+}
 function micDenied(){
   live = false; liveGen++;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
@@ -1184,6 +1310,12 @@ function closeSessSheet(){
   sessSheet.classList.remove('open');
   document.body.classList.remove('sheet-open');
 }
+function closeChatSheet(){
+  chatSheet.classList.remove('open');
+  chatBtn.classList.remove('active');
+  chatBtn.setAttribute('aria-pressed', 'false');
+  chatBtn.setAttribute('aria-label', 'Show chat');
+}
 scrim.addEventListener('click', closeSessSheet);
 $('pill').addEventListener('click', () => { sessOpen ? closeSessSheet() : openSessSheet(); });
 chatBtn.addEventListener('click', () => {
@@ -1194,7 +1326,7 @@ chatBtn.addEventListener('click', () => {
   if(open){ chatScrollBottom(); refreshChat(); }
 });
 
-/* ============================================================ control room */
+/* ============================================================ roster (shared) */
 function isWorkingState(st){ return /work|think|run|busy/i.test(String(st || '')); }
 async function fetchSessions(){
   try{
@@ -1207,6 +1339,72 @@ function stateLabel(s){
   if(isWorkingState(s.state)) return 'working';
   return s.state || 'idle';
 }
+
+/* ============================================================ home screen */
+/* Seconds-ago to a compact age: 45 becomes "45s", 3000 becomes "50m",
+   7200 becomes "2h", 200000 becomes "2d". */
+function fmtAgo(sec){
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  if(s < 60) return s + 's';
+  if(s < 3600) return Math.floor(s / 60) + 'm';
+  if(s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+function homeCard(s){
+  const b = document.createElement('button');
+  b.className = 'hcard' + (s.pending ? ' needs' : '');
+  b.setAttribute('aria-label', 'Call ' + (s.name || 'session') +
+    (s.pending ? ', needs you' : ''));
+
+  const r1 = document.createElement('div'); r1.className = 'r1';
+  const n = document.createElement('span'); n.className = 'n';
+  n.textContent = s.name || 'session';
+  const ago = document.createElement('span'); ago.className = 'ago';
+  ago.textContent = (s.ago === undefined || s.ago === null) ? '' : fmtAgo(s.ago) + ' ago';
+  r1.append(n, ago);
+
+  const r2 = document.createElement('div'); r2.className = 'r2';
+  const dot = document.createElement('span');
+  dot.className = 'sdot' + (s.pending ? ' needs' : (isWorkingState(s.state) ? ' working' : ''));
+  r2.appendChild(dot);
+  if(s.pending){
+    const badge = document.createElement('span');
+    badge.className = 'badge needs'; badge.textContent = 'needs you';
+    r2.appendChild(badge);
+  }else{
+    const lbl = document.createElement('span');
+    const working = isWorkingState(s.state);
+    lbl.className = 'lbl ' + (working ? 'working' : 'ready');
+    lbl.textContent = working ? 'working' : 'ready';
+    r2.appendChild(lbl);
+  }
+
+  b.append(r1, r2);
+  const preview = String(s.last || '').trim();
+  if(preview){
+    const last = document.createElement('div'); last.className = 'last';
+    last.textContent = preview;
+    b.appendChild(last);
+  }
+  b.addEventListener('click', () => openSession(s));
+  return b;
+}
+function renderHome(list){
+  const keep = homeList.scrollTop;
+  homeList.textContent = '';
+  if(!list || !list.length){
+    const p = document.createElement('p'); p.className = 'hempty';
+    p.textContent = list
+      ? 'No open sessions on the Mac. Start one in a terminal and it appears here.'
+      : 'Cannot reach the relay. Check the tunnel and that vb call is on.';
+    homeList.appendChild(p);
+    return;
+  }
+  list.forEach(s => homeList.appendChild(homeCard(s)));
+  homeList.scrollTop = keep;
+}
+
+/* ============================================================ control room */
 function sessionCard(s){
   const card = document.createElement('div');
   card.className = 'card' + (s.current ? ' current' : '');
@@ -1267,9 +1465,11 @@ async function hearLast(s, btn){
   speakAside(rep ? ('From ' + name + ': ' + rep) : ('No reply yet from ' + name + '.'));
 }
 
-/* roster poll: ~8s with the sheet open, ~20s in the background of a live
-   call. Background flips (working to needs-you, working to idle) get a toast
-   and a soft chime so parallel sessions can call for attention. */
+/* roster poll: ~10s while home is visible, ~8s with the control room open,
+   ~20s in the background of a live call, ~30s otherwise. Background flips
+   (working to needs-you, working to idle) get a toast and a soft chime so
+   parallel sessions can call for attention; tapping the toast moves the call
+   to that session. The home header dot mirrors relay reachability. */
 const prevSess = {};
 let sessBusy = false;
 async function pollSessions(){
@@ -1277,11 +1477,25 @@ async function pollSessions(){
   sessBusy = true;
   const list = await fetchSessions();
   sessBusy = false;
-  if(!list){ if(sessOpen) renderSessions(null); return; }
+  homeDot.classList.toggle('ok', !!list);
+  homeDot.setAttribute('aria-label', list ? 'relay connected' : 'relay unreachable');
+  if(!list){
+    if(sessOpen) renderSessions(null);
+    if(onHome) renderHome(null);
+    return;
+  }
+  lastRoster = list;
   const cur = list.find(s => s.current);
-  if(cur && cur.name){
-    pillName.textContent = cur.name;
-    $('pill').setAttribute('aria-label', 'Session: ' + cur.name + '. Open control room.');
+  if(cur){
+    if(cur.id) currentSid = cur.id;
+    if(cur.name){
+      pillName.textContent = cur.name;
+      $('pill').setAttribute('aria-label', 'Session: ' + cur.name + '. Open control room.');
+    }
+    if(wantStartName && !live){
+      $('startTitle').textContent = cur.name || 'voicebridge';
+      wantStartName = false;
+    }
   }
   for(const s of list){
     const key = s.id || s.name;
@@ -1289,25 +1503,27 @@ async function pollSessions(){
     const prev = prevSess[key];
     if(prev && live && !s.current){
       if(!prev.pending && s.pending){
-        toast((s.name || 'a session') + ' needs you'); chime();
+        toast((s.name || 'a session') + ' needs you', s); chime();
       }else if(!s.pending && isWorkingState(prev.state) && !isWorkingState(s.state)){
-        toast((s.name || 'a session') + ' finished'); chime();
+        toast((s.name || 'a session') + ' finished', s); chime();
       }
     }
     prevSess[key] = { state: s.state, pending: !!s.pending };
   }
   if(sessOpen) renderSessions(list);
+  if(onHome) renderHome(list);
 }
 (async function sessionsLoop(){
   for(;;){
     try{ await pollSessions(); }catch(e){}
-    await sleep(sessOpen ? 8000 : (live ? 20000 : 30000));
+    await sleep(sessOpen ? 8000 : (live ? 20000 : (onHome ? 10000 : 30000)));
   }
 })();
 
-/* toast */
-let toastTimer = null;
-function toast(msg){
+/* toast: tapping goes to the session it is about (switch + call screen) */
+let toastTimer = null, toastSess = null;
+function toast(msg, sess){
+  toastSess = sess || null;
   toastText.textContent = msg;
   toastEl.classList.add('show');
   if(toastTimer) clearTimeout(toastTimer);
@@ -1315,7 +1531,13 @@ function toast(msg){
 }
 toastEl.addEventListener('click', () => {
   toastEl.classList.remove('show');
-  openSessSheet();
+  const s = toastSess; toastSess = null;
+  if(s){
+    if(live) switchTo(s);
+    else openSession(s);
+    return;
+  }
+  if(!onHome) openSessSheet();
 });
 
 /* ============================================================ switching */
@@ -1329,17 +1551,15 @@ async function switchTo(s){
   cancelTurn(); stopSpeaking(); stopListening();
   let ok = false;
   try{
-    const r = await fetch(urlFor('/switch'), {
-      method:'POST', headers:{ 'Content-Type':'application/json' },
-      body:JSON.stringify({ id: s.id }) });
+    const r = await jpost('/switch', { id: s.id });
     ok = r.ok;
   }catch(e){}
   if(ok){
+    if(s.id) currentSid = s.id;
     pillName.textContent = s.name || 'session';
     $('pill').setAttribute('aria-label', 'Session: ' + pillName.textContent + '. Open control room.');
     switchMsg.textContent = 'connected to ' + pillName.textContent;
-    localTurns = []; chatHasServer = false;   // new session, new transcript
-    renderChat();
+    resetChat();                              // new session, new transcript
     refreshChat();
     await sleep(900);
   }else{
@@ -1351,10 +1571,73 @@ async function switchTo(s){
   if(live){ if(muted) setState('muted'); else { setState('listening'); listen(); } }
 }
 
-/* Name the pill (and prime the roster diff) on load; also warm the chat so
-   the sheet opens full the first time. First paint keeps the pre-permission
-   explainer on top; body starts data-state "ended" so the orb sits dim
-   behind it until the call begins. */
+/* ============================================================ navigation */
+/* HOME is the resting screen; the call screen (orb and controls) sits under
+   it. Tapping a home card repoints the relay and lands on the start overlay,
+   where the Start call tap grants the mic; a needs-you card works the same
+   and the permission panel surfaces right after connecting (immediate
+   /status check). The back chevron ends any live call and returns home. */
+function goCall(name){
+  onHome = false;
+  document.body.classList.remove('home');
+  if(name){
+    pillName.textContent = name;
+    $('pill').setAttribute('aria-label', 'Session: ' + name + '. Open control room.');
+  }
+  resetStartOverlay(name);
+  setState('ended', '');
+  startOverlay.classList.remove('hidden');
+}
+function goHome(){
+  onHome = true;
+  cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
+  hideDecision(); closeSessSheet(); closeChatSheet();
+  startOverlay.classList.add('hidden');
+  setState('ended', 'call ended');
+  document.body.classList.add('home');
+  renderHome(lastRoster);
+  pollSessions();
+}
+async function openSession(s){
+  goCall(s.name || 'session');
+  if(s.id && s.id !== currentSid) resetChat();
+  if(s.id) currentSid = s.id;
+  if(!s.current){
+    let ok = false;
+    try{ ok = (await jpost('/switch', { id: s.id })).ok; }catch(e){}
+    if(!ok){ goHome(); return; }
+  }
+  pollSessions();
+  refreshChat();
+}
+async function backHome(){
+  if(live){
+    switchMsg.textContent = 'ending call';
+    switchOverlay.classList.remove('hidden');
+    live = false; liveGen++;
+    cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
+    await sleep(700);
+    switchOverlay.classList.add('hidden');
+  }
+  goHome();
+}
+$('backBtn').addEventListener('click', backHome);
+
+/* ============================================================ boot */
+/* No auto-call: the page opens on home (roster primed below). A deep link
+   with &s= skips home, repoints the relay at that session, and rests on the
+   start overlay; if the switch fails the page falls back to home. */
+if(S){
+  document.body.classList.remove('home');
+  startOverlay.classList.remove('hidden');
+  (async () => {
+    let ok = false;
+    try{ ok = (await jpost('/switch', { id: S })).ok; }catch(e){}
+    if(!ok){ wantStartName = false; goHome(); return; }
+    pollSessions();
+    refreshChat();
+  })();
+}
 pollSessions();
 refreshChat();
 </script></body></html>
