@@ -56,7 +56,7 @@ Do not paraphrase or shorten the tables. Do not run any other command.
 | `vb sessions` | List running sessions |
 | `vb alerts on\|off` | Announce when another agent finishes |
 | `vb voice <name>` | Change the voice (`vb voice` lists all) |
-| `vb speed 1.5` | Playback speed, 0.5x to 2x (Kokoro engine limit) |
+| `vb speed 1.5` | Playback speed, 0.5x to 3.5x |
 | `vb pause <secs>` | Silence that ends an utterance (default 2.5) |
 | `vb doctor` | Health check |
 | `vb selftest` | Not hearing you? This says exactly why |

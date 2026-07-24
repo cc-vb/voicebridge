@@ -500,11 +500,13 @@ ENGINE_FILE = STATE_DIR / "engine"     # "say" (default) | "kokoro"
 SPEECH_PID = STATE_DIR / "speech.pid"  # pid of the current speech player
 KOKORO_PORT = int(os.environ.get("VB_TTS_PORT", "8798"))
 _KOKORO_VOICE_RE = re.compile(r"^[a-z]{2}_[a-z]+$")
-# Kokoro's own limits, verbatim from its error: "Speed should be between
-# 0.5 and 2.0". Asking for more returns no audio at all, so these are the
-# real numbers everything else must agree with.
+# Kokoro refuses outside 0.5-2.0 ("Speed should be between 0.5 and 2.0")
+# and returns no audio at all, so that is the ceiling for synthesis. Past
+# it we re-time the finished WAV instead, which is why MAX_SPEED can be
+# higher than KOKORO_MAX_SPEED. Everything else reads these constants.
 MIN_SPEED = 0.5
-MAX_SPEED = 2.0
+MAX_SPEED = 3.5
+KOKORO_MAX_SPEED = 2.0
 
 
 def get_engine() -> str:
@@ -552,6 +554,31 @@ def split_speech_chunks(text: str, first_max: int = 120,
     return chunks
 
 
+def _retime_wav(wav: str, factor: float) -> str:
+    """Play a finished WAV `factor` times faster, keeping pitch (atempo).
+
+    atempo tops out at 2x per pass, so chain passes for more. ffmpeg is
+    already an install dependency; if it is missing or fails we return the
+    un-retimed file, so speech stays slower rather than stopping."""
+    chain, left = [], factor
+    while left > 2.0:
+        chain.append("atempo=2.0")
+        left /= 2.0
+    chain.append(f"atempo={left:.4f}")
+    fast = wav + ".fast.wav"
+    try:
+        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", wav,
+                            "-filter:a", ",".join(chain), fast],
+                           capture_output=True, timeout=60)
+        if r.returncode == 0 and os.path.getsize(fast) > 1000:
+            os.replace(fast, wav)
+        else:
+            log(f"atempo {factor:g}x failed: {r.stderr.decode()[:200]}")
+    except Exception as e:
+        log(f"atempo unavailable, speaking un-retimed: {e}")
+    return wav
+
+
 def _kokoro_wav(text: str, out: str = "") -> str:
     """Synthesize via the local Kokoro server; '' if unavailable."""
     wav = out or str(STATE_DIR / "speech.wav")
@@ -559,9 +586,12 @@ def _kokoro_wav(text: str, out: str = "") -> str:
     if not _KOKORO_VOICE_RE.match(voice or ""):
         voice = "af_heart"
     try:
-        speed = max(MIN_SPEED, min(MAX_SPEED, float(get_rate()) / 175.0))
+        want = max(MIN_SPEED, min(MAX_SPEED, float(get_rate()) / 175.0))
     except ValueError:
-        speed = 1.0
+        want = 1.0
+    # Synthesize at Kokoro's fastest, then re-time the rest of the way.
+    speed = min(want, KOKORO_MAX_SPEED)
+    retime = want / speed
     payload = json.dumps({"text": text, "voice": voice, "speed": speed})
     try:
         r = subprocess.run(
@@ -572,7 +602,7 @@ def _kokoro_wav(text: str, out: str = "") -> str:
         if r.returncode == 0 and os.path.getsize(wav) > 1000:
             with open(wav, "rb") as f:
                 if f.read(4) == b"RIFF":
-                    return wav
+                    return _retime_wav(wav, retime) if retime > 1.01 else wav
     except Exception as e:
         log(f"kokoro synth failed: {e}")
     return ""
