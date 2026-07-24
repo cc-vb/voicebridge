@@ -824,7 +824,7 @@ def main(argv) -> int:
             print("set: vb speed 1.5   (0.5x to 2.5x; or say 'speak faster')")
 
     elif cmd in ("faster", "slower"):
-        # Nudge speed by 0.25x. Meant for a hotkey (F9 faster / F8 slower).
+        # Nudge speed by 0.25x. Meant for a hotkey (F9 faster / F7 slower).
         base = 175.0
         cur = int(core.get_rate()) / base
         x = max(0.5, min(2.5, cur + (0.25 if cmd == "faster" else -0.25)))
