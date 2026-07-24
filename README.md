@@ -187,6 +187,13 @@ records the pid of the Claude Code process that owns the session, and the
 daemon checks it is still alive a few times a minute. When it is gone, the
 daemon silences itself, drops its scratch recordings and exits.
 
+The phone's session list follows the same truth: sessions you have exited fall
+under **Earlier**, dimmed and read-only. That split is only as good as the
+liveness behind it, so it is exact rather than guessed: each session records
+the process running it, instead of the roster inferring which are open from
+process working directories (which cannot tell two sessions in one project
+apart, and so kept offering closed sessions as callable).
+
 **The phone link.** `vb phone` opens a public URL into this Mac, so it is
 treated like one: the URL is authenticated by a 128-bit secret (an
 unconfigured relay answers nothing at all rather than serving openly), the

@@ -252,6 +252,7 @@ def _foreign_script(text: str) -> bool:
 # definite moment to shut everything down.
 
 CALL_OWNER = core.STATE_DIR / "call_owner"   # session `vb phone` was run in
+OWNERS = STATE / "owners"    # <sid> -> pid of the Claude Code process running it
 
 
 def owner_pid() -> int:
@@ -294,6 +295,26 @@ def _is_claude_pid(pid: int) -> bool:
     return os.path.basename(out.strip()) == "claude"
 
 
+def live_claude_pids() -> set:
+    """Every running Claude Code process, in one `ps`. Callers asking about a
+    dozen sessions at a time (the phone roster, polled every few seconds) get
+    one process listing instead of one per session."""
+    pids = set()
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,comm="], capture_output=True,
+                             text=True, timeout=3).stdout
+    except Exception:
+        return pids
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and os.path.basename(parts[1].strip()) == "claude":
+            try:
+                pids.add(int(parts[0]))
+            except ValueError:
+                pass
+    return pids
+
+
 def _any_claude_running() -> bool:
     """Is ANY Claude Code session open on this machine? The fallback for
     sessions voiced before their owner was recorded: if there is no Claude at
@@ -305,6 +326,49 @@ def _any_claude_running() -> bool:
         return True
     return any(os.path.basename(ln.strip()) == "claude"
                for ln in out.splitlines())
+
+
+def _record_owner(sid: str, pid: int) -> None:
+    """Remember which process runs a session. Written for EVERY session that
+    submits a prompt, not just the voiced one, so the roster can say which
+    sessions are still open instead of inferring it from process working
+    directories (which cannot tell two sessions in one project apart)."""
+    if not sid or pid <= 0:
+        return
+    try:
+        OWNERS.mkdir(parents=True, exist_ok=True)
+        (OWNERS / sid).write_text(str(pid))
+    except OSError as e:
+        core.log(f"talkd._record_owner failed: {e}")
+
+
+def known_owners() -> dict:
+    """{sid: pid} for every session we've seen, dropping records old enough to
+    be noise (the roster only reaches back hours anyway)."""
+    out = {}
+    try:
+        entries = list(OWNERS.iterdir())
+    except OSError:
+        return out
+    cutoff = time.time() - 7 * 86400
+    for f in entries:
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                continue
+            out[f.name] = int(f.read_text().strip())
+        except (OSError, ValueError):
+            pass
+    return out
+
+
+def sid_alive(sid: str, live: set = None) -> bool:
+    """Is this session still open? None when we've never seen it, so callers
+    can fall back instead of declaring a session dead on no evidence."""
+    pid = known_owners().get(sid) if sid else None
+    if not pid:
+        return None
+    return pid in (live if live is not None else live_claude_pids())
 
 
 def session_alive(payload: dict) -> bool:
@@ -384,6 +448,7 @@ def record_prompt(session_id: str, transcript_path: str) -> None:
                    # reachable: this is what lets the daemon notice the
                    # session going away.
                    "owner_pid": owner_pid()}
+        _record_owner(session_id, payload["owner_pid"])
         LAST.write_text(json.dumps(payload))
         # If this session is voiced, the mic follows it (most recent wins).
         if (VOICED / session_id).exists():

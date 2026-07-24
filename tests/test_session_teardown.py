@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from vb import call, talkd  # noqa: E402
+from vb import call, sessions, talkd  # noqa: E402
 
 
 # ---- who owns the session ----------------------------------------------------
@@ -151,6 +151,38 @@ def test_reaper_ignores_junk_lines():
                             "http://127.0.0.1:8790\n", 8790) == []
 
 
+# ---- which sessions the phone may call ----------------------------------------
+
+def _row(sid, proj="-Users-k-app", mtime=100):
+    return {"sid": sid, "label": sid, "mtime": mtime,
+            "path": f"/x/.claude/projects/{proj}/{sid}.jsonl"}
+
+
+def test_recorded_owner_beats_the_process_guess():
+    """Two sessions in one project dir, one still open. The dir-counting guess
+    marks the most recent one active; the recorded owners know which."""
+    rows = [_row("open", mtime=100), _row("exited", mtime=200)]
+    with _stub(talkd, "known_owners", lambda: {"open": 11, "exited": 22}), \
+            _stub(talkd, "live_claude_pids", lambda: {11}):
+        out = {r["sid"]: r["active"]
+               for r in sessions.mark_active(rows, {"/Users/k/app": 1})}
+    assert out == {"open": True, "exited": False}
+
+
+def test_unknown_sessions_keep_the_old_guess():
+    rows = [_row("legacy", mtime=200)]
+    with _stub(talkd, "known_owners", lambda: {}):
+        assert sessions.mark_active(rows, {"/Users/k/app": 1})[0]["active"]
+
+
+def test_owner_lookup_failing_never_breaks_the_roster():
+    def boom():
+        raise OSError("no /proc for you")
+    rows = [_row("a", mtime=200)]
+    with _stub(talkd, "known_owners", boom):
+        assert sessions.mark_active(rows, {"/Users/k/app": 1})[0]["active"]
+
+
 # ---- the relay's front door ---------------------------------------------------
 
 class _Req:
@@ -177,6 +209,9 @@ def test_relay_accepts_the_configured_secret_only():
 
 
 if __name__ == "__main__":
+    test_recorded_owner_beats_the_process_guess()
+    test_unknown_sessions_keep_the_old_guess()
+    test_owner_lookup_failing_never_breaks_the_roster()
     test_relay_refuses_everything_when_no_secret_is_configured()
     test_relay_accepts_the_configured_secret_only()
     test_alive_when_owner_pid_is_a_live_claude()

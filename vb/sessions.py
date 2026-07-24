@@ -251,9 +251,15 @@ def _munge(cwd: str) -> str:
 
 
 def mark_active(rows: list, live: dict) -> list:
-    """Set row['active']: within each project dir that has N live claude
-    processes, the N most recently touched transcripts are the open sessions
-    (best possible mapping; a dir's sessions share one munged name)."""
+    """Set row['active']: is this session still open?
+
+    Two sources, best first. Sessions that have submitted a prompt since the
+    owner registry existed are known EXACTLY, because the hook recorded the
+    pid of the process running them. Everything else falls back to counting
+    processes per project dir: within a dir with N live claude processes, the
+    N most recently touched transcripts are assumed open. That guess is all
+    there was, and it cannot tell two sessions in one project apart, which is
+    how a closed session kept appearing on the phone as callable."""
     budget = {_munge(c): n for c, n in live.items()}
     for r in sorted(rows, key=lambda r: r.get("mtime", 0), reverse=True):
         proj = Path(r.get("path", "")).parent.name
@@ -262,6 +268,18 @@ def mark_active(rows: list, live: dict) -> list:
             r["active"] = True
         else:
             r["active"] = False
+    try:
+        from . import talkd
+        known, running = talkd.known_owners(), None
+        for r in rows:
+            pid = known.get(r.get("sid", ""))
+            if not pid:
+                continue
+            if running is None:
+                running = talkd.live_claude_pids()   # one ps for the whole list
+            r["active"] = pid in running
+    except Exception as e:
+        core.log(f"mark_active: owner lookup failed: {e}")
     return rows
 
 
