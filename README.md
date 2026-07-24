@@ -9,12 +9,22 @@ Everything runs locally: speech-to-text is whisper.cpp on your machine,
 text-to-speech is Kokoro (bundled setup) or macOS voices. Free, no cloud
 voice services, no per-minute fees.
 
+## Who it's for
+
+Anyone who'd rather talk than type, and especially people for whom typing is
+the hard part. voicebridge is a hands-free way to work with a coding agent:
+speak your intent, hear the answer, and keep your eyes and hands free. If you
+deal with **RSI or wrist strain**, **limited hand mobility**, or **low
+vision** where reading long replies on screen is tiring, this is built to let
+you code by conversation instead. See [ACCESSIBILITY.md](ACCESSIBILITY.md).
+
 ## What you get
 
-- **Talk to a session**: `/voice-on` for a continuous hands-free
-  conversation, or `/voice-wake` for ambient mode that only reacts to "hey
-  Claude ..." and answers with a single spoken sentence, so it stays out of
-  the way around other people. `/voice-off` to stop.
+- **Three ways in**: `/voice-agent` is fully hands-free, everything you say
+  goes to Claude and replies are read aloud. `/voice-wake` is the same but
+  only reacts to "hey Claude ..." (good with people around). `/voice-on` is
+  speak-only: replies are read aloud while the mic stays off, so you drive
+  with the keyboard (or Claude's own space-to-talk). `/voice-off` to stop.
 - **Fleet control by voice** , the part nothing else does. Run many agents
   at once and steer them all with one voice: ask *"which agents need me?"*
   to hear who's waiting vs working, *"switch to jobhunt"* to move your
