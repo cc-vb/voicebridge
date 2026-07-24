@@ -426,6 +426,13 @@ def main(argv) -> int:
         print("")
         full = f"{url}/?k={secret}"
         print(f"\n  PHONE URL: {full}\n")
+        # A QR in its own window is the reliable one: terminal QRs wrap,
+        # collapse inside Claude Code's tool output, and invert on light
+        # themes. Open the image AND print the terminal QR as a fallback.
+        img = core.qr_image(full)
+        if img and sys.platform == "darwin":
+            subprocess.run(["open", img], capture_output=True)
+            print("  (a QR window just opened on your Mac, scan that)")
         if not core.print_qr(full):
             print("  (install `qrcode` for a scannable code: "
                   "pip3 install qrcode)")
@@ -798,6 +805,10 @@ def main(argv) -> int:
                     or core._read(core.STATE_DIR / "call_secret")
                 full = url.rstrip("/") + ("/?k=" + secret if secret else "/")
                 print(f"\n  PHONE URL: {full}\n")
+                img = core.qr_image(full)
+                if img and sys.platform == "darwin":
+                    subprocess.run(["open", img], capture_output=True)
+                    print("  (a QR window just opened on your Mac, scan that)")
                 if not core.print_qr(full):
                     print("  (install `qrcode` for a scannable code: "
                           "pip3 install qrcode)")

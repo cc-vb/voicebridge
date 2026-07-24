@@ -442,6 +442,33 @@ def print_qr(url: str) -> bool:
         return False
 
 
+def qr_image(url: str) -> str:
+    """Write the QR as an image file and return its path ('' on failure).
+
+    The terminal QR is unreliable in practice: Claude Code collapses long
+    tool output, wraps it in narrow panes, and light themes invert it, all of
+    which make the code unscannable. An image opened in its own window always
+    renders crisp. PNG when pillow is present, SVG otherwise."""
+    try:
+        import qrcode
+    except Exception:
+        return ""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        out = STATE_DIR / "phone_qr.png"
+        qrcode.make(url).save(str(out))   # needs pillow
+        return str(out)
+    except Exception:
+        pass
+    try:
+        import qrcode.image.svg as _svg
+        out = STATE_DIR / "phone_qr.svg"
+        qrcode.make(url, image_factory=_svg.SvgPathImage).save(str(out))
+        return str(out)
+    except Exception:
+        return ""
+
+
 def assistant_replies_after(transcript_path: str, after_uuid: str = ""):
     """Every assistant reply that lands after `after_uuid`, oldest first.
 
