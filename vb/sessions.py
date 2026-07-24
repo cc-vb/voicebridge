@@ -218,6 +218,25 @@ def newly_idle(prev: dict, exclude_sid: str = "") -> "tuple[list, dict]":
     return freshly, now
 
 
+def switch_sid(sid: str) -> str:
+    """switch() by exact session id (the phone page sends ids, not labels)."""
+    from . import talkd
+    r = next((x for x in roster() if x.get("sid") == sid), None)
+    if not r:
+        return f"No session with id {sid[:8]}."
+    talkd.VOICED.mkdir(parents=True, exist_ok=True)
+    for f in talkd.VOICED.iterdir():
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    (talkd.VOICED / r["sid"]).write_text(r["path"])
+    talkd.ACTIVE.write_text(json.dumps(
+        {"session_id": r["sid"], "transcript_path": r["path"],
+         "ts": time.time()}))
+    return f"Voice moved to {r['label']}."
+
+
 def switch(query: str) -> str:
     """Move voice to the named session (rebind the exclusive voiced session)."""
     from . import talkd

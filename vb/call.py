@@ -147,126 +147,711 @@ def _sse(text: str) -> bytes:
             f"data: {json.dumps(done)}\n\ndata: [DONE]\n\n").encode()
 
 
-PAGE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/icon.svg">
+PAGE = r"""<!DOCTYPE html>
+<!--
+  voicebridge call page v2. Drop-in replacement for PAGE in vb/call.py.
+  IMPORTANT when embedding: assign it to PAGE as a RAW triple-quoted string
+  (r prefix) so the regex backslashes below survive Python escaping.
+
+  Backend contract used (unchanged from v1):
+    GET  /              serves this page (401 unless ?k=SECRET or no secret set)
+    POST /ask?k=SECRET  body {"text": "..."} returns {"reply": "..."}
+    POST /stt?k=SECRET  body audio blob (webm/mp4) returns {"text": "..."}
+    GET  /manifest.json and /icon.svg still exist server-side; this page also
+         injects its own data-URI manifest so Add to Home Screen keeps the
+         ?k= secret in start_url (the server manifest's start_url "/" drops it).
+
+  PROPOSED new endpoints (page degrades gracefully when they 404):
+    GET  /sessions?k=SECRET
+         {"sessions":[{"id":"<transcript path or uuid>","name":"voicebridge",
+                       "cwd":"~/voicebridge","current":true}, ...]}
+         Roster for the session sheet. Suggested source: enumerate open Claude
+         transcripts (core.newest_transcript siblings) plus talkd ACTIVE.
+    POST /switch?k=SECRET  body {"id":"..."} returns {"ok":true,"name":"..."}
+         Re-point the relay's focused session (update talkd ACTIVE) so the next
+         /ask lands in the chosen session. The page shows an "ending previous
+         call" affordance while this is in flight.
+    GET  /session?k=SECRET  (optional) {"id":"...","name":"..."} for naming the
+         pill on load without pulling the whole roster.
+-->
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a0d14">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#0e1116">
+<meta name="apple-mobile-web-app-title" content="voicebridge">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>voicebridge call</title>
 <style>
- body{font-family:-apple-system,system-ui,sans-serif;background:#0e1116;color:#e6e9ef;
-      margin:0;padding:24px;display:flex;flex-direction:column;min-height:92vh}
- h1{font-size:20px;margin:0 0 4px} .sub{color:#8b93a3;font-size:13px;margin-bottom:20px}
- #btn{font-size:22px;padding:22px;border-radius:16px;border:0;background:#2f6df6;
-      color:#fff;width:100%;font-weight:600}
- #btn.live{background:#d64545}
- #state{margin:18px 0;font-size:16px;color:#9fd39f;min-height:22px}
- #log{flex:1;overflow-y:auto;font-size:14px;line-height:1.5}
- .you{color:#8ab4ff}.bot{color:#e6e9ef;margin-bottom:10px}
-</style></head><body>
-<h1>voicebridge</h1>
-<div class="sub">hands-free call with your Claude session</div>
-<button id="btn">Start call</button>
-<div id="state"></div><div id="log"></div>
+/* Registered custom properties so state hue changes tween instead of snap.
+   Old browsers skip @property and simply cut to the new color. */
+@property --o1 { syntax:'<color>'; inherits:true; initial-value:#dfe7f8; }
+@property --o2 { syntax:'<color>'; inherits:true; initial-value:#5f74b0; }
+@property --o3 { syntax:'<color>'; inherits:true; initial-value:#1c2440; }
+@property --glow { syntax:'<color>'; inherits:true; initial-value:rgba(95,116,176,.34); }
+@property --ring { syntax:'<color>'; inherits:true; initial-value:rgba(120,140,200,.5); }
+
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html, body { height:100%; overflow:hidden; overscroll-behavior:none; }
+body {
+  position:fixed; inset:0; margin:0;
+  display:flex; flex-direction:column;
+  background:#0a0d14; color:#e8ebf2;
+  font-family:ui-rounded, -apple-system, "SF Pro Rounded", system-ui, "Segoe UI", Roboto, sans-serif;
+  user-select:none; -webkit-user-select:none; touch-action:manipulation;
+  transition:--o1 .9s ease, --o2 .9s ease, --o3 .9s ease, --glow .9s ease, --ring .9s ease;
+  --o1:#dfe7f8; --o2:#5f74b0; --o3:#1c2440;
+  --glow:rgba(95,116,176,.34); --ring:rgba(120,140,200,.5);
+  --danger:#e5484d; --dim:#96a0b5; --surface:#141926; --line:#232b3d;
+}
+body[data-state="listening"] { --o1:#e4fff8; --o2:#37bfae; --o3:#093330; --glow:rgba(70,215,195,.42); --ring:rgba(90,225,205,.55); }
+body[data-state="thinking"]  { --o1:#ece4ff; --o2:#8674e6; --o3:#241d4e; --glow:rgba(140,120,235,.42); --ring:rgba(160,140,255,.55); }
+body[data-state="speaking"]  { --o1:#ffffff; --o2:#8fb2f2; --o3:#16294f; --glow:rgba(160,195,255,.55); --ring:rgba(180,205,255,.6); }
+body[data-state="muted"]     { --o1:#ccd1db; --o2:#59606f; --o3:#191d26; --glow:rgba(120,128,148,.22); --ring:rgba(130,138,158,.35); }
+body[data-state="ended"]     { --o1:#b9bfca; --o2:#464c5a; --o3:#14171f; --glow:rgba(100,106,124,.16); --ring:rgba(110,118,138,.25); }
+
+button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; padding:0; }
+button:focus-visible { outline:2px solid #9db9ff; outline-offset:3px; border-radius:14px; }
+
+/* ---- top: session pill ---- */
+header {
+  padding:calc(env(safe-area-inset-top, 0px) + 14px) 16px 6px;
+  display:flex; justify-content:center;
+}
+#pill {
+  display:flex; align-items:center; gap:8px;
+  min-height:44px; padding:10px 16px; border-radius:999px;
+  background:rgba(255,255,255,.055); border:1px solid var(--line);
+  font-size:15px; color:#dfe4ee; max-width:80vw;
+}
+#pill .dot { width:8px; height:8px; border-radius:50%; background:var(--o2); flex:none;
+  transition:background .9s ease; }
+#pill .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#pill svg { width:14px; height:14px; opacity:.6; flex:none; }
+
+/* ---- middle: the orb ---- */
+main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:34px; min-height:0; }
+#orbzone { position:relative; width:min(64vw, 280px); aspect-ratio:1; }
+.ripple {
+  position:absolute; inset:0; border-radius:50%;
+  border:1.5px solid var(--ring); opacity:0; pointer-events:none;
+}
+body[data-state="thinking"] .ripple { animation:ripple 2.6s cubic-bezier(.2,.6,.35,1) infinite; }
+body[data-state="thinking"] .ripple:nth-child(2) { animation-delay:.85s; }
+body[data-state="thinking"] .ripple:nth-child(3) { animation-delay:1.7s; }
+@keyframes ripple { 0% { transform:scale(1); opacity:.55; } 100% { transform:scale(1.85); opacity:0; } }
+
+#orbscale { position:absolute; inset:0;
+  transform:scale(calc(1 + var(--level, 0) * .16));
+  transition:transform .14s linear;
+}
+#orb {
+  position:absolute; inset:0; border-radius:50%;
+  background:radial-gradient(circle at 33% 28%, var(--o1) 0%, var(--o2) 46%, var(--o3) 82%);
+  box-shadow:0 0 70px 6px var(--glow), inset 0 0 46px rgba(0,0,0,.35);
+  animation:breathe 5.4s ease-in-out infinite;
+  overflow:hidden;
+}
+#orb::after { /* slow drifting sheen so the sphere feels alive, not flat */
+  content:""; position:absolute; inset:-30%;
+  background:conic-gradient(from 0deg, transparent 0 62%, rgba(255,255,255,.16) 74%, transparent 86%);
+  animation:sheen 11s linear infinite;
+}
+@keyframes breathe { 0%,100% { transform:scale(1); } 50% { transform:scale(1.045); } }
+@keyframes sheen { to { transform:rotate(360deg); } }
+body[data-state="speaking"] #orb { animation:breathe 5.4s ease-in-out infinite, speakglow 1.5s ease-in-out infinite; }
+body[data-state="speaking"] #orb::after { animation-duration:4.5s; }
+@keyframes speakglow {
+  0%,100% { box-shadow:0 0 70px 6px var(--glow), inset 0 0 46px rgba(0,0,0,.35); }
+  50%     { box-shadow:0 0 120px 26px var(--glow), inset 0 0 32px rgba(0,0,0,.22); }
+}
+body[data-state="ended"] #orb, body[data-state="muted"] #orb { animation:none; }
+
+#status {
+  font-size:15px; letter-spacing:.42em; text-indent:.42em; /* balance tracking */
+  text-transform:lowercase; color:var(--dim); min-height:22px; text-align:center;
+  padding:0 24px;
+}
+
+/* ---- bottom: call controls ---- */
+footer {
+  display:flex; align-items:center; justify-content:center; gap:34px;
+  padding:10px 24px calc(env(safe-area-inset-bottom, 0px) + 26px);
+}
+.ctl {
+  width:64px; height:64px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.07); border:1px solid var(--line);
+  transition:background .25s ease, transform .1s ease;
+}
+.ctl:active { transform:scale(.93); }
+.ctl svg { width:26px; height:26px; }
+#muteBtn { width:80px; height:80px; background:rgba(255,255,255,.1); }
+#muteBtn svg { width:32px; height:32px; }
+#muteBtn.muted { background:#e8ebf2; color:#0a0d14; }
+#muteBtn .off { display:none; }
+#muteBtn.muted .off { display:block; }
+#muteBtn.muted .on { display:none; }
+#endBtn { background:var(--danger); border-color:transparent; color:#fff; }
+#ccBtn.active { background:rgba(255,255,255,.18); }
+.ctl-label { position:absolute; left:-9999px; } /* visually hidden, for readers */
+
+/* ---- sheets (captions + sessions) ---- */
+#scrim { position:fixed; inset:0; background:rgba(4,6,10,.55); opacity:0;
+  pointer-events:none; transition:opacity .25s ease; z-index:40; }
+body.sheet-open #scrim { opacity:1; pointer-events:auto; }
+.sheet {
+  position:fixed; left:0; right:0; bottom:0; z-index:50;
+  background:var(--surface); border-radius:20px 20px 0 0;
+  border-top:1px solid var(--line);
+  transform:translateY(105%); transition:transform .3s cubic-bezier(.3,.9,.3,1);
+  padding:10px 18px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  max-height:62vh; display:flex; flex-direction:column;
+}
+.sheet.open { transform:translateY(0); }
+.sheet .grab { width:38px; height:4px; border-radius:2px; background:#39435a; margin:2px auto 12px; flex:none; }
+/* captions are non-modal: they float above the call controls so mute and
+   end stay reachable while reading */
+#capSheet {
+  left:10px; right:10px;
+  bottom:calc(env(safe-area-inset-bottom, 0px) + 122px);
+  border:1px solid var(--line); border-radius:20px;
+  max-height:36vh; padding-bottom:14px; z-index:30;
+  transform:translateY(calc(100% + 140px));
+}
+#capSheet.open { transform:translateY(0); }
+.sheet h2 { font-size:13px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--dim); margin:0 0 10px; flex:none; }
+.sheet .scroll { overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; min-height:60px; }
+
+/* captions */
+#capLines { font-size:16px; line-height:1.55; }
+#capLines .line { margin:0 0 12px; }
+#capLines .who { display:block; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); margin-bottom:2px; }
+#capLines .you .who { color:#6fd8c8; }
+#capLines .agent .who { color:#a3b8ea; }
+#capLines .empty { color:var(--dim); font-size:14px; }
+
+/* sessions roster */
+.sess {
+  display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+  padding:14px 12px; min-height:56px; border-radius:14px; font-size:16px;
+}
+.sess:active { background:rgba(255,255,255,.06); }
+.sess .sdot { width:9px; height:9px; border-radius:50%; background:#3d465c; flex:none; }
+.sess.current .sdot { background:#46d7c3; }
+.sess .meta { min-width:0; }
+.sess .meta .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sess .meta .c { font-size:12.5px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sess .tag { margin-left:auto; flex:none; font-size:11px; letter-spacing:.1em; text-transform:uppercase;
+  color:#46d7c3; border:1px solid rgba(70,215,195,.4); border-radius:999px; padding:4px 10px; }
+.sheet .hint { font-size:12.5px; color:var(--dim); line-height:1.5; padding:8px 12px 0; }
+
+/* ---- overlays: start / permission / switching ---- */
+.overlay {
+  position:fixed; inset:0; z-index:60; background:#0a0d14;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:18px; text-align:center; padding:32px 28px; transition:opacity .35s ease;
+}
+.overlay.hidden { opacity:0; pointer-events:none; }
+.overlay .glyph { width:74px; height:74px; border-radius:50%;
+  background:radial-gradient(circle at 33% 28%, #dfe7f8 0%, #5f74b0 46%, #1c2440 82%);
+  box-shadow:0 0 50px 4px rgba(95,116,176,.35); animation:breathe 5.4s ease-in-out infinite; }
+.overlay h1 { font-size:24px; font-weight:650; margin:6px 0 0; letter-spacing:-.01em; }
+.overlay p { font-size:15.5px; line-height:1.6; color:var(--dim); max-width:34ch; margin:0; }
+.overlay .cta {
+  margin-top:10px; min-height:58px; padding:16px 42px; border-radius:999px;
+  background:#e8ebf2; color:#0a0d14; font-size:17px; font-weight:650;
+}
+.overlay .cta:active { transform:scale(.96); }
+.overlay .fine { font-size:12.5px; color:#6b7488; max-width:36ch; line-height:1.55; }
+
+#switchOverlay { background:rgba(6,8,13,.88); backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px); z-index:70; gap:22px; }
+#switchOverlay .spin { width:42px; height:42px; border-radius:50%;
+  border:2.5px solid var(--line); border-top-color:#9db9ff;
+  animation:spin 1s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+#switchMsg { font-size:16px; color:#dfe4ee; letter-spacing:.02em; }
+
+/* ---- reduced motion: state still legible via color and text ---- */
+@media (prefers-reduced-motion: reduce) {
+  #orb, #orb::after, .overlay .glyph, body[data-state="speaking"] #orb { animation:none; }
+  body[data-state="thinking"] .ripple { animation:none; opacity:.35; transform:scale(1.25); }
+  #orbscale { transition:none; transform:none; }
+  .sheet { transition:none; }
+  #switchOverlay .spin { animation:none; border-top-color:var(--line); }
+}
+</style></head><body data-state="ended">
+
+<header>
+  <button id="pill" aria-haspopup="dialog" aria-label="Session: live session. Change session.">
+    <span class="dot" aria-hidden="true"></span>
+    <span class="name" id="pillName">live session</span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+  </button>
+</header>
+
+<main>
+  <div id="orbzone" aria-hidden="true">
+    <div class="ripple"></div><div class="ripple"></div><div class="ripple"></div>
+    <div id="orbscale"><div id="orb"></div></div>
+  </div>
+  <div id="status" role="status" aria-live="polite">call ended</div>
+</main>
+
+<footer>
+  <button class="ctl" id="ccBtn" aria-pressed="false" aria-label="Show captions">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" aria-hidden="true">
+      <rect x="3" y="5.5" width="18" height="13" rx="3.5"/>
+      <path d="M11 10.3a2.5 2.5 0 1 0 0 3.4"/><path d="M17.5 10.3a2.5 2.5 0 1 0 0 3.4"/>
+    </svg>
+  </button>
+  <button class="ctl" id="muteBtn" aria-pressed="false" aria-label="Mute microphone">
+    <svg class="on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor" stroke="none"/>
+      <path d="M6 12a6 6 0 0 0 12 0"/><path d="M12 18v3"/>
+    </svg>
+    <svg class="off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor" stroke="none"/>
+      <path d="M6 12a6 6 0 0 0 12 0"/><path d="M12 18v3"/><path d="M4 4l16 16"/>
+    </svg>
+  </button>
+  <button class="ctl" id="endBtn" aria-label="End call">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 9.5c-3.3 0-6.4 1-8.9 2.9-.6.4-.8 1.2-.5 1.9l.9 1.9c.3.7 1.1 1 1.8.8l2.6-.9c.6-.2 1-.8 1-1.4v-1.3c2-.6 4.2-.6 6.2 0v1.3c0 .6.4 1.2 1 1.4l2.6.9c.7.2 1.5-.1 1.8-.8l.9-1.9c.3-.7.1-1.5-.5-1.9A14.6 14.6 0 0 0 12 9.5z"/>
+    </svg>
+  </button>
+</footer>
+
+<div id="scrim"></div>
+
+<section class="sheet" id="capSheet" role="dialog" aria-label="Captions">
+  <div class="grab" aria-hidden="true"></div>
+  <h2>Captions</h2>
+  <div class="scroll" id="capLines"><p class="empty">Replies will appear here as they are spoken.</p></div>
+</section>
+
+<section class="sheet" id="sessSheet" role="dialog" aria-label="Sessions">
+  <div class="grab" aria-hidden="true"></div>
+  <h2>Sessions</h2>
+  <div class="scroll" id="sessList"></div>
+</section>
+
+<div class="overlay" id="startOverlay">
+  <div class="glyph" aria-hidden="true"></div>
+  <h1 id="startTitle">voicebridge</h1>
+  <p id="startBody">A live call with your coding session. Your phone will ask to use the
+     microphone; audio goes only to your Mac and nowhere else.</p>
+  <button class="cta" id="startBtn">Start call</button>
+  <p class="fine" id="startFine">Speech is transcribed on-device when the browser supports it,
+     otherwise on your Mac with whisper. Say "end call" any time to hang up.</p>
+</div>
+
+<div class="overlay hidden" id="switchOverlay">
+  <div class="spin" aria-hidden="true"></div>
+  <div id="switchMsg" role="status" aria-live="polite">ending previous call</div>
+</div>
+
 <script>
+'use strict';
+/* ============================================================ state */
 const K = new URLSearchParams(location.search).get('k') || '';
-const btn=document.getElementById('btn'), state=document.getElementById('state'),
-      log=document.getElementById('log');
-let live=false, rec=null, media=null, audioCtx=null;
+const $ = id => document.getElementById(id);
+const statusEl=$('status'), pillName=$('pillName'), muteBtn=$('muteBtn'),
+      ccBtn=$('ccBtn'), capLines=$('capLines');
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const TTS = 'speechSynthesis' in window;
+
+let live=false, muted=false, state='ended';
+let gen=0;                 // listen generation: bump to invalidate in-flight mic work
+let rec=null, recActive=false, media=null, audioCtx=null;
+let wakeLock=null, speechCancelled=false;
+
+function setState(s, label){
+  state=s;
+  document.body.dataset.state = s;
+  statusEl.textContent = label !== undefined ? label : s;
+}
+
+/* mic-level meter drives the orb scale via --level (0..1) */
+let level=0, levelTarget=0;
+function bumpLevel(v){ levelTarget = Math.max(levelTarget, v); }
+(function levelLoop(){
+  level += (levelTarget - level) * .25;
+  levelTarget *= .9;
+  if(level < .004) level = 0;
+  document.documentElement.style.setProperty('--level', level.toFixed(3));
+  requestAnimationFrame(levelLoop);
+})();
+
+/* ============================================================ PWA polish */
+/* Data-URI manifest so Add to Home Screen keeps the ?k= secret in start_url
+   (the server's /manifest.json points start_url at "/" and would land on 401). */
+(function(){
+  const icon = 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
+    '<rect width="100" height="100" rx="22" fill="#0a0d14"/>' +
+    '<circle cx="50" cy="50" r="26" fill="#5f74b0"/>' +
+    '<circle cx="42" cy="42" r="10" fill="#dfe7f8" opacity=".8"/></svg>');
+  const man = { name:'voicebridge', short_name:'voicebridge', display:'standalone',
+    background_color:'#0a0d14', theme_color:'#0a0d14',
+    start_url:location.href, scope:new URL('/', location.href).href,
+    icons:[{ src:icon, sizes:'any', type:'image/svg+xml' }] };
+  const l = document.createElement('link');
+  l.rel = 'manifest';
+  l.href = 'data:application/manifest+json,' + encodeURIComponent(JSON.stringify(man));
+  document.head.appendChild(l);
+})();
+
+async function acquireWakeLock(){
+  try { if('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); }
+  catch(e){ /* low battery or unsupported: fine, the call still works */ }
+}
+function releaseWakeLock(){ try{ wakeLock && wakeLock.release(); }catch(e){} wakeLock=null; }
+
+/* ============================================================ speech out */
+let voices=[];
+function refreshVoices(){ if(TTS) voices = speechSynthesis.getVoices(); }
+if(TTS) speechSynthesis.onvoiceschanged = refreshVoices;
+refreshVoices();
 
 function pickVoice(){
-  const vs=speechSynthesis.getVoices().filter(v=>v.lang.startsWith('en'));
-  return vs.find(v=>/siri|premium|enhanced|natural/i.test(v.name))||vs[0];
+  const en = voices.filter(v => (v.lang||'').toLowerCase().startsWith('en'));
+  return en.find(v => /siri|premium|enhanced|natural|neural/i.test(v.name)) || en[0] || voices[0];
 }
-// Chrome/Safari silently cut off long utterances (a known bug), which made
-// it stop after the first sentence. Split into sentence-sized chunks and
-// chain them via onend so the WHOLE reply is spoken.
-function say(text, cb){
+/* Mobile browsers cut long utterances (a known engine bug), so split into
+   sentence-sized chunks and chain them; each chunk is short enough that the
+   per-utterance timeout never fires. */
+function chunkText(text, max){
+  const sents = text.match(/[^.!?\n]+[.!?]*\s*/g) || [text];
+  const out = [];
+  for(const s of sents){
+    if(out.length && (out[out.length-1] + s).length <= max) out[out.length-1] += s;
+    else if(s.length <= max) out.push(s);
+    else for(let i=0; i<s.length; i+=max) out.push(s.slice(i, i+max));
+  }
+  return out.map(x => x.trim()).filter(Boolean);
+}
+function stopSpeaking(){ speechCancelled = true; if(TTS) speechSynthesis.cancel(); }
+function say(text, done){
+  if(!TTS){ done && done(); return; }
   speechSynthesis.cancel();
-  const best=pickVoice();
-  const parts=(text.match(/[^.!?]+[.!?]*\s*/g)||[text])
-    .reduce((a,s)=>{ // keep chunks <=160 chars
-      if(a.length&&(a[a.length-1]+s).length<=160)a[a.length-1]+=s; else a.push(s);
-      return a;},[]);
-  let i=0;
+  speechCancelled = false;
+  const parts = chunkText(text, 170);
+  let i = 0;
   (function next(){
-    if(i>=parts.length){cb&&cb();return;}
-    const u=new SpeechSynthesisUtterance(parts[i++].trim());
-    if(best)u.voice=best; u.rate=1.0;
-    u.onend=next; u.onerror=next;
+    if(speechCancelled) return;
+    if(i >= parts.length){ done && done(); return; }
+    const u = new SpeechSynthesisUtterance(parts[i++]);
+    const v = pickVoice(); if(v) u.voice = v;
+    u.rate = 1.0;
+    u.onend = () => setTimeout(next, 50);
+    u.onerror = () => setTimeout(next, 50);
     speechSynthesis.speak(u);
   })();
 }
-function add(cls,t){const d=document.createElement('div');d.className=cls;
-  d.textContent=(cls==='you'?'you: ':'')+t;log.prepend(d);}
-async function ask(text){
-  add('you',text); state.textContent='thinking...';
-  try{
-    const r=await fetch('/ask?k='+encodeURIComponent(K),{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
-    const j=await r.json(); add('bot',j.reply);
-    state.textContent='speaking...';
-    say(j.reply,()=>{ if(live) setTimeout(listen,350); });
-  }catch(e){ state.textContent='connection error'; if(live) setTimeout(listen,1500); }
+/* Backgrounding pauses synthesis on both platforms; resume when we return,
+   and re-arm the wake lock (it is released whenever the tab hides). */
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState !== 'visible') return;
+  if(TTS && speechSynthesis.paused) speechSynthesis.resume();
+  if(live) acquireWakeLock();
+  if(live && !muted && state === 'listening' && !recActive) listen();
+});
+
+/* ============================================================ captions */
+function captionAdd(role, text){
+  const empty = capLines.querySelector('.empty');
+  if(empty) empty.remove();
+  const d = document.createElement('div');
+  d.className = 'line ' + role;
+  const w = document.createElement('span');
+  w.className = 'who';
+  w.textContent = role === 'you' ? 'you' : 'agent';
+  const t = document.createElement('span');
+  t.textContent = text;
+  d.append(w, t);
+  capLines.appendChild(d);
+  capLines.scrollTop = capLines.scrollHeight;
 }
-// Path A: native speech recognition (Chrome/Android, iOS Safari 14.5+)
-const SR = window.SpeechRecognition||window.webkitSpeechRecognition;
+
+/* ============================================================ the turn loop */
+async function ask(text){
+  captionAdd('you', text);
+  setState('thinking');
+  try{
+    const r = await fetch('/ask?k=' + encodeURIComponent(K), {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ text }) });
+    const j = await r.json();
+    const reply = (j.reply || '').trim() || 'No reply came back.';
+    if(!live) return;
+    captionAdd('agent', reply);
+    setState('speaking');
+    say(reply, () => {
+      if(!live) return;
+      if(muted){ setState('muted'); }
+      else { setState('listening'); setTimeout(listen, 300); }
+    });
+  }catch(e){
+    if(!live) return;
+    setState('listening', 'connection lost, retrying');
+    if(!muted) setTimeout(listen, 1600);
+  }
+}
+function handleUtterance(t){
+  if(/^(stop listening|end call|hang up|goodbye)[.!]?$/i.test(t)){ endCall(); return; }
+  if(t) ask(t);
+  else if(live && !muted) setTimeout(listen, 300);
+}
+
+/* ---- path A: native speech recognition (Chrome Android, iOS Safari 14.5+) */
 function listenSR(){
-  rec=new SR(); rec.lang='en-US'; rec.interimResults=false; rec.maxAlternatives=1;
-  state.textContent='listening... (speak)';
-  rec.onresult=e=>{const t=e.results[0][0].transcript.trim();
-    if(/^(stop listening|end call|hang up)[.!]?$/i.test(t)){stop();return;}
-    if(t)ask(t); else if(live)listen();};
-  rec.onerror=()=>{ if(live) setTimeout(listen,800); };
-  rec.onend=()=>{ if(live && state.textContent.startsWith('listening')) setTimeout(listen,400); };
+  if(recActive) return;
+  const myGen = gen;
+  rec = new SR();
+  rec.lang = 'en-US';
+  rec.interimResults = true;   // interim events drive the orb pulse
+  rec.maxAlternatives = 1;
+  recActive = true;
+  setState('listening');
+  let finalText = '';
+  rec.onresult = e => {
+    if(myGen !== gen) return;
+    bumpLevel(.65);
+    for(let i = e.resultIndex; i < e.results.length; i++)
+      if(e.results[i].isFinal) finalText += e.results[i][0].transcript;
+    if(finalText){
+      const t = finalText.trim(); finalText = '';
+      try{ rec.stop(); }catch(_){}
+      handleUtterance(t);
+    }
+  };
+  rec.onspeechstart = () => { if(myGen === gen) bumpLevel(.6); };
+  rec.onerror = ev => {
+    recActive = false;
+    if(myGen !== gen) return;
+    if(ev.error === 'not-allowed' || ev.error === 'service-not-allowed'){ micDenied(); return; }
+    if(live && !muted && state === 'listening') setTimeout(listen, 900);
+  };
+  rec.onend = () => {
+    recActive = false;
+    if(myGen !== gen) return;
+    if(live && !muted && state === 'listening') setTimeout(listen, 400);
+  };
   rec.start();
 }
-// Path B: record with silence detection, server-side whisper
+
+/* ---- path B: record + silence detection, whisper on the Mac via /stt */
 async function listenWhisper(){
-  state.textContent='listening... (speak)';
-  const stream=media||(media=await navigator.mediaDevices.getUserMedia({audio:true}));
-  audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
-  const src=audioCtx.createMediaStreamSource(stream), an=audioCtx.createAnalyser();
-  an.fftSize=2048; src.connect(an);
-  const buf=new Float32Array(an.fftSize);
-  const mr=new MediaRecorder(stream); const chunks=[];
-  mr.ondataavailable=e=>chunks.push(e.data);
-  let spoke=false, quiet=0;
-  const iv=setInterval(()=>{
+  if(recActive) return;
+  const myGen = gen;
+  setState('listening');
+  try{ media = media || await navigator.mediaDevices.getUserMedia({ audio:true }); }
+  catch(e){ micDenied(); return; }
+  if(myGen !== gen) return;
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  if(audioCtx.state === 'suspended') audioCtx.resume();
+  const src = audioCtx.createMediaStreamSource(media);
+  const an = audioCtx.createAnalyser(); an.fftSize = 2048; src.connect(an);
+  const buf = new Float32Array(an.fftSize);
+  const mr = new MediaRecorder(media); const chunks = [];
+  mr.ondataavailable = e => chunks.push(e.data);
+  recActive = true;
+  let spoke = false, quiet = 0, idle = 0;
+  const iv = setInterval(() => {
+    if(myGen !== gen){ clearInterval(iv); try{ mr.stop(); }catch(_){} return; }
     an.getFloatTimeDomainData(buf);
-    let s=0; for(const v of buf) s+=v*v; const rms=Math.sqrt(s/buf.length);
-    if(rms>0.02){spoke=true;quiet=0;} else if(spoke){quiet+=1;}
-    if((spoke&&quiet>=8)||(!spoke&&iv._n++>150)){clearInterval(iv);mr.stop();}
-  },250); iv._n=0;
-  mr.onstop=async()=>{
-    src.disconnect();
-    if(!spoke){ if(live)listen(); return; }
-    state.textContent='transcribing...';
-    const blob=new Blob(chunks,{type:mr.mimeType||'audio/webm'});
+    let s = 0; for(const v of buf) s += v*v;
+    const rms = Math.sqrt(s / buf.length);
+    levelTarget = Math.max(levelTarget, Math.min(1, rms * 10));
+    if(rms > .02){ spoke = true; quiet = 0; } else if(spoke) quiet++;
+    if((spoke && quiet >= 6) || (!spoke && ++idle > 200)){ clearInterval(iv); mr.stop(); }
+  }, 250);
+  mr.onstop = async () => {
+    src.disconnect(); recActive = false;
+    if(myGen !== gen) return;
+    if(!spoke){ if(live && !muted) listen(); return; }
+    setState('thinking', 'thinking');
+    const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
     try{
-      const r=await fetch('/stt?k='+encodeURIComponent(K),{method:'POST',body:blob});
-      const j=await r.json();
-      const t=(j.text||'').trim();
-      if(/^(stop listening|end call|hang up)[.!]?$/i.test(t)){stop();return;}
-      if(t)ask(t); else if(live)listen();
-    }catch(e){ if(live) setTimeout(listen,1500); }
+      const r = await fetch('/stt?k=' + encodeURIComponent(K), { method:'POST', body:blob });
+      const j = await r.json();
+      if(myGen !== gen) return;
+      handleUtterance((j.text || '').trim());
+    }catch(e){
+      if(live && !muted) setTimeout(listen, 1600);
+    }
   };
   mr.start();
 }
-function listen(){ if(!live)return; (SR?listenSR:listenWhisper)(); }
-function stop(){ live=false; try{rec&&rec.stop()}catch(e){}
-  speechSynthesis.cancel(); btn.textContent='Start call'; btn.classList.remove('live');
-  state.textContent='call ended'; }
-btn.onclick=()=>{
-  if(live){stop();return;}
-  live=true; btn.textContent='End call'; btn.classList.add('live');
-  speechSynthesis.getVoices();
-  say('Connected. Talk to me.',()=>listen());
-};
-</script></body></html>"""
+function listen(){ if(!live || muted) return; (SR ? listenSR : listenWhisper)(); }
+function stopListening(){
+  gen++;
+  if(rec){ try{ rec.onend = null; rec.onerror = null; rec.stop(); }catch(_){} rec = null; }
+  recActive = false;
+}
+
+/* ============================================================ call lifecycle */
+const startOverlay=$('startOverlay'), startBtn=$('startBtn');
+function micDenied(){
+  live = false; stopListening(); stopSpeaking(); releaseWakeLock();
+  setState('ended', 'microphone blocked');
+  $('startTitle').textContent = 'Microphone is blocked';
+  $('startBody').textContent = 'Allow microphone access for this site in your browser settings, then start the call again.';
+  $('startFine').textContent = 'iOS: Settings, Safari, Microphone. Android: the lock icon in the address bar.';
+  startBtn.textContent = 'Try again';
+  startOverlay.classList.remove('hidden');
+}
+async function startCall(){
+  startOverlay.classList.add('hidden');
+  live = true; muted = false;
+  muteBtn.classList.remove('muted');
+  muteBtn.setAttribute('aria-pressed', 'false');
+  refreshVoices();
+  acquireWakeLock();
+  setState('thinking', 'connecting');
+  /* Prime the mic permission inside the tap gesture so the browser prompt has
+     clear context; on the native-SR path release the stream right away so it
+     never fights the recognizer for the device. */
+  try{
+    const s = await navigator.mediaDevices.getUserMedia({ audio:true });
+    if(SR) s.getTracks().forEach(t => t.stop()); else media = s;
+  }catch(e){ micDenied(); return; }
+  /* This first utterance also unlocks SpeechSynthesis under autoplay rules. */
+  setState('speaking', 'connecting');
+  say('Connected.', () => { if(live) listen(); });
+}
+function endCall(){
+  live = false;
+  stopListening(); stopSpeaking(); releaseWakeLock();
+  setState('ended', 'call ended');
+  $('startTitle').textContent = 'Call ended';
+  $('startBody').textContent = 'Your session is still running on the Mac. Start a new call whenever you are ready.';
+  startBtn.textContent = 'Start call';
+  startOverlay.classList.remove('hidden');
+}
+startBtn.addEventListener('click', startCall);
+$('endBtn').addEventListener('click', endCall);
+
+muteBtn.addEventListener('click', () => {
+  if(!live) return;
+  muted = !muted;
+  muteBtn.classList.toggle('muted', muted);
+  muteBtn.setAttribute('aria-pressed', String(muted));
+  muteBtn.setAttribute('aria-label', muted ? 'Unmute microphone' : 'Mute microphone');
+  if(muted){
+    stopListening();
+    if(state === 'listening') setState('muted');
+  }else if(state === 'muted' || state === 'listening'){
+    setState('listening'); listen();
+  } /* muted flipped during thinking/speaking: the turn loop checks it after */
+});
+
+/* ============================================================ sheets */
+const scrim=$('scrim'), capSheet=$('capSheet'), sessSheet=$('sessSheet');
+/* sessions sheet is modal (scrim); captions are an independent toggle */
+function openSessSheet(){ sessSheet.classList.add('open'); document.body.classList.add('sheet-open'); }
+function closeSessSheet(){ sessSheet.classList.remove('open'); document.body.classList.remove('sheet-open'); }
+scrim.addEventListener('click', closeSessSheet);
+ccBtn.addEventListener('click', () => {
+  const open = capSheet.classList.toggle('open');
+  ccBtn.classList.toggle('active', open);
+  ccBtn.setAttribute('aria-pressed', String(open));
+  ccBtn.setAttribute('aria-label', open ? 'Hide captions' : 'Show captions');
+  if(open) capLines.scrollTop = capLines.scrollHeight;
+});
+
+/* ============================================================ sessions */
+const sessList=$('sessList');
+async function fetchSessions(){
+  /* Needs the proposed GET /sessions endpoint; returns null when the relay
+     does not have it yet and the sheet falls back to the focused session. */
+  try{
+    const r = await fetch('/sessions?k=' + encodeURIComponent(K));
+    if(!r.ok) return null;
+    const j = await r.json();
+    return Array.isArray(j.sessions) ? j.sessions : null;
+  }catch(e){ return null; }
+}
+function sessionRow(s){
+  const b = document.createElement('button');
+  b.className = 'sess' + (s.current ? ' current' : '');
+  const dot = document.createElement('span'); dot.className = 'sdot';
+  const meta = document.createElement('span'); meta.className = 'meta';
+  const n = document.createElement('span'); n.className = 'n'; n.textContent = s.name || 'session';
+  meta.appendChild(n);
+  if(s.cwd){ const c = document.createElement('span'); c.className = 'c'; c.textContent = s.cwd; meta.appendChild(c); }
+  b.append(dot, meta);
+  if(s.current){ const t = document.createElement('span'); t.className = 'tag'; t.textContent = 'on call'; b.appendChild(t); }
+  b.addEventListener('click', () => switchTo(s));
+  return b;
+}
+$('pill').addEventListener('click', async () => {
+  sessList.textContent = '';
+  const hint = document.createElement('p'); hint.className = 'hint';
+  hint.textContent = 'Loading sessions...';
+  sessList.appendChild(hint);
+  openSessSheet();
+  const sessions = await fetchSessions();
+  sessList.textContent = '';
+  if(sessions && sessions.length){
+    sessions.forEach(s => sessList.appendChild(sessionRow(s)));
+  }else{
+    sessList.appendChild(sessionRow({ name: pillName.textContent, current:true }));
+    const h = document.createElement('p'); h.className = 'hint';
+    h.textContent = 'This call follows the focused session on your Mac. A full roster needs GET /sessions on the relay.';
+    sessList.appendChild(h);
+  }
+});
+const switchOverlay=$('switchOverlay'), switchMsg=$('switchMsg');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function switchTo(s){
+  closeSessSheet();
+  if(s.current) return;
+  /* the "ending previous call" affordance: freeze the loop, show intent */
+  switchMsg.textContent = 'ending previous call';
+  switchOverlay.classList.remove('hidden');
+  stopSpeaking(); stopListening();
+  let ok = false;
+  try{
+    const r = await fetch('/switch?k=' + encodeURIComponent(K), {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ id: s.id }) });
+    ok = r.ok;
+  }catch(e){}
+  if(ok){
+    pillName.textContent = s.name || 'session';
+    $('pill').setAttribute('aria-label', 'Session: ' + pillName.textContent + '. Change session.');
+    switchMsg.textContent = 'connected to ' + pillName.textContent;
+    await sleep(900);
+  }else{
+    switchMsg.textContent = 'switching needs POST /switch on the relay';
+    await sleep(1900);
+  }
+  switchOverlay.classList.add('hidden');
+  if(live){ if(muted) setState('muted'); else { setState('listening'); listen(); } }
+}
+/* Name the pill on load if the proposed roster endpoint exists. */
+fetchSessions().then(list => {
+  const cur = list && list.find(s => s.current);
+  if(cur && cur.name){
+    pillName.textContent = cur.name;
+    $('pill').setAttribute('aria-label', 'Session: ' + cur.name + '. Change session.');
+  }
+});
+
+/* First paint: pre-permission explainer is showing; body starts data-state
+   "ended" so the orb sits dim behind it until the call begins. */
+</script></body></html>
+"""
 
 # Shown on 401 for "/": the installed PWA loses ?k= (a manifest start_url
 # must not carry the secret), so this page auto-recovers from localStorage,
@@ -351,13 +936,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(401, b"unauthorized", "text/plain")
                 return
             from . import sessions as _sess
-            rows = [{"sid": r.get("sid", ""), "label": r.get("label", ""),
-                     "state": r.get("state", "")} for r in _sess.roster()]
-            active = _read_json(ACTIVE) or {}
-            self._reply(200, json.dumps(
-                {"sessions": rows,
-                 "active": active.get("session_id", "")}).encode(),
-                "application/json")
+            active = (_read_json(ACTIVE) or {}).get("session_id", "")
+            rows = [{"id": r.get("sid", ""), "name": r.get("label", ""),
+                     "state": r.get("state", ""),
+                     "current": r.get("sid", "") == active}
+                    for r in _sess.roster()]
+            self._reply(200, json.dumps({"sessions": rows}).encode(),
+                        "application/json")
         elif path == "/last":
             # Hear another session's latest reply WITHOUT switching/injecting.
             if not self._authed():
@@ -411,19 +996,29 @@ class Handler(BaseHTTPRequestHandler):
                         "application/json")
             return
 
-        if path == "/switch":  # {"query": "jobhunt"} -> move the call there
+        if path == "/switch":  # {"id": sid} or {"query": "jobhunt"}
             try:
-                q = (json.loads(raw or b"{}").get("query") or "").strip()
+                body = json.loads(raw or b"{}")
+                sid = (body.get("id") or "").strip()
+                q = (body.get("query") or "").strip()
             except Exception:
                 self._reply(400, b"bad request", "text/plain")
                 return
             from . import sessions as _sess
-            msg = _sess.switch(q) if q else "Which session?"
+            if sid:
+                msg = _sess.switch_sid(sid)
+            elif q:
+                msg = _sess.switch(q)
+            else:
+                msg = "Which session?"
+            ok = msg.startswith("Voice moved")
             try:
                 EPOCH.write_text(str(time.time()))   # end any in-flight turn
             except Exception:
                 pass
-            self._reply(200, json.dumps({"result": msg}).encode(),
+            self._reply(200 if ok else 404,
+                        json.dumps({"ok": ok, "name": msg,
+                                    "result": msg}).encode(),
                         "application/json")
             return
 
