@@ -219,9 +219,25 @@ def clean_for_speech(text: str, max_chars: int = 0) -> str:
     return head if not rest else head + "..."
 
 
+def _code_landmark(m) -> str:
+    """Spoken landmark for a fenced code block, with its size, so the ear and
+    the eye meet AT the code instead of drifting apart. Swallowing a 30-line
+    block into "(code block)" (~0.5s of speech) was the #1 reason listeners
+    lost their place: the voice raced past code still filling the screen."""
+    block = m.group(0)
+    lines = max(1, block.count("\n") - 1)   # minus the two fence lines-ish
+    # language from the opening fence, if given (```python -> python)
+    first = block.lstrip("`").split("\n", 1)[0].strip()
+    lang = first if first.isalpha() and len(first) <= 12 else ""
+    what = f"{lang} code" if lang else "code"
+    if lines <= 1:
+        return f" (a line of {what} on screen) "
+    return f" ({what} on screen here, about {lines} lines, skipping it) "
+
+
 def _strip_for_speech(text: str) -> str:
     """Markdown/code stripping, shared by the capped and stashing paths."""
-    t = _FENCE.sub(" (code block) ", text)
+    t = _FENCE.sub(_code_landmark, text)
     t = _LINK.sub(r"\1", t)
     t = _URL.sub(" a link ", t)
     t = _INLINE_CODE.sub(r"\1", t)

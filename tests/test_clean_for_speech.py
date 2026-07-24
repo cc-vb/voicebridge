@@ -30,6 +30,23 @@ def test_clean_for_speech_empty_is_safe():
     assert core.clean_for_speech("") == ""
 
 
+def test_code_block_becomes_a_spoken_landmark_with_size():
+    # A fenced block must NOT vanish into two words; it should announce itself
+    # so the listener's eye and ear meet at the code (the "lose my place" fix).
+    out = core.clean_for_speech(
+        "Here:\n```python\na = 1\nb = 2\nc = 3\nreturn a\n```\nDone.")
+    assert "code on screen" in out
+    assert "lines" in out            # carries a size
+    assert "a = 1" not in out        # never reads the code aloud
+    assert "python" in out           # language when the fence gives it
+
+
+def test_inline_code_is_still_kept_not_landmarked():
+    out = core.clean_for_speech("run `npm test` first")
+    assert "npm test" in out
+    assert "code on screen" not in out
+
+
 if __name__ == "__main__":
     test_clean_for_speech_runs_on_all_markdown()
     test_clean_for_speech_empty_is_safe()

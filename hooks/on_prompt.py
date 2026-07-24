@@ -61,19 +61,26 @@ def main() -> int:
         from vb import talkd
         talkd.record_prompt(sid, tp)
 
+    voiced = bool(sid and core.is_voiced(sid))
     # A new prompt in the VOICED session means you've moved on: stop its speech
-    # mid-sentence. Gate on is_voiced so a prompt typed in some OTHER (non-voice)
-    # session never silences the session you're actually listening to.
-    if sid and core.is_voiced(sid):
+    # mid-sentence. Only when THIS session is voiced, so a prompt typed in some
+    # OTHER (non-voice) session never silences the session you're listening to.
+    if voiced:
         core.hush()
 
+    # Gist-first (only when replies are being spoken): leading with a one-line
+    # summary means the listener gets the whole point without having to track a
+    # wall of text on screen, which is the real fix for "I lost my place".
+    gist = (" Begin a substantive reply with a single short spoken-style "
+            "sentence that states the outcome, then give the detail."
+            if voiced else "")
     lang = core.get_lang().lower()
     # English-only now: only inject a non-English directive if the user
     # explicitly pinned one; otherwise just the spoken-tone note.
     if lang and lang not in ("english", "auto", "en"):
-        print(directive(lang))
+        print(directive(lang) + gist)
     else:
-        print(TONE)
+        print(TONE + gist)
 
     # When voice is ON for THIS session, surface a compact status + ONE
     # rotating discovery hint in the gray hook area. Unlike the shared status
@@ -81,7 +88,7 @@ def main() -> int:
     # can carry a tip without becoming permanent clutter. Silent otherwise, so
     # a non-voice session never sees it.
     try:
-        if sid and core.is_voiced(sid):
+        if voiced:
             nf = core.STATE_DIR / "hooktip_n"
             try:
                 n = int(nf.read_text().strip()) + 1
