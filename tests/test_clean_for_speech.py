@@ -17,8 +17,8 @@ def test_clean_for_speech_runs_on_all_markdown():
     out = core.clean_for_speech(
         "Here is ```def f(): pass``` and `inline` and **bold** and "
         "[a link](http://example.com) and a plain https://x.io URL.\n- bullet")
-    assert "def f" not in out          # fenced code dropped
-    assert "(code block)" in out
+    assert "def f" not in out          # fenced code never read aloud
+    assert "code on screen" in out     # replaced by a spoken landmark
     assert "inline" in out             # inline code kept, backticks gone
     assert "`" not in out
     assert "**" not in out             # markdown tokens gone
