@@ -129,7 +129,7 @@ Open 2-3 Claude sessions in different project folders first.
 - **Real:** register your actual Codex/Cursor log glob and `vb agent test` it.
 
 ## 8. Phone
-- **Do:** `vb phone` (or `/phone`).
+- **Do:** `/vb-phone` (or `/vb-phone`).
 - **Expect:** prints a URL and a scannable QR. Scan on phone, tap Start,
   say something , the Mac session answers and the phone speaks the reply.
   Keep the Mac awake + session focused.

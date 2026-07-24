@@ -38,11 +38,13 @@ BIN_DIR="/opt/homebrew/bin"; [ -d "$BIN_DIR" ] || BIN_DIR="/usr/local/bin"
 ln -sf "$REPO_DIR/bin/vb" "$BIN_DIR/vb"
 echo "  linked: $BIN_DIR/vb -> $REPO_DIR/bin/vb"
 
-say_step "4/6 Slash commands (/voice-on, /voice-off, /phone, /voice-help, ...)"
+say_step "4/6 Slash commands (/voice-on, /voice-off, /vb-phone, /voice-help, ...)"
 mkdir -p "$CLAUDE_DIR/commands"
 # Every command in commands/, not a hand-kept list: that list silently fell
 # behind and left /phone, /voice-stop and /voice-off-all uninstalled, so they
 # existed in the repo and did nothing on the machine.
+# Retired names: /phone became /vb-phone; remove the stale entry
+rm -f "$CLAUDE_DIR/commands/phone.md" "$CLAUDE_DIR/commands/voice-stop.md"
 for src in "$REPO_DIR"/commands/*.md; do
   # Point the command at wherever vb actually landed on this machine.
   sed "s|/opt/homebrew/bin/vb|$BIN_DIR/vb|g" "$src" \

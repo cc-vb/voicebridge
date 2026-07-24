@@ -30,7 +30,7 @@ HINT = """\
     /voice-off       stop listening in this session
     vb off           stop listening everywhere
 
-  Later: "vb phone" to talk from your phone, "vb voice" to change the voice.
+  Later: "/vb-phone" to talk from your phone, "vb voice" to change the voice.
 """
 
 

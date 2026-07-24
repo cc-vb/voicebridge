@@ -35,7 +35,7 @@ agents by voice. Not "look, voice dictation." Record screen + audio.
    (This is the line that makes people lean in, it watched the fleet for you.)
 
 5. Close on the phone (optional, strong):
-   > Type `/phone`, hold up your phone, scan the QR, tap Start, and say
+   > Type `/vb-phone`, hold up your phone, scan the QR, tap Start, and say
    > "what did signup end up changing?" Let the phone speak the answer.
 
 6. One-liner to end on (say to camera):

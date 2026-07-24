@@ -55,7 +55,7 @@ _INTRO = [
     'Fn+F8 (or Ctrl+Alt+Cmd+H) pauses me mid-word; press again to resume',
     'too fast or slow? tap Fn+F9 / Fn+F7 while I talk (or say "faster")',
     'others nearby? say "wake word mode" so I only reply after "hey Claude"',
-    'talk to this session from your phone: run  vb phone  and scan the QR',
+    'talk to this session from your phone: run /vb-phone and scan the QR',
 ]
 
 
@@ -82,7 +82,7 @@ def _pool():
          lambda: _safe(core.get_engine) == "kokoro", 2),
         ("voice", 'change my voice with  vb voice  (dozens of options)',
          lambda: False, 1),
-        ("phone", 'take this call anywhere: run  vb phone  and scan the QR',
+        ("phone", 'take this call anywhere: run /vb-phone and scan the QR',
          lambda: (core.STATE_DIR / "call_secret").exists(), 2),
         ("off", 'say "stop listening" to mute, or /voice-off to end',
          lambda: False, 2),
