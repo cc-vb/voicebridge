@@ -107,6 +107,25 @@ def _epoch() -> str:
 # drop the RESPONSE after the request injected, so the page must be able to
 # re-POST the same turn id and resume waiting without a second injection.
 _ASKED: dict = {}
+_ASKED_FILE = core.STATE_DIR / "asked.json"
+
+
+def _asked_load() -> None:
+    """Restore the turn ledger after a relay restart: without this, a client
+    retrying an already-injected turn against a fresh relay would inject the
+    same prompt a second time (critic finding #8)."""
+    try:
+        _ASKED.update(json.loads(_ASKED_FILE.read_text()))
+    except Exception:
+        pass
+
+
+def _asked_save() -> None:
+    try:
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _ASKED_FILE.write_text(json.dumps(_ASKED))
+    except Exception:
+        pass
 
 # SSE subscribers: one queue per open /events connection. The stream is the
 # seamless channel the polling never was: replies, delivery acks, and
@@ -131,6 +150,7 @@ def _prune_asked(max_age: float = 900.0) -> None:
     now = time.time()
     for k in [k for k, v in _ASKED.items() if now - v.get("ts", 0) > max_age]:
         _ASKED.pop(k, None)
+    _asked_save()   # ledger survives relay restarts (idempotency holds)
 
 
 def _await_reply(rec: dict) -> str:
@@ -3260,7 +3280,7 @@ class Handler(BaseHTTPRequestHandler):
                     .encode())
                 self.wfile.flush()
 
-            q = _queue.Queue()
+            q = _queue.Queue(maxsize=64)   # bounded: dead clients can't grow it forever
             with _SUBS_LOCK:
                 _SUBS.add(q)
             try:
@@ -3544,6 +3564,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_daemon() -> int:
+    _asked_load()
     core.log(f"call: relay listening on 127.0.0.1:{PORT}")
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
     return 0
