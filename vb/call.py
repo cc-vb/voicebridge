@@ -29,7 +29,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import core, inject
+from . import core, inject, oslayer
 from .talkd import ACTIVE, _read_json
 
 PID = core.STATE_DIR / "call.pid"
@@ -40,6 +40,13 @@ if not os.path.exists(FFMPEG):
 PORT = int(os.environ.get("VB_CALL_PORT", "8790"))
 TIMEOUT = float(os.environ.get("VB_CALL_TIMEOUT", "90"))
 DRYRUN = bool(os.environ.get("VB_CALL_DRYRUN"))
+
+# Attachments from the phone land here, then the turn names their paths and
+# the session reads them itself. The files never travel through the prompt:
+# injection is a clipboard paste of TEXT, so disk is the only honest channel.
+UPLOAD_DIR = core.STATE_DIR / "uploads"
+MAX_UPLOAD = int(os.environ.get("VB_UPLOAD_MAX", str(25 * 1024 * 1024)))
+UPLOAD_KEEP_DAYS = float(os.environ.get("VB_UPLOAD_KEEP_DAYS", "7"))
 
 
 def _secret() -> str:
@@ -71,6 +78,131 @@ def _write_secret(s: str) -> None:
         os.chmod(path, 0o600)
     except OSError:
         pass
+
+
+_EXT_BY_TYPE = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+    "image/webp": ".webp", "image/heic": ".heic", "image/heif": ".heic",
+    "application/pdf": ".pdf", "text/plain": ".txt", "text/csv": ".csv",
+}
+# What Claude Code can actually look at as an image. Anything else that is
+# still an image (HEIC, chiefly, which is what an iPhone hands you) gets
+# transcoded on the way in rather than landing as a file it cannot open.
+_READABLE_IMG = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+
+def _safe_name(name: str) -> str:
+    """A phone-supplied filename reduced to something that cannot escape the
+    upload directory. The name arrives in a header from a public URL, so it
+    is attacker-controlled in the only sense that matters: '../../.ssh/id_rsa'
+    must become a leaf, not a path."""
+    name = (name or "").replace("\\", "/").split("/")[-1].strip()
+    name = "".join(c for c in name if c.isalnum() or c in "._- ").strip()
+    while ".." in name:
+        name = name.replace("..", ".")
+    name = name.strip(". ")
+    return name[:80] or "attachment"
+
+
+def _sniff_ext(raw: bytes) -> str:
+    """Extension from the bytes themselves. Phones lie about (or omit) both
+    the filename and the content type, and a photo saved as '.jpg' that is
+    really HEIC would otherwise reach the session unreadable."""
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return ".webp"
+    if raw[4:8] == b"ftyp" and raw[8:12] in (b"heic", b"heix", b"hevc",
+                                             b"mif1", b"heim", b"msf1"):
+        return ".heic"
+    if raw[:5] == b"%PDF-":
+        return ".pdf"
+    return ""
+
+
+def _to_readable_image(path: str) -> str:
+    """Turn a HEIC photo into something the session can actually view.
+
+    iPhone photos are HEIC and Claude cannot open them, so this is the whole
+    difference between 'attached a photo' and 'attached a file it can only
+    read the name of'. The conversion itself is per-OS and therefore lives in
+    oslayer. Returns the path to use: the original, unchanged, if no
+    converter on this machine could manage it."""
+    out = os.path.splitext(path)[0] + ".jpg"
+    if oslayer.heic_to_jpeg(path, out):
+        try:
+            os.remove(path)     # the unreadable original is dead weight
+        except OSError:
+            pass
+        return out
+    core.log(f"upload: no HEIC converter available, keeping {path} as-is")
+    return path
+
+
+def _prune_uploads() -> None:
+    """Drop attachments older than the keep window. Every photo sent from the
+    phone stays on disk forever otherwise, and this directory is not one
+    anybody thinks to go and empty."""
+    cutoff = time.time() - UPLOAD_KEEP_DAYS * 86400
+    try:
+        for sub in UPLOAD_DIR.iterdir():
+            if not sub.is_dir():
+                continue
+            for f in sub.iterdir():
+                try:
+                    if f.is_file() and f.stat().st_mtime < cutoff:
+                        f.unlink()
+                except OSError:
+                    pass
+            try:
+                sub.rmdir()         # only succeeds once it is empty
+            except OSError:
+                pass
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        core.log(f"upload: prune failed: {e}")
+
+
+def _save_upload(raw: bytes, name: str, ctype: str) -> dict:
+    """Write one attachment and return {path, name, kind} for the phone.
+
+    Stored per session so two agents' attachments never mingle, and stamped
+    with the time so the third photo named IMG_0001.jpg does not silently
+    overwrite the first two."""
+    sid = _active_sid() or "session"
+    sid = "".join(c for c in sid if c.isalnum() or c in "-_")[:40] or "session"
+    d = UPLOAD_DIR / sid
+    d.mkdir(parents=True, exist_ok=True)
+    oslayer.secure_file(str(UPLOAD_DIR), dirs=True)   # a public URL feeds this
+    oslayer.secure_file(str(d), dirs=True)
+    base = _safe_name(name)
+    stem, ext = os.path.splitext(base)
+    real = _sniff_ext(raw) or ext or _EXT_BY_TYPE.get(
+        (ctype or "").split(";")[0].strip().lower(), "")
+    if real and real.lower() != ext.lower():
+        ext = real                      # believe the bytes, not the label
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    path = str(d / f"{stamp}-{stem or 'attachment'}{ext or ''}")
+    n = 1
+    while os.path.exists(path):
+        path = str(d / f"{stamp}-{stem or 'attachment'}-{n}{ext or ''}")
+        n += 1
+    with open(path, "wb") as f:
+        f.write(raw)
+    oslayer.secure_file(path)
+    if ext.lower() in (".heic", ".heif"):
+        path = _to_readable_image(path)
+    kind = ("image" if os.path.splitext(path)[1].lower() in _READABLE_IMG
+            else "file")
+    core.log(f"upload: saved {path} ({len(raw)} bytes, {kind})")
+    _prune_uploads()
+    return {"path": path, "name": os.path.basename(path), "kind": kind,
+            "size": len(raw)}
 
 
 def _target_transcript() -> str:
@@ -368,6 +500,50 @@ PAGE = r"""<!DOCTYPE html>
        Phone). A playing preview also dies with stopSpeaking(), so it can
        never talk over a reply or a barge-in.
 
+    TASK 3, ATTACHMENTS (the paperclip):
+   11. A photo of what is on your screen is the one thing a phone can give
+       a coding session that a laptop cannot, so the composer grew a
+       36px paperclip (#clipBtn) left of the mic driving a single hidden
+       <input type=file multiple> (#pickFile). One input, no custom sheet:
+       iOS and Android already offer Camera / Photo Library / Files.
+   12. Picking a file uploads it IMMEDIATELY (uploadOne -> POST /upload,
+       bytes in the body, name in X-VB-Filename), so by the time you have
+       typed a sentence the upload has usually finished. Each file shows
+       as a removable chip (#chips) with a thumbnail for images; send
+       awaits any upload still in flight rather than racing it.
+   13. Injection is a clipboard paste of TEXT, so the bytes cannot ride
+       along in the prompt. The server writes the file under
+       ~/.voicebridge/uploads/<session>/ (0700, 0600, pruned after
+       VB_UPLOAD_KEEP_DAYS) and the turn NAMES the path:
+       "<what you typed> (attached: /Users/.../20260726-shot.png)".
+       The session opens it itself, which is why this works for PDFs and
+       logs and not only photos.
+   14. The bytes decide the extension, never the phone's label, and HEIC
+       (what an iPhone hands you; Android sends JPEG and skips this) is
+       transcoded to JPEG via oslayer.heic_to_jpeg, since unconverted it
+       reaches the session as a file Claude cannot open. A machine with no
+       converter keeps the original and reports kind "file" rather than
+       claiming an image it cannot show. Names are reduced to a leaf, so a
+       header saying "../../.ssh/id_rsa" cannot escape the upload
+       directory, and anything over VB_UPLOAD_MAX is refused BEFORE the
+       body is read.
+
+    TASK 4, ONE MICROPHONE GRANT:
+   15. getUserMedia was called on every call start AND on every reply (the
+       barge-in monitor), releasing the tracks in between on the native
+       recognizer path, so the browser kept re-asking for the microphone.
+       It is now acquired at most once per page (micStream memoizes the
+       promise) and merely SILENCED when nothing should hear you
+       (micLive(false) on mute, on end call, and while the recognizer
+       holds the device). A disabled track hears nothing but keeps the
+       grant, so a second call never re-prompts.
+   16. micGranted() consults the Permissions API where it exists, letting
+       a return visit skip the priming acquire entirely.
+       CAVEAT, and it is the real one: this holds only WITHIN an origin.
+       A restarted quick tunnel is a new hostname, which is a new site
+       with no memory of the grant. Add the page to the home screen (the
+       manifest is already served) to make it stick on iOS.
+
   CHANGES, v14 to v15, two scoped upgrades, each item and where it lives:
 
     TASK 1, CHAT RENDERING (Lovable-style):
@@ -396,9 +572,9 @@ PAGE = r"""<!DOCTYPE html>
        #161c29 on a 1px #232b3d border) holds a borderless input, a round
        mic-toggle chip (#micChip: blurs the composer and lifts a manual
        mute, i.e. back to voice input) and a 36px circular mint send
-       button with an up arrow. No plus button (no attachments). The
-       keyboard lift (--kb via visualViewport) and focus-mutes-the-mic
-       behavior are untouched.
+       button with an up arrow. (v16 adds a paperclip beside the mic; see
+       ATTACHMENTS below.) The keyboard lift (--kb via visualViewport) and
+       focus-mutes-the-mic behavior are untouched.
 
     TASK 2, THE LIVING ORB (ported from the v13 designer pass, visuals
     only; container, size, position, tap-to-hush, state word and all v14
@@ -1285,8 +1461,7 @@ body.hush-paused #hushBtn { display:flex; }
 #chatReplayBtn svg { width:17px; height:17px; }
 /* composer: type instead of talking (meetings, quiet rooms). v15: one
    rounded card holds the borderless input, the mic-toggle chip (back to
-   voice input) and the 36px mint send button. No plus button: there are
-   no attachments here. */
+   voice input) and the 36px mint send button. v16 adds the paperclip. */
 .composer { flex:none; padding:8px 14px 0; }
 .cwrap {
   display:flex; align-items:center; gap:6px;
@@ -1338,6 +1513,46 @@ body.hush-paused #hushBtn { display:flex; }
 }
 #sendBtn:active { transform:scale(.92); }
 #sendBtn svg { width:18px; height:18px; }
+/* v16: the paperclip. The composer used to have no attachments at all; a
+   photo of an error on screen is the one thing a phone can give a coding
+   session that a laptop cannot, so it earns the 36px. */
+#clipBtn {
+  flex:none; width:36px; height:36px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.06); border:1px solid var(--line);
+  color:var(--dim); margin-left:-6px;
+  transition:background .2s ease, color .2s ease, border-color .2s ease;
+}
+#clipBtn:active { transform:scale(.92); }
+#clipBtn svg { width:17px; height:17px; }
+#clipBtn.armed { color:var(--mint); border-color:rgba(70,215,195,.45); }
+/* chips sit ABOVE the input: what is attached must be visible before you
+   send, and removable without clearing what you typed */
+#chips { display:flex; flex-wrap:wrap; gap:6px; padding:0 2px 7px; }
+#chips:empty { display:none; }
+.chip {
+  display:flex; align-items:center; gap:6px; max-width:100%;
+  background:#161c29; border:1px solid #232b3d; border-radius:11px;
+  padding:4px 5px 4px 9px; font-size:12.5px; color:#c2cadb;
+}
+.chip.busy { opacity:.6; }
+.chip.bad { border-color:rgba(240,120,120,.5); color:#f0a0a0; }
+.chip img {
+  width:22px; height:22px; border-radius:5px; object-fit:cover;
+  margin:-1px 0 -1px -4px;
+}
+.chip .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  max-width:min(42vw, 190px); }
+.chip button {
+  flex:none; width:19px; height:19px; border-radius:50%;
+  background:rgba(255,255,255,.07); color:var(--dim);
+  display:flex; align-items:center; justify-content:center;
+  font-size:13px; line-height:1;
+}
+.chip button:active { transform:scale(.9); }
+/* the input itself is never seen; the paperclip drives it. One input, no
+   custom sheet: iOS and Android already offer Camera / Library / Files. */
+#pickFile { display:none; }
 /* working indicator, Lovable-style: a quiet dim italic "Working" row with
    the three pulsing dots; it vanishes with the turn, no finished residue */
 .typing {
@@ -1709,10 +1924,24 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
     <div id="chatLines"><p class="empty">The conversation with this session appears here.</p></div>
   </div>
   <div class="composer">
+    <div id="chips" aria-live="polite"></div>
+    <!-- MIME types only, no bare extensions: Android maps accept entries to
+         intent MIME filters and silently drops ones it cannot resolve (.md,
+         .log), which can narrow the picker to nothing. text/* already covers
+         csv/markdown/log on both platforms, and leading with image/* is what
+         makes iOS offer Take Photo. -->
+    <input id="pickFile" type="file" multiple
+           accept="image/*,application/pdf,text/*,application/json">
     <div class="cwrap">
       <input id="composeIn" type="text" placeholder="type instead of talking"
              autocapitalize="sentences" autocomplete="off" autocorrect="on"
              enterkeyhint="send" aria-label="Type a prompt to the session">
+      <button id="clipBtn" aria-label="Attach a photo or file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 11.5l-8.4 8.4a5 5 0 0 1-7.1-7.1l8.5-8.4a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.4a1.7 1.7 0 0 1-2.3-2.3l7.8-7.8"/>
+        </svg>
+      </button>
       <button id="micChip" aria-label="Turn the microphone on" aria-pressed="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1804,7 +2033,8 @@ const statusEl=$('status'), stateWord=$('stateWord'), pillName=$('pillName'),
       decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
       sessList=$('sessList'), sessCount=$('sessCount'),
       homeList=$('homeList'), homeDot=$('homeDot'),
-      closedName=$('closedName'), closedBody=$('closedBody');
+      closedName=$('closedName'), closedBody=$('closedBody'),
+      clipBtn=$('clipBtn'), pickFile=$('pickFile'), chipsEl=$('chips');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const TTS = 'speechSynthesis' in window;
 
@@ -1812,6 +2042,48 @@ let live=false, muted=false, state='ended';
 let gen=0;                 // listen generation: bump to invalidate in-flight mic work
 let turnId=0, turnActive=false;   // turn generation: bump to invalidate stale turn work
 let rec=null, recActive=false, media=null, audioCtx=null;
+/* ---- v16: ONE microphone grant, for the life of the page.
+   getUserMedia used to be called on every call start AND on every reply
+   (the barge-in monitor), with the tracks stopped in between on the native
+   speech-recognition path. Each re-acquire is another chance for the browser
+   to put the "allow the microphone?" sheet in your face, which is exactly
+   what it felt like. Now the stream is acquired at most once and simply
+   muted (track.enabled = false) when nothing should be hearing you, so the
+   device is never handed back and never asked for again.
+   Note this can only hold WITHIN one origin: the tunnel hostname changes if
+   the tunnel is restarted, and a new origin is a new site to the browser
+   with no memory of the grant. Adding the page to the home screen is what
+   makes the grant survive on iOS. */
+let micPromise = null;
+function micStream(){
+  if(!micPromise){
+    micPromise = navigator.mediaDevices.getUserMedia(
+      { audio:{ echoCancellation:true, noiseSuppression:true } })
+      .catch(e => { micPromise = null; throw e; });   // a denial must retry
+  }
+  return micPromise;
+}
+function micLive(on){
+  /* enabled=false yields silence without releasing the device: the grant,
+     and the audio session, stay ours. */
+  if(!media) return;
+  try{ media.getTracks().forEach(t => { t.enabled = !!on; }); }catch(e){}
+}
+async function micReady(){
+  /* Resolves once we hold the stream. Callers that only need the mic to
+     EXIST (barge monitor, recorder) go through here. */
+  media = media || await micStream();
+  return media;
+}
+function micGranted(){
+  /* Permissions API where it exists (Chrome, and Safari 16+ for microphone):
+     lets a return visit skip the priming acquire entirely. */
+  try{
+    if(!navigator.permissions || !navigator.permissions.query) return Promise.resolve(false);
+    return navigator.permissions.query({ name:'microphone' })
+      .then(p => p.state === 'granted').catch(() => false);
+  }catch(e){ return Promise.resolve(false); }
+}
 let wakeLock=null, speechCancelled=false;
 let onHome = !S;           // which screen is up; body.home mirrors this
 let lastRoster = null;     // latest /sessions list, re-rendered on goHome
@@ -2250,21 +2522,22 @@ function ackTick(){
 function stopBarge(){
   if(bargeIv){ clearInterval(bargeIv); bargeIv = null; }
   if(bargeSrc){ try{ bargeSrc.disconnect(); }catch(e){} bargeSrc = null; }
-  if(bargeOwn){ try{ bargeOwn.getTracks().forEach(t => t.stop()); }catch(e){} bargeOwn = null; }
+  /* v16: the monitor's stream is the ONE shared stream now, so releasing it
+     here would hand the device back and re-arm the permission prompt. On the
+     recognizer path we only silence it, which is all "stop monitoring" ever
+     meant. */
+  if(bargeOwn){ if(SR && !srDead) micLive(false); bargeOwn = null; }
 }
 async function startBarge(){
   /* v7: typingMute keeps the whole mic off, the barge monitor included */
   if(bargeIv || bargeArming || !live || muted || typingMute) return;
   bargeArming = true;
-  let stream = media;   // whisper path: reuse the stream that is already open
-  if(!stream){
-    try{
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio:{ echoCancellation:true, noiseSuppression:true } });
-    }catch(e){ bargeArming = false; return; }   // degrade: no barge this reply
-    if(SR && !srDead) bargeOwn = stream;   // SR path: ours alone, release after speech
-    else media = stream;                   // whisper path adopts it for listening
-  }
+  let stream;
+  try{
+    stream = await micReady();   // the one stream; acquired at most once ever
+  }catch(e){ bargeArming = false; return; }   // degrade: no barge this reply
+  micLive(true);                 // it may have been silenced for the recognizer
+  if(SR && !srDead) bargeOwn = stream;   // marks "monitoring": silenced on stop
   bargeArming = false;
   /* speech may have finished while getUserMedia was up */
   if(!live || muted || speechCancelled || state !== 'speaking'){ stopBarge(); return; }
@@ -3321,9 +3594,9 @@ async function listenWhisper(){
   setState('listening');
   /* echoCancellation also serves the barge-in monitor, which shares this
      stream while replies speak */
-  try{ media = media || await navigator.mediaDevices.getUserMedia(
-    { audio:{ echoCancellation:true, noiseSuppression:true } }); }
+  try{ await micReady(); }
   catch(e){ micDenied(); return; }
+  micLive(true);   // whisper listens for real, so the tracks must be hot
   if(myGen !== gen) return;
   audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
   if(audioCtx.state === 'suspended') audioCtx.resume();
@@ -3443,12 +3716,15 @@ async function startCall(){
   acquireWakeLock();
   setState('thinking', 'connecting');
   /* Prime the mic permission inside the tap gesture so the browser prompt has
-     clear context; on the native-SR path release the stream right away so it
-     never fights the recognizer for the device. */
+     clear context. v16: if the browser already says the grant is ours, skip
+     the acquire entirely on the recognizer path, and never stop the tracks
+     we do take, only silence them, so the recognizer gets the device without
+     us surrendering the permission and having to ask for it again. */
   try{
-    const s = await navigator.mediaDevices.getUserMedia(
-      { audio:{ echoCancellation:true, noiseSuppression:true } });
-    if(SR && !srDead) s.getTracks().forEach(t => t.stop()); else media = s;
+    if(!(SR && !srDead) || !(await micGranted()) || media){
+      await micReady();
+      if(SR && !srDead) micLive(false);   // hand the recognizer a quiet device
+    }
   }catch(e){ micDenied(); return; }
   startHeartbeat();
   statusLoop(liveGen);
@@ -3461,6 +3737,10 @@ async function startCall(){
 function endCall(){
   live = false; liveGen++;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
+  /* v16: silence the mic, do NOT release it. Ending a call must not cost the
+     permission, or the next call asks all over again; a disabled track hears
+     nothing, which is the only guarantee that matters here. */
+  micLive(false);
   clearHush();
   /* the full-screen chat would sit above the call-ended overlay */
   closeChatSheet();
@@ -3490,6 +3770,7 @@ function toggleMute(){
   if(muted){
     stopListening();
     stopBarge();   // muted means muted: no barge monitor either
+    micLive(false);   // and the tracks themselves go silent, grant intact
     if(state === 'listening') setState('muted');
   }else if(state === 'muted' || state === 'listening'){
     setState('listening'); listen();
@@ -3724,13 +4005,122 @@ window.addEventListener('popstate', () => {
   else chatHist = false;
 });
 chatBackBtn.addEventListener('click', () => closeChatSheet());
+/* ---- v16: attachments. Files go to the Mac's disk over /upload and the
+   turn names their PATHS, because injection is a clipboard paste of text:
+   the bytes cannot ride along, so the session opens them itself.
+   Uploads start the moment you pick, not on send, so the common case
+   (photo, then type, then send) has already finished uploading by then. */
+let attached = [], attachSeq = 0;
+function renderChips(){
+  chipsEl.innerHTML = '';
+  for(const a of attached){
+    const el = document.createElement('div');
+    el.className = 'chip' + (a.state === 'busy' ? ' busy' : '')
+                          + (a.state === 'bad' ? ' bad' : '');
+    if(a.thumb){
+      const im = document.createElement('img');
+      im.src = a.thumb; im.alt = ''; el.appendChild(im);
+    }
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    /* \u escapes rather than literal glyphs: this page is embedded in a
+       Python raw string that is meant to stay ASCII at the source level */
+    nm.textContent = a.state === 'bad' ? (a.name + ' \u2014 failed')
+                   : a.state === 'busy' ? (a.name + '\u2026') : a.name;
+    el.appendChild(nm);
+    const x = document.createElement('button');
+    x.type = 'button'; x.textContent = '\u00d7';
+    x.setAttribute('aria-label', 'Remove ' + a.name);
+    x.addEventListener('click', () => dropAttachment(a.id));
+    el.appendChild(x);
+    chipsEl.appendChild(el);
+  }
+  clipBtn.classList.toggle('armed', attached.length > 0);
+}
+function dropAttachment(id){
+  const a = attached.find(x => x.id === id);
+  if(a && a.thumb){ try{ URL.revokeObjectURL(a.thumb); }catch(e){} }
+  attached = attached.filter(x => x.id !== id);
+  renderChips();
+}
+function clearAttachments(){
+  for(const a of attached){
+    if(a.thumb){ try{ URL.revokeObjectURL(a.thumb); }catch(e){} }
+  }
+  attached = [];
+  renderChips();
+}
+function uploadOne(a){
+  /* the promise is kept ON the record so send can await an upload that is
+     still in flight instead of racing it or dropping the file */
+  a.done = fetch(urlFor('/upload'), {
+    method:'POST',
+    headers:{ 'Content-Type': a.file.type || 'application/octet-stream',
+              'X-VB-Filename': encodeURIComponent(a.file.name || 'attachment') },
+    body:a.file })
+  .then(r => {
+    if(r.status === 413) throw new Error('too big');
+    if(!r.ok) throw new Error('http ' + r.status);
+    return r.json();
+  })
+  .then(j => {
+    a.path = j.path; a.kind = j.kind; a.state = 'ok';
+    if(j.name) a.name = j.name;
+    renderChips();
+  })
+  .catch(e => {
+    a.state = 'bad';
+    a.err = String(e && e.message || e);
+    renderChips();
+    toast(a.err === 'too big' ? (a.name + ' is over the 25 MB limit')
+                              : ('could not upload ' + a.name));
+  });
+  return a.done;
+}
+clipBtn.addEventListener('mousedown', e => e.preventDefault());  // keep the keyboard up
+clipBtn.addEventListener('click', () => { pickFile.click(); });
+pickFile.addEventListener('change', () => {
+  for(const f of Array.from(pickFile.files || [])){
+    const a = { id: ++attachSeq, file:f, name:f.name || 'attachment',
+                state:'busy', path:'', kind:'file', thumb:'' };
+    if(/^image\//.test(f.type)){
+      try{ a.thumb = URL.createObjectURL(f); }catch(e){}
+    }
+    attached.push(a);
+    uploadOne(a);
+  }
+  renderChips();
+  /* same file picked twice in a row still fires change */
+  pickFile.value = '';
+});
+
 /* ---- v7: the typed composer (silent prompts from the phone) ---- */
-function sendTyped(){
+async function sendTyped(){
   const t = (composeIn.value || '').trim();
-  if(!t) return;
+  if(!t && !attached.length) return;
   if(!live){ toast('start the call first, then type away'); return; }
   if(decisionOpen){ toast('answer the yes or no first'); return; }
   if(turnActive){ toast('still working on the last one'); return; }
+  if(attached.length){
+    /* wait out any upload still in flight, then send only what landed */
+    if(attached.some(a => a.state === 'busy')) toast('sending the attachment\u2026');
+    await Promise.all(attached.map(a => a.done).filter(Boolean));
+    if(!live || turnActive || decisionOpen) return;   // state moved under us
+    const ok = attached.filter(a => a.state === 'ok' && a.path);
+    if(!ok.length){
+      toast('nothing attached went through');
+      if(!t) return;
+    }
+    const paths = ok.map(a => a.path).join(', ');
+    const text = t ? (t + ' (attached: ' + paths + ')')
+                   : ('Take a look at this: ' + paths);
+    composeIn.value = '';
+    clearAttachments();
+    stopSpeaking();
+    stopListening();
+    startTurn(text);
+    return;
+  }
   composeIn.value = '';
   stopSpeaking();     // typing over a talking reply = silent barge-in
   stopListening();
@@ -4566,7 +4956,35 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(401, b"unauthorized", "text/plain")
             return
         n = int(self.headers.get("Content-Length", "0"))
+        if n > MAX_UPLOAD:
+            # Refuse BEFORE reading: a 200MB video off a phone would otherwise
+            # be pulled into memory in full just to be rejected afterwards.
+            self.close_connection = True
+            self._reply(413, b"too large", "text/plain")
+            return
         raw = self.rfile.read(n) if n else b""
+
+        if path == "/upload":
+            # One attachment per request: name in a header, bytes in the body.
+            # Multipart would buy nothing here and cost a parser.
+            name = self.headers.get("X-VB-Filename", "") or "attachment"
+            try:
+                from urllib.parse import unquote
+                name = unquote(name)    # the phone percent-encodes it
+            except Exception:
+                pass
+            if not raw:
+                self._reply(400, b"empty upload", "text/plain")
+                return
+            try:
+                info = _save_upload(raw, name,
+                                    self.headers.get("Content-Type", ""))
+            except Exception as e:
+                core.log(f"upload failed: {e}")
+                self._reply(500, b"could not save", "text/plain")
+                return
+            self._reply(200, json.dumps(info).encode(), "application/json")
+            return
 
         if path == "/ask":  # web-call page: {"text","id"} -> {"reply"}
             try:

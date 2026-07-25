@@ -164,6 +164,59 @@ def _win_sendkeys(keys: str) -> None:
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+# ---------- convert a phone photo into something a session can view ---------
+def heic_to_jpeg(src: str, out: str) -> bool:
+    """Transcode a HEIC/HEIF photo to JPEG. Returns whether `out` was written.
+
+    An iPhone hands you HEIC, which Claude cannot view, so an unconverted
+    attachment reaches the session as a file it can only describe by name.
+    macOS has sips built in; elsewhere we try the image tools a machine
+    running voicebridge plausibly already has (ffmpeg is installed by both
+    installers) and give up honestly rather than pretending.
+
+    WINDOWS/LINUX: UNVERIFIED. ffmpeg only decodes HEIC when built with
+    libheif, so the ImageMagick and heif-convert attempts are the ones
+    likely to do the work; if none succeed the caller keeps the original."""
+    if IS_MAC:
+        return _run_ok(["sips", "-s", "format", "jpeg", src, "--out", out],
+                       out)
+    for cmd in (["magick", src, out],           # ImageMagick 7
+                ["convert", src, out],          # ImageMagick 6
+                ["heif-convert", src, out],     # libheif tools
+                ["ffmpeg", "-y", "-i", src, out]):
+        exe = which(cmd[0])
+        if not exe:
+            continue
+        if _run_ok([exe, *cmd[1:]], out):
+            return True
+    return False
+
+
+def _run_ok(cmd: list, out: str) -> bool:
+    """Run a converter and confirm it actually produced a non-empty file: a
+    zero exit code with no output would otherwise read as success."""
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=60)
+    except Exception:
+        return False
+    return r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0
+
+
+def secure_file(path: str, dirs: bool = False) -> None:
+    """Make a path owner-only where the OS has POSIX modes.
+
+    On Windows chmod moves only the read-only bit, so this is a no-op there
+    and the uploads directory inherits its parent's ACL instead. Worth
+    stating plainly: the 0600 guarantee is a POSIX one."""
+    if IS_WIN:
+        return
+    try:
+        os.chmod(path, 0o700 if dirs else 0o600)
+    except OSError:
+        pass
+
+
 # ---- linux impls ----
 def _xdotool(*args) -> None:
     xd = which("xdotool")
