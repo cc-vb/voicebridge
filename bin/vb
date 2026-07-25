@@ -415,9 +415,16 @@ def main(argv) -> int:
             import re as _re0
             tp_pid = int((core.STATE_DIR / "tunnel.pid").read_text().strip())
             _os.kill(tp_pid, 0)
-            m0 = _re0.search(r"https://[a-z0-9-]+\.trycloudflare\.com",
-                             logf.read_text())
-            if m0 and _up(m0.group(0)):
+            _log0 = logf.read_text()
+            m0 = _re0.search(r"https://[a-z0-9-]+\.trycloudflare\.com", _log0)
+            # Judge OUR tunnel locally, never via public DNS: a fresh
+            # quick-tunnel hostname takes a while to propagate, so a DNS
+            # lookup says "no such host" for a link that's actually fine,
+            # and acting on that killed good tunnels and minted new (equally
+            # unresolvable) ones every run. Process alive + edge connection
+            # registered + local relay healthy = the link works.
+            if (m0 and "Registered tunnel connection" in _log0
+                    and _up(f"http://127.0.0.1:{port}")):
                 url = m0.group(0)
                 full = f"{url}/?k={secret}"
                 try:
