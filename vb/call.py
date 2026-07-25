@@ -108,6 +108,24 @@ def _epoch() -> str:
 # re-POST the same turn id and resume waiting without a second injection.
 _ASKED: dict = {}
 
+# SSE subscribers: one queue per open /events connection. The stream is the
+# seamless channel the polling never was: replies, delivery acks, and
+# permission moments PUSH to the phone the second they happen, and
+# EventSource reconnects by itself when the tunnel hiccups.
+import queue as _queue
+import threading as _threading
+_SUBS: set = set()
+_SUBS_LOCK = _threading.Lock()
+
+
+def _broadcast(ev: dict) -> None:
+    with _SUBS_LOCK:
+        for q in list(_SUBS):
+            try:
+                q.put_nowait(ev)
+            except Exception:
+                pass
+
 
 def _prune_asked(max_age: float = 900.0) -> None:
     now = time.time()
@@ -171,7 +189,7 @@ def _handle_pending(text: str, pending: str) -> str:
     return f"Claude is waiting on you: {q}. Say yes to allow, or no to decline."
 
 
-def _ask_session(text: str) -> str:
+def _ask_session(text: str, turn_id: str = "") -> str:
     """Inject a turn into the live session and wait for the reply."""
     if DRYRUN:
         return f"dry run reply to: {text}"
@@ -197,6 +215,10 @@ def _ask_session(text: str) -> str:
             return ("I couldn't type into the session, the terminal isn't "
                     "the focused window on your Mac. Bring it to the front, "
                     "or check the screen isn't locked, then try again.")
+    if turn_id:
+        # Delivery ack on the event stream: the phone stops guessing whether
+        # its prompt actually landed in the session.
+        _broadcast({"type": "ack", "id": turn_id})
     ep = _epoch()
     t0 = time.time()
     while time.time() - t0 < TIMEOUT:
@@ -1560,7 +1582,9 @@ function sendAsk(id, text, attempt){
      (tunnels drop requests) resumes waiting instead of double-typing. This
      was the "listening, working... but the prompt never arrived" bug: a
      dropped /ask meant nothing was ever injected while the UI said working. */
-  jpost('/ask', { text: text, id: 'T' + bootKey + '-' + id })
+  curAskKey = 'T' + bootKey + '-' + id;
+  if(!attempt) askDelivered = false;
+  jpost('/ask', { text: text, id: curAskKey })
   .then(r => { if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
   .then(j => {
     if(id !== turnId || !live) return;
@@ -1577,6 +1601,11 @@ function sendAsk(id, text, attempt){
                  1500 * (attempt + 1));
       return;
     }
+    if(askDelivered){
+      /* the ack proves it landed; the reply will arrive on the stream */
+      setState('thinking', 'working...');
+      return;
+    }
     /* We could NOT confirm the injection: say so and reset, never fake-work */
     turnId++; turnActive = false; stopWorkTicker(); hideDecision();
     toast('connection hiccup, prompt not delivered');
@@ -1586,7 +1615,7 @@ function sendAsk(id, text, attempt){
 async function pollUntilChanged(id, baseline){
   let n = 0;
   while(id === turnId && live){
-    await sleep(n++ < 100 ? 3000 : 6000);   // ease off after five minutes
+    await sleep(sseOk ? 15000 : (n++ < 100 ? 3000 : 6000));   // stream is primary
     if(id !== turnId || !live) return;
     try{
       const j = await jget('/poll');
@@ -1604,16 +1633,7 @@ async function pollUntilChanged(id, baseline){
    flight, ANY new reply in the session (e.g. typed on the desktop) speaks
    HERE. The Mac is silenced during a call, so without this nobody says it. */
 let lastUuid = '';
-async function idleWatch(){
-  if(!live || turnActive) return;
-  let j;
-  try{ j = await jget('/poll'); }catch(e){ return; }
-  const u = String(j.uuid || ''), rep = String(j.reply || '').trim();
-  if(!u) return;
-  if(!lastUuid){ lastUuid = u; return; }   // first sight: baseline, not speech
-  if(u === lastUuid || !rep) return;
-  if(!live || turnActive) return;
-  lastUuid = u;
+function speakIncoming(rep){
   stopListening();
   chatAdd('assistant', rep); refreshChat();
   setState('speaking');
@@ -1625,7 +1645,61 @@ async function idleWatch(){
     else { setState('listening'); listen(); }
   });
 }
+async function idleWatch(){
+  if(!live || turnActive || sseOk) return;   // SSE is the primary channel
+  let j;
+  try{ j = await jget('/poll'); }catch(e){ return; }
+  const u = String(j.uuid || ''), rep = String(j.reply || '').trim();
+  if(!u) return;
+  if(!lastUuid){ lastUuid = u; return; }   // first sight: baseline, not speech
+  if(u === lastUuid || !rep) return;
+  if(!live || turnActive) return;
+  lastUuid = u;
+  speakIncoming(rep);
+}
 setInterval(idleWatch, 5000);
+
+/* ---- the SSE stream: ONE persistent connection pushes replies, delivery
+   acks and permission moments the moment they happen. EventSource reconnects
+   on its own; while it's healthy the polling above becomes a mere backstop. */
+let es = null, sseOk = false, askDelivered = false, curAskKey = '';
+function startEvents(){
+  if(es) try{ es.close(); }catch(e){}
+  try{ es = new EventSource('/events?k=' + encodeURIComponent(K)); }
+  catch(e){ es = null; return; }
+  es.onopen = () => { sseOk = true; };
+  es.onerror = () => { sseOk = false; };
+  es.addEventListener('hello', e => {
+    try{ const d = JSON.parse(e.data); if(d.uuid && !lastUuid) lastUuid = d.uuid; }catch(x){}
+  });
+  es.addEventListener('ack', e => {
+    try{
+      const d = JSON.parse(e.data);
+      if(turnActive && d.id === curAskKey){
+        askDelivered = true;
+        setState('thinking', 'working, delivered');
+      }
+    }catch(x){}
+  });
+  es.addEventListener('reply', e => {
+    try{
+      const d = JSON.parse(e.data);
+      const rep = String(d.reply || '').trim(), u = String(d.uuid || '');
+      if(!u || !rep || u === lastUuid) return;
+      lastUuid = u;
+      if(turnActive){ finishTurn(turnId, rep); }
+      else if(live){ speakIncoming(rep); }
+    }catch(x){}
+  });
+  es.addEventListener('pending', e => {
+    try{
+      const d = JSON.parse(e.data);
+      if(!live) return;
+      if(d.q) showDecision(d.q); else hideDecision();
+    }catch(x){}
+  });
+}
+startEvents();
 function finishTurn(id, reply){
   if(id !== turnId) return;
   turnId++;                       // one winner: kill the other waiters
@@ -2632,6 +2706,72 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
             self._reply(200, json.dumps(
                 {"reply": _sess.read_last(q)}).encode(), "application/json")
+        elif path == "/events":
+            # SSE: ONE long-lived connection instead of lossy request-by-
+            # request polling. Pushes replies (with uuid), delivery acks, and
+            # permission moments the second they happen; a comment ping every
+            # ~10s keeps proxies from idling the stream out; EventSource on
+            # the phone reconnects automatically after any hiccup.
+            if not self._authed():
+                self._reply(401, b"unauthorized", "text/plain")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            def emit(kind, payload):
+                self.wfile.write(
+                    (f"event: {kind}\ndata: {json.dumps(payload)}\n\n")
+                    .encode())
+                self.wfile.flush()
+
+            q = _queue.Queue()
+            with _SUBS_LOCK:
+                _SUBS.add(q)
+            try:
+                tp = _target_transcript()
+                last_u = core.latest_assistant_uuid(tp) if tp else ""
+                emit("hello", {"uuid": last_u})
+                last_pend, last_size, ticks = "", -1, 0
+                while True:
+                    try:
+                        ev = q.get(timeout=1.0)   # acks etc, or a 1s tick
+                        emit(ev.get("type", "event"), ev)
+                    except _queue.Empty:
+                        pass
+                    tp = _target_transcript()
+                    # stat() gate: only re-parse the transcript when it GREW,
+                    # a multi-MB parse per second per stream would burn CPU.
+                    try:
+                        size = os.path.getsize(tp) if tp else -1
+                    except OSError:
+                        size = -1
+                    if size != last_size:
+                        last_size = size
+                        u = core.latest_assistant_uuid(tp) if tp else ""
+                        if u and u != last_u:
+                            last_u = u
+                            cur = core.clean_for_speech(
+                                core.last_assistant_text(tp), max_chars=2500)
+                            emit("reply", {"uuid": u, "reply": cur})
+                    pend = core.get_pending_notice(_active_sid())
+                    pend = (core.clean_for_speech(pend, max_chars=300)
+                            if pend else "")
+                    if pend != last_pend:
+                        last_pend = pend
+                        emit("pending", {"q": pend})
+                    ticks += 1
+                    if ticks % 10 == 0:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+            except Exception:
+                pass   # client went away; EventSource will reconnect
+            finally:
+                with _SUBS_LOCK:
+                    _SUBS.discard(q)
+            return
         elif path == "/chat":
             # The conversation as chat bubbles: the phone user can READ what
             # happened (and catch up on anything they missed hearing).
@@ -2707,7 +2847,7 @@ class Handler(BaseHTTPRequestHandler):
                         "prev": core.last_assistant_text(tp0) if tp0 else "",
                         "ts": time.time()}
                     _prune_asked()
-                answer = (_ask_session(text) if text
+                answer = (_ask_session(text, turn_id) if text
                           else "Sorry, I didn't catch that.")
             self._reply(200, json.dumps({"reply": answer}).encode(),
                         "application/json")
