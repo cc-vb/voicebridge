@@ -103,6 +103,40 @@ def _epoch() -> str:
         return ""
 
 
+# Turn ledger for idempotent /ask retries: id -> {tp, prev, ts}. A tunnel can
+# drop the RESPONSE after the request injected, so the page must be able to
+# re-POST the same turn id and resume waiting without a second injection.
+_ASKED: dict = {}
+
+
+def _prune_asked(max_age: float = 900.0) -> None:
+    now = time.time()
+    for k in [k for k, v in _ASKED.items() if now - v.get("ts", 0) > max_age]:
+        _ASKED.pop(k, None)
+
+
+def _await_reply(rec: dict) -> str:
+    """Resume waiting for a turn that already injected (idempotent retry)."""
+    tp, prev = rec.get("tp", ""), rec.get("prev", "")
+    if not tp:
+        return "I can't find the session anymore."
+    ep = _epoch()
+    t0 = time.time()
+    while time.time() - t0 < TIMEOUT:
+        time.sleep(1.0)
+        if _epoch() != ep:
+            return "Okay, switched. Go ahead."
+        fresh = core.get_pending_notice(_active_sid())
+        if fresh:
+            q = core.clean_for_speech(fresh, max_chars=300)
+            return (f"Claude is waiting on you: {q}. Say yes to allow, "
+                    f"or no to decline.")
+        cur = core.last_assistant_text(tp)
+        if cur and cur != prev:
+            return core.clean_for_speech(cur, max_chars=2500)
+    return "Still working on that. Ask me again in a moment."
+
+
 import re as _re
 YES_RE = _re.compile(r"^\s*(yes|yeah|yep|ok(ay)?|sure|go ahead|approve[d]?|"
                      r"allow( it)?|do it|confirm)[.!\s]*$", _re.IGNORECASE)
@@ -1510,9 +1544,15 @@ async function startTurn(text){
   sendAsk(id, text);
   pollUntilChanged(id, baseline);
 }
-function sendAsk(id, text){
-  jpost('/ask', { text: text })
-  .then(r => r.json())
+const bootKey = Math.random().toString(36).slice(2, 10);
+function sendAsk(id, text, attempt){
+  attempt = attempt || 0;
+  /* Idempotent turn key: the server injects ONCE per key, so a retried POST
+     (tunnels drop requests) resumes waiting instead of double-typing. This
+     was the "listening, working... but the prompt never arrived" bug: a
+     dropped /ask meant nothing was ever injected while the UI said working. */
+  jpost('/ask', { text: text, id: 'T' + bootKey + '-' + id })
+  .then(r => { if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
   .then(j => {
     if(id !== turnId || !live) return;
     const rep = String(j.reply || '').trim();
@@ -1520,7 +1560,19 @@ function sendAsk(id, text){
     if(WAITING_RE.test(rep)){ showDecision(rep); return; }   // permission moment
     finishTurn(id, rep);
   })
-  .catch(() => { /* tunnel dropped the long request; /poll covers it */ });
+  .catch(() => {
+    if(id !== turnId || !live) return;
+    if(attempt < 4){
+      setState('thinking', 'reconnecting...');
+      setTimeout(() => { if(id === turnId && live) sendAsk(id, text, attempt + 1); },
+                 1500 * (attempt + 1));
+      return;
+    }
+    /* We could NOT confirm the injection: say so and reset, never fake-work */
+    turnId++; turnActive = false; stopWorkTicker(); hideDecision();
+    toast('connection hiccup, prompt not delivered');
+    speakAside('The connection dropped and I could not send that. Please say it again.');
+  });
 }
 async function pollUntilChanged(id, baseline){
   let n = 0;
@@ -1528,12 +1580,43 @@ async function pollUntilChanged(id, baseline){
     await sleep(n++ < 100 ? 3000 : 6000);   // ease off after five minutes
     if(id !== turnId || !live) return;
     try{
-      const rep = String((await jget('/poll')).reply || '').trim();
+      const j = await jget('/poll');
+      const rep = String(j.reply || '').trim();
       if(id !== turnId || !live) return;
-      if(rep && rep !== baseline){ finishTurn(id, rep); return; }
+      if(rep && rep !== baseline){
+        if(j.uuid) lastUuid = j.uuid;
+        finishTurn(id, rep); return;
+      }
     }catch(e){ /* offline blip: keep waiting, the elapsed label keeps counting */ }
   }
 }
+
+/* ---- idle reply-watcher: while the call is live and no phone turn is in
+   flight, ANY new reply in the session (e.g. typed on the desktop) speaks
+   HERE. The Mac is silenced during a call, so without this nobody says it. */
+let lastUuid = '';
+async function idleWatch(){
+  if(!live || turnActive) return;
+  let j;
+  try{ j = await jget('/poll'); }catch(e){ return; }
+  const u = String(j.uuid || ''), rep = String(j.reply || '').trim();
+  if(!u) return;
+  if(!lastUuid){ lastUuid = u; return; }   // first sight: baseline, not speech
+  if(u === lastUuid || !rep) return;
+  if(!live || turnActive) return;
+  lastUuid = u;
+  stopListening();
+  chatAdd('assistant', rep); refreshChat();
+  setState('speaking');
+  startBarge();
+  say(rep, () => {
+    stopBarge();
+    if(!live) return;
+    if(muted){ setState('muted'); }
+    else { setState('listening'); listen(); }
+  });
+}
+setInterval(idleWatch, 5000);
 function finishTurn(id, reply){
   if(id !== turnId) return;
   turnId++;                       // one winner: kill the other waiters
@@ -1542,6 +1625,7 @@ function finishTurn(id, reply){
   hideDecision();
   chatAdd('assistant', reply);
   refreshChat();                  // swap in the server's cleaned transcript
+  jget('/poll').then(j => { if(j && j.uuid) lastUuid = j.uuid; }).catch(() => {});
   pollSessions();                 // states likely changed with the turn
   setState('speaking');
   startBarge();                   // v5: talking over the reply interrupts it
@@ -2560,8 +2644,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             tp = _target_transcript()
             cur = core.last_assistant_text(tp) if tp else ""
+            # uuid lets the page track "is this reply NEW" robustly (text
+            # diffing breaks on trims/caps) and powers the idle reply-watcher
+            # that speaks desktop-initiated replies during a live call.
             self._reply(200, json.dumps(
-                {"reply": core.clean_for_speech(cur, max_chars=2500)}
+                {"reply": core.clean_for_speech(cur, max_chars=2500),
+                 "uuid": core.latest_assistant_uuid(tp) if tp else ""}
             ).encode(), "application/json")
         elif path == "/":
             if not self._authed():
@@ -2583,14 +2671,29 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(n) if n else b""
 
-        if path == "/ask":  # web-call page: {"text": ...} -> {"reply": ...}
+        if path == "/ask":  # web-call page: {"text","id"} -> {"reply"}
             try:
-                text = (json.loads(raw or b"{}").get("text") or "").strip()
+                body = json.loads(raw or b"{}")
+                text = (body.get("text") or "").strip()
+                turn_id = str(body.get("id") or "")
             except Exception:
                 self._reply(400, b"bad request", "text/plain")
                 return
-            answer = (_ask_session(text) if text
-                      else "Sorry, I didn't catch that.")
+            # Idempotency: the page retries a failed POST with the SAME id
+            # (tunnels drop requests). A retry of a turn that already injected
+            # must never paste the prompt twice, it just resumes waiting.
+            if turn_id and turn_id in _ASKED:
+                answer = _await_reply(_ASKED[turn_id])
+            else:
+                if turn_id:
+                    tp0 = _target_transcript()
+                    _ASKED[turn_id] = {
+                        "tp": tp0,
+                        "prev": core.last_assistant_text(tp0) if tp0 else "",
+                        "ts": time.time()}
+                    _prune_asked()
+                answer = (_ask_session(text) if text
+                          else "Sorry, I didn't catch that.")
             self._reply(200, json.dumps({"reply": answer}).encode(),
                         "application/json")
             return
