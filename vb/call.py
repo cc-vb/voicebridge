@@ -684,6 +684,26 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 .bub.assistant { align-self:flex-start; background:rgba(255,255,255,.06);
   border:1px solid var(--line); border-bottom-left-radius:6px; }
 .bub.live { border-style:dashed; }
+.bub .bwrap { display:block; }
+.bub.clamp .bwrap { max-height:19em; overflow:hidden;
+  -webkit-mask-image:linear-gradient(#000 72%, transparent);
+  mask-image:linear-gradient(#000 72%, transparent); }
+.showmore { display:block; margin-top:6px; background:none; border:0;
+  color:#46d7c3; font-size:13px; padding:2px 0; letter-spacing:.03em; }
+.cblk { background:#0a0e18; border:1px solid var(--line); border-radius:10px;
+  padding:10px 12px; margin:8px 0; font:12.5px/1.45 ui-monospace,Menlo,monospace;
+  overflow-x:auto; white-space:pre; max-width:100%; }
+.ichip { background:rgba(255,255,255,.09); border-radius:5px; padding:1px 5px;
+  font:.92em ui-monospace,Menlo,monospace; }
+#jumpBtn { position:absolute; bottom:74px; left:50%; transform:translateX(-50%);
+  z-index:5; background:#182032; color:#46d7c3; border:1px solid rgba(70,215,195,.35);
+  border-radius:999px; padding:7px 14px; font-size:13px; }
+#homeFilter { width:100%; box-sizing:border-box; margin:0 0 10px;
+  background:#131a29; border:1px solid var(--line); border-radius:12px;
+  color:#e5ecf7; padding:10px 14px; font-size:15px; }
+.hcard .r1 .mono { flex:none; width:26px; height:26px; border-radius:8px;
+  display:inline-flex; align-items:center; justify-content:center;
+  font-size:13px; font-weight:700; color:#e9eef8; align-self:center; }
 #chatLines .empty { color:var(--dim); font-size:14px; align-self:center; padding:18px 8px; text-align:center; line-height:1.55; }
 
 /* control room cards */
@@ -764,6 +784,8 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
     <h1>voicebridge</h1>
     <span id="homeDot" role="status" aria-label="relay connecting"></span>
   </div>
+  <input id="homeFilter" class="hidden" type="search" placeholder="filter sessions"
+         autocapitalize="none" autocorrect="off">
   <div class="hlist" id="homeList"></div>
   <p class="hfoot">Tap an active session to call it. Earlier sessions are read-only.</p>
 </section>
@@ -844,6 +866,7 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 <section class="sheet" id="chatSheet" role="dialog" aria-label="Chat">
   <div class="grab" aria-hidden="true"></div>
   <h2>Chat</h2>
+  <button id="jumpBtn" class="hidden" aria-label="Jump to newest">new messages</button>
   <div class="scroll" id="chatScroll">
     <div id="pullHint">pull to refresh</div>
     <div id="chatLines"><p class="empty">The conversation with this session appears here.</p></div>
@@ -871,12 +894,12 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
     <span class="setlbl">Voice</span>
     <div class="seg" role="radiogroup" aria-label="Voice source">
       <button id="voicePhoneBtn" role="radio" aria-checked="true">Phone</button>
-      <button id="voiceMacBtn" role="radio" aria-checked="false">Mac (natural)</button>
+      <button id="voiceMacBtn" role="radio" aria-checked="false">Natural voice</button>
     </div>
   </div>
-  <p class="hint">Mac (natural) speaks with the Kokoro neural voice, synthesized on your
-     Mac and streamed here. It sounds much better; the first words arrive about a second
-     later. If the Mac voice is unreachable the phone voice takes over automatically.</p>
+  <p class="hint">Natural voice is the Kokoro neural voice from your Mac. The phone plays
+     it; your Mac just makes the audio. It sounds much better; the first words arrive about
+     a second later. If the Mac is unreachable the phone voice takes over automatically.</p>
 </section>
 
 <div class="overlay hidden" id="startOverlay">
@@ -902,7 +925,7 @@ const K = PARAMS.get('k') || '';
 const S = PARAMS.get('s') || '';   /* deep link: skip home, land on this session */
 const $ = id => document.getElementById(id);
 const statusEl=$('status'), pillName=$('pillName'), muteBtn=$('muteBtn'),
-      chatBtn=$('chatBtn'), chatLines=$('chatLines'), chatScroll=$('chatScroll'),
+      chatBtn=$('chatBtn'), chatLines=$('chatLines'), chatScroll=$('chatScroll'), jumpBtn=$('jumpBtn'),
       pullHint=$('pullHint'), chipEl=$('chip'), decideEl=$('decide'),
       decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
       sessList=$('sessList'), sessCount=$('sessCount'),
@@ -1323,13 +1346,59 @@ async function startBarge(){
    on pull-to-refresh). Falls back to local-only when /chat is missing. */
 let localTurns = [];
 let chatHasServer = false;
+function renderRich(el, text){
+  /* tiny safe renderer: fenced blocks -> real <pre> (mono, x-scroll),
+     `inline` -> code chips. All content set via textContent, never HTML. */
+  const chunks = String(text).split('```');
+  for(let i = 0; i < chunks.length; i++){
+    let seg = chunks[i];
+    if(i % 2){
+      const pre = document.createElement('pre'); pre.className = 'cblk';
+      pre.textContent = seg.replace(/^[a-zA-Z0-9_+-]*\n/, '').replace(/\n$/, '');
+      el.appendChild(pre);
+    }else if(seg){
+      const p = document.createElement('span');
+      const bits = seg.split(/`([^`\n]+)`/);
+      for(let j = 0; j < bits.length; j++){
+        if(j % 2){
+          const c = document.createElement('code'); c.className = 'ichip';
+          c.textContent = bits[j]; p.appendChild(c);
+        }else if(bits[j]){
+          p.appendChild(document.createTextNode(bits[j]));
+        }
+      }
+      el.appendChild(p);
+    }
+  }
+}
 function bubble(role, text, liveNow){
   const d = document.createElement('div');
   d.className = 'bub ' + (role === 'user' ? 'user' : 'assistant') + (liveNow ? ' live' : '');
-  d.textContent = text;
+  const wrap = document.createElement('div'); wrap.className = 'bwrap';
+  renderRich(wrap, text);
+  d.appendChild(wrap);
+  /* long replies collapse so one wall of text cannot bury the chat */
+  const t = String(text);
+  if(t.length > 1100 || (t.match(/\n/g) || []).length > 14){
+    d.classList.add('clamp');
+    const more = document.createElement('button');
+    more.className = 'showmore'; more.textContent = 'show more';
+    more.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const clamped = d.classList.toggle('clamp');
+      more.textContent = clamped ? 'show more' : 'show less';
+    });
+    d.appendChild(more);
+  }
   return d;
 }
-function chatScrollBottom(){ chatScroll.scrollTop = chatScroll.scrollHeight; }
+function chatNearBottom(){
+  return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 120;
+}
+function chatScrollBottom(){
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+  jumpBtn.classList.add('hidden');
+}
 function renderChat(){
   chatLines.textContent = '';
   if(!localTurns.length){
@@ -1346,8 +1415,11 @@ function chatAdd(role, text){
   localTurns.push({ role: role, text: text });
   const empty = chatLines.querySelector('.empty');
   if(empty) empty.remove();
+  const stick = chatNearBottom();
   chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive));
-  chatScrollBottom();
+  /* respect the reader: if they scrolled up, offer a pill instead of yanking */
+  if(stick) chatScrollBottom();
+  else jumpBtn.classList.remove('hidden');
 }
 function resetChat(){
   localTurns = []; chatHasServer = false;
@@ -1985,8 +2057,15 @@ function homeCard(s){
     : ('Call ' + (s.name || 'session') + (s.pending ? ', needs you' : '')));
 
   const r1 = document.createElement('div'); r1.className = 'r1';
+  /* deterministic colored monogram: different projects tellable at a glance */
+  const mono = document.createElement('span'); mono.className = 'mono';
+  let h = 0; const nm = String(s.name || 's');
+  for(let i = 0; i < nm.length; i++) h = (h * 31 + nm.charCodeAt(i)) >>> 0;
+  mono.style.background = 'hsl(' + (h % 360) + ' 42% 30%)';
+  mono.textContent = nm.charAt(0).toUpperCase();
   const n = document.createElement('span'); n.className = 'n';
   n.textContent = s.name || 'session';
+  r1.appendChild(mono);
   const ago = document.createElement('span'); ago.className = 'ago';
   ago.textContent = (s.ago === undefined || s.ago === null) ? '' : fmtAgo(s.ago) + ' ago';
   r1.append(n, ago);
@@ -2029,6 +2108,9 @@ function groupLabel(text){
   g.textContent = text;
   return g;
 }
+let lastHomeList = null;
+const homeFilter = document.getElementById('homeFilter');
+homeFilter.addEventListener('input', () => renderHome(lastHomeList));
 function renderHome(list){
   const keep = homeList.scrollTop;
   homeList.textContent = '';
@@ -2040,22 +2122,31 @@ function renderHome(list){
     homeList.appendChild(p);
     return;
   }
-  /* v5: two groups. Active = a live Claude process owns it, tappable to
-     call. Earlier = leftover transcript, dimmed and read-only. */
-  const act = list.filter(isActiveSess);
-  const old = list.filter(s => !isActiveSess(s));
-  if(act.length){
-    if(old.length) homeList.appendChild(groupLabel('Active'));
-    act.forEach(s => homeList.appendChild(homeCard(s)));
-  }else{
+  /* v7: priority sections, what needs you first, then working, then ready,
+     then closed read-only. Counts in each header; filter when the list grows. */
+  lastHomeList = list;
+  const q = (homeFilter.value || '').trim().toLowerCase();
+  homeFilter.classList.toggle('hidden', list.length <= 8 && !q);
+  const rows = q ? list.filter(s => String(s.name || '').toLowerCase().includes(q)) : list;
+  const act = rows.filter(isActiveSess);
+  const needs = act.filter(s => s.pending);
+  const work = act.filter(s => !s.pending && isWorkingState(s.state));
+  const ready = act.filter(s => !s.pending && !isWorkingState(s.state));
+  const old = rows.filter(s => !isActiveSess(s));
+  const sec = (label, arr) => {
+    if(!arr.length) return;
+    homeList.appendChild(groupLabel(label + '  (' + arr.length + ')'));
+    arr.forEach(s => homeList.appendChild(homeCard(s)));
+  };
+  sec('Needs you', needs);
+  sec('Working', work);
+  sec('Ready', ready);
+  if(!act.length && !q){
     const p = document.createElement('p'); p.className = 'hempty';
     p.textContent = 'No live sessions right now. Earlier sessions below are read-only.';
     homeList.appendChild(p);
   }
-  if(old.length){
-    homeList.appendChild(groupLabel('Earlier'));
-    old.forEach(s => homeList.appendChild(homeCard(s)));
-  }
+  sec('Earlier', old);
   homeList.scrollTop = keep;
 }
 
