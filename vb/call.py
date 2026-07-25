@@ -2074,7 +2074,14 @@ function stopMacAudio(){
 }
 function fetchTts(text){
   const ctl = new AbortController();
-  const tm = setTimeout(() => ctl.abort(), 4000);   // 4s per chunk, then phone voice
+  /* Length-aware timeout. A ~290-char chunk takes ~3.5s to synthesize on the
+     Mac ALONE, and the tunnel adds more, so the old flat 4s aborted real
+     synthesis constantly and dumped the rest of the reply to the robotic
+     phone voice mid-paragraph. Kokoro being genuinely DOWN still fails fast
+     (the relay returns 503 immediately), so a generous ceiling only ever
+     waits when synthesis is actually working. */
+  const ms = Math.min(15000, Math.max(9000, text.length * 45));
+  const tm = setTimeout(() => ctl.abort(), ms);
   const p = fetch(urlFor('/tts'), {
     method:'POST', headers:{ 'Content-Type':'application/json' },
     body:JSON.stringify({ text: text, voice: voiceName }), signal: ctl.signal })
@@ -2106,7 +2113,10 @@ function sayMac(text, done){
     if(audioCtx.state === 'suspended') audioCtx.resume();
   }catch(e){ sayPhone(text, done); return; }
   speechCancelled = false;
-  const parts = chunkText(text, 300);   // server caps around 600; stay well under
+  /* Smaller chunks (240) synthesize faster than 300 and start sooner, which
+     both cuts the opening delay and keeps every chunk comfortably under the
+     timeout. */
+  const parts = chunkText(text, 240);
   if(!parts.length){ done && done(); return; }
   speechStart(parts);
   let idx = 0;
@@ -2117,6 +2127,12 @@ function sayMac(text, done){
       let buf = null;
       try{ buf = await pending; }catch(e){ buf = null; }
       if(speechCancelled) return;       // barged or ended while fetching
+      if(!buf && !speechCancelled){
+        /* one retry in the natural voice before giving up: a single tunnel
+           hiccup must NOT switch the reply's voice mid-paragraph */
+        try{ buf = await fetchTts(parts[idx]); }catch(e){ buf = null; }
+        if(speechCancelled) return;
+      }
       if(!buf){
         /* fall back to the phone voice for what remains of this reply */
         macFails++;
