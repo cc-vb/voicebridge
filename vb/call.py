@@ -1245,8 +1245,14 @@ let wantStartName = !!S;   // deep link: name the start overlay once roster land
 let srDead=false, srFails=0;
 /* v6 voice source: 'phone' = browser SpeechSynthesis (default), 'mac' = the
    Mac's Kokoro neural voice via POST /tts. Persisted in localStorage. */
-let voicePref='phone';
-try{ if(localStorage.getItem('vbvoice') === 'mac') voicePref = 'mac'; }catch(e){}
+let voicePref='mac';
+try{
+  var _vp = localStorage.getItem('vbvoice');
+  /* Natural (Kokoro) is the DEFAULT on iOS and Android; 'phone' only when
+     the user explicitly chose it. Unreachable Kokoro still auto-falls back
+     to the phone voice mid-reply, so the default is safe everywhere. */
+  voicePref = (_vp === 'phone') ? 'phone' : 'mac';
+}catch(e){ voicePref = 'mac'; }
 let macDead=false;        // 2 consecutive failed Mac replies: stop trying this session
 let macFails=0;           // consecutive reply-level /tts failures
 let macToastShown=false;  // the fallback toast shows once, then falls back silently
