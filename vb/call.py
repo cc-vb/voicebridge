@@ -290,10 +290,89 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
-  voicebridge call page v6. Drop-in replacement for PAGE in vb/call.py.
-  Embed as a RAW string (r prefix) so regex backslashes survive. This file
-  contains no triple double-quote sequence anywhere, so it is safe inside
-  a Python raw triple-quoted string. 100% ASCII.
+  voicebridge call page v7 (file: call_page_v11.html). Drop-in replacement
+  for PAGE in vb/call.py. Embed as a RAW string (r prefix) so regex
+  backslashes survive. This file contains no triple double-quote sequence
+  anywhere, so it is safe inside a Python raw triple-quoted string.
+  100% ASCII.
+
+  CHANGES v6 to v7, a user-perspective overhaul of the chat experience:
+
+    1. THREE-POSITION CHAT SHEET (half / FULL SCREEN / closed).
+       User problem: "the sheet looks draggable but is not, and I cannot
+       read a long reply in a half-height window while you are talking".
+       - The grab handle (and the whole sheet header) is now really
+         draggable: drag up from half to go full screen, drag down to
+         collapse to half or close; a flick works too (velocity, not just
+         distance). An expand/collapse chevron in the sheet header does the
+         same by tap.
+       - FULL SCREEN hides the orb, the call controls, and the corner
+         buttons (visibility, so the call itself keeps running untouched);
+         a slim top bar shows the SESSION NAME plus the collapse chevron,
+         and the transcript fills the screen, safe-area insets respected.
+         The permission panel and toasts are re-stacked ABOVE the full
+         sheet so "needs you" can never hide behind the chat.
+       - The reply bubble is appended BEFORE speech starts (existing turn
+         engine order), so with the sheet open the user reads along in
+         full while the voice talks: the core "I just want to see the chat
+         while you are talking" case.
+       - The sheet remembers its last position (half or full) for the rest
+         of the call and reopens there; a new call resets to half.
+       - Hardware/gesture BACK closes the sheet instead of leaving the
+         page (history.pushState on open, popstate closes).
+    2. "NEW MESSAGES" PILL MADE BULLETPROOF. Two real bugs found and
+       fixed: (a) the page had NO .hidden CSS rule, so classList.add(
+       'hidden') never actually hid the pill, it was visible whenever the
+       sheet was; (b) the pill had NO click handler, tapping it did
+       nothing. Now: targeted #jumpBtn.hidden/#homeFilter.hidden display:
+       none rules; the pill may appear ONLY when the sheet is open AND the
+       user has scrolled up more than ~150px from the bottom AND content
+       was appended after they scrolled up (both the live-append path and
+       the server refreshChat re-render path obey this, and the re-render
+       now PRESERVES the reading position instead of yanking to the
+       bottom). Opening the sheet always scrolls to the bottom and hides
+       the pill; a scroll listener hides it the moment the user reaches
+       the bottom; tapping it jumps to the newest message.
+    3. TYPED COMPOSER at the bottom of the chat sheet.
+       User problem: "I am in a meeting / a quiet room and cannot speak."
+       A text field plus send button submits through the EXACT same turn
+       engine as speech (startTurn: same idempotent /ask key, same SSE
+       completion, same polling backstop). Focusing the field auto-mutes
+       the mic (stops the recognizer and the barge monitor, status shows
+       "typing"); blur restores listening if the user had not muted
+       manually. Enter sends. Typing while a reply is speaking cancels the
+       speech, same as barge-in. The sheet lifts above the on-screen
+       keyboard via visualViewport (--kb custom property).
+    4. "CLAUDE IS WORKING" TYPING-INDICATOR ROW while turnActive.
+       User problem: with the chat open the user saw their bubble and then
+       nothing; the orb (which shows progress) may be hidden in full
+       screen. A subtle assistant-side row with three pulsing dots sits at
+       the end of the transcript for the whole working phase (static dots
+       under prefers-reduced-motion).
+    5. COPY BUTTON ON EVERY BUBBLE with a "copied" toast.
+       User problem: "Claude read out an error message / a command and I
+       need it as text on my phone." A small always-visible copy icon
+       floats in the top-right of each bubble (a button, not long-press:
+       long-press already means text selection on iOS and the two would
+       fight). navigator.clipboard with a hidden-textarea execCommand
+       fallback for older browsers.
+    6. STOP THE VOICE BY TOUCH: tap the orb, or the speaker-off button
+       that appears in the chat top bar while a reply is speaking.
+       User problem: reading along in the chat, the user often finishes
+       before the voice does (or someone walks in); barge-in requires
+       SPEAKING, which is exactly what they cannot do, and in full-screen
+       chat the orb is hidden, so the chat bar needs its own stop surface.
+       Either one silences the reply and drops straight back into
+       listening (or muted/working, whatever the call state wants).
+    7. UNREAD DOT on the chat button.
+       User problem: with the sheet closed, a reply that arrived while the
+       phone was in a pocket left no visible trace. A small mint dot on
+       the chat control marks unseen assistant messages; opening the sheet
+       clears it.
+    All of it self-contained (no CDNs), ASCII only, reduced-motion aware;
+    the turn engine, stream protocol, barge-in, stitching, permission
+    panel, home screen, and Mac voice pipeline are untouched except where
+    these features required a hook.
 
   CHANGES v5 to v6:
     VOICE-SOURCE TOGGLE: a small gear on the call screen opens a settings
@@ -745,16 +824,116 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
   margin:0; padding:2px 4px 8px;
 }
 
-/* chat: non-modal, floats above the call controls so mute and end
-   stay reachable while reading */
+/* chat: non-modal in HALF (floats above the call controls so mute and end
+   stay reachable while reading); a real three-position sheet in v7:
+   half (default) / full screen / closed. --kb lifts it over the on-screen
+   keyboard (set from visualViewport while the composer is focused). */
 #chatSheet {
   left:10px; right:10px;
-  bottom:calc(env(safe-area-inset-bottom, 0px) + 122px);
+  bottom:calc(env(safe-area-inset-bottom, 0px) + 122px + var(--kb, 0px));
   border:1px solid var(--line); border-radius:20px;
-  height:52vh; height:52dvh; max-height:none; padding-bottom:14px; z-index:30;
+  height:52vh;
+  height:min(52dvh, calc(100dvh - var(--kb, 0px) - 150px));
+  max-height:none; padding-bottom:10px; z-index:30;
   transform:translateY(calc(100% + 140px));
+  transition:transform .3s cubic-bezier(.3,.9,.3,1), top .3s ease,
+    left .3s ease, right .3s ease, bottom .3s ease, height .3s ease,
+    border-radius .3s ease, padding .3s ease;
 }
 #chatSheet.open { transform:translateY(0); }
+#chatSheet.dragging { transition:none; }
+/* FULL SCREEN: chat fills everything, safe areas respected. The orb, the
+   call controls, and the corner buttons hide via body.chat-full below
+   (visibility only, the call keeps running); a slim top bar (chatbar)
+   shows the session name + the collapse chevron. */
+#chatSheet.full {
+  left:0; right:0; bottom:var(--kb, 0px);
+  height:100vh;
+  height:calc(100dvh - var(--kb, 0px));
+  border-radius:0; border:0; z-index:62;
+  padding-top:calc(env(safe-area-inset-top, 0px) + 8px);
+  padding-bottom:calc(env(safe-area-inset-bottom, 0px) + 10px);
+}
+body.chat-full header, body.chat-full main, body.chat-full footer,
+body.chat-full #backBtn, body.chat-full #setBtn { visibility:hidden; }
+/* "needs you" and toasts must NEVER hide behind the full chat */
+body.chat-full #decide { z-index:66; }
+body.chat-full #toast { z-index:66; }
+body.standalone #chatSheet.full {
+  padding-top:max(calc(env(safe-area-inset-top, 0px) + 8px), 38px); }
+/* v7 sheet header: grab handle + title bar + expand/collapse chevron.
+   touch-action none so the drag gesture owns it, never the page scroll. */
+#chatHead { flex:none; touch-action:none; }
+.chatbar { display:flex; align-items:center; gap:10px; padding:0 2px 8px; }
+.chatbar h2 { margin:0; flex:1; min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; display:block; }
+#chatSizeBtn, #hushBtn {
+  flex:none; width:38px; height:38px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.06); border:1px solid var(--line);
+  color:#96a0b5;
+}
+/* stop-the-voice lives in the chat bar because the orb (the other stop
+   surface) is hidden in full screen; only shown while a reply speaks */
+#hushBtn { display:none; color:#9db9ff; border-color:rgba(140,170,240,.35); }
+body[data-state="speaking"] #hushBtn { display:flex; }
+#hushBtn:active { transform:scale(.92); }
+#hushBtn svg { width:18px; height:18px; }
+#chatSizeBtn:active { transform:scale(.92); }
+#chatSizeBtn svg { width:18px; height:18px; transition:transform .25s ease; }
+#chatSheet.full #chatSizeBtn svg { transform:rotate(180deg); }
+/* full screen: the top bar reads as a real title (the session name),
+   not an uppercase section label */
+#chatSheet.full .chatbar h2 {
+  font-size:16px; font-weight:600; text-transform:none;
+  letter-spacing:.01em; color:#dfe4ee;
+}
+/* v7 composer: type instead of talking (meetings, quiet rooms) */
+.composer { flex:none; display:flex; align-items:center; gap:8px; padding:8px 2px 0; }
+#composeIn {
+  flex:1; min-width:0; min-height:44px;
+  background:#0e1420; border:1px solid var(--line); border-radius:999px;
+  color:#e8ebf2; padding:11px 16px; font-size:15px; font-family:inherit;
+  user-select:text; -webkit-user-select:text;
+}
+#composeIn::placeholder { color:#5b6479; }
+#sendBtn {
+  flex:none; width:44px; height:44px; border-radius:50%;
+  background:var(--mint); color:#06231f;
+  display:flex; align-items:center; justify-content:center;
+}
+#sendBtn:active { transform:scale(.92); }
+#sendBtn svg { width:20px; height:20px; }
+/* v7 typing indicator: "Claude is working" row while a turn is in flight */
+.typing {
+  align-self:flex-start; display:flex; align-items:center; gap:5px;
+  padding:10px 14px; border-radius:18px; border-bottom-left-radius:6px;
+  border:1px solid var(--line); background:rgba(255,255,255,.04);
+  color:var(--dim); font-size:13.5px;
+}
+.typing .tl { margin-right:4px; }
+.typing .td { width:6px; height:6px; border-radius:50%; background:var(--dim);
+  animation:softpulse 1.2s ease-in-out infinite; }
+.typing .td:nth-child(3) { animation-delay:.2s; }
+.typing .td:nth-child(4) { animation-delay:.4s; }
+/* v7 copy button: floats top-right INSIDE the bubble (a button, not
+   long-press: long-press means text selection on iOS) */
+.copybtn {
+  float:right; width:30px; height:30px; margin:-4px -8px 2px 8px;
+  border-radius:9px; display:flex; align-items:center; justify-content:center;
+  color:#8a94a8; background:rgba(10,13,20,.3);
+}
+.copybtn:active { transform:scale(.9); color:#e8ebf2; }
+.copybtn svg { width:15px; height:15px; }
+/* v7 unread dot: a reply arrived while the sheet was closed */
+#chatBtn.unread::after {
+  content:''; position:absolute; top:11px; right:11px;
+  width:9px; height:9px; border-radius:50%; background:var(--mint);
+  box-shadow:0 0 7px rgba(70,215,195,.8);
+}
+/* the pill and the home filter hid via a class that had NO rule (v6 bug):
+   targeted so the .hidden overlays keep their opacity fade */
+#jumpBtn.hidden, #homeFilter.hidden { display:none; }
 #pullHint { height:0; overflow:hidden; text-align:center; font-size:12px;
   color:var(--dim); line-height:28px; transition:height .18s ease; flex:none; }
 #chatLines { display:flex; flex-direction:column; gap:8px; padding:2px 2px 6px; }
@@ -782,6 +961,7 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 #jumpBtn { position:absolute; bottom:74px; left:50%; transform:translateX(-50%);
   z-index:5; background:#182032; color:#46d7c3; border:1px solid rgba(70,215,195,.35);
   border-radius:999px; padding:7px 14px; font-size:13px; }
+#chatSheet.full #jumpBtn { bottom:calc(74px + env(safe-area-inset-bottom, 0px)); }
 #homeFilter { width:100%; box-sizing:border-box; margin:0 0 10px;
   background:#131a29; border:1px solid var(--line); border-radius:12px;
   color:#e5ecf7; padding:10px 14px; font-size:15px; }
@@ -860,6 +1040,9 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
   .sheet, #decide, #toast, #home, .hcard { transition:none; }
   #switchOverlay .spin { animation:none; border-top-color:var(--line); }
   .sdot.working, .badge.needs, #chip .cdot, #decide .eyebrow .ddot { animation:none; }
+  /* v7: typing dots hold steady, the size chevron snaps */
+  .typing .td { animation:none; }
+  #chatSizeBtn svg { transition:none; }
 }
 </style></head><body data-state="ended" class="home">
 
@@ -948,12 +1131,38 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
 <div id="scrim"></div>
 
 <section class="sheet" id="chatSheet" role="dialog" aria-label="Chat">
-  <div class="grab" aria-hidden="true"></div>
-  <h2>Chat</h2>
+  <div id="chatHead">
+    <div class="grab" aria-hidden="true"></div>
+    <div class="chatbar">
+      <h2 id="chatTitle">Chat</h2>
+      <button id="hushBtn" aria-label="Stop the voice, keep reading">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none"/>
+          <path d="M15 9.5l5 5"/><path d="M20 9.5l-5 5"/>
+        </svg>
+      </button>
+      <button id="chatSizeBtn" aria-label="Expand chat to full screen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+      </button>
+    </div>
+  </div>
   <button id="jumpBtn" class="hidden" aria-label="Jump to newest">new messages</button>
   <div class="scroll" id="chatScroll">
     <div id="pullHint">pull to refresh</div>
     <div id="chatLines"><p class="empty">The conversation with this session appears here.</p></div>
+  </div>
+  <div class="composer">
+    <input id="composeIn" type="text" placeholder="type instead of talking"
+           autocapitalize="sentences" autocomplete="off" autocorrect="on"
+           enterkeyhint="send" aria-label="Type a prompt to the session">
+    <button id="sendBtn" aria-label="Send typed prompt">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>
+      </svg>
+    </button>
   </div>
 </section>
 
@@ -1010,6 +1219,8 @@ const S = PARAMS.get('s') || '';   /* deep link: skip home, land on this session
 const $ = id => document.getElementById(id);
 const statusEl=$('status'), pillName=$('pillName'), muteBtn=$('muteBtn'),
       chatBtn=$('chatBtn'), chatLines=$('chatLines'), chatScroll=$('chatScroll'), jumpBtn=$('jumpBtn'),
+      chatHead=$('chatHead'), chatTitle=$('chatTitle'), chatSizeBtn=$('chatSizeBtn'),
+      composeIn=$('composeIn'), sendBtn=$('sendBtn'),
       pullHint=$('pullHint'), chipEl=$('chip'), decideEl=$('decide'),
       decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
       sessList=$('sessList'), sessCount=$('sessCount'),
@@ -1040,6 +1251,12 @@ let macDead=false;        // 2 consecutive failed Mac replies: stop trying this 
 let macFails=0;           // consecutive reply-level /tts failures
 let macToastShown=false;  // the fallback toast shows once, then falls back silently
 let macSrc=null;          // the AudioBufferSourceNode currently playing Mac audio
+/* v7 chat sheet state: three positions (closed / half / full). chatPosPref
+   remembers the last open position for the rest of the call; typingMute
+   keeps the mic off while the composer has focus. */
+let chatOpenState=false, chatPos='half', chatPosPref='half', chatHist=false;
+let typingMute=false;
+let renderedTurns=0;      // turns currently in the DOM (pill append detection)
 
 /* rows without "active" come from an older server: treat them as live */
 function isActiveSess(s){ return !s || s.active !== false; }
@@ -1383,7 +1600,8 @@ function stopBarge(){
   if(bargeOwn){ try{ bargeOwn.getTracks().forEach(t => t.stop()); }catch(e){} bargeOwn = null; }
 }
 async function startBarge(){
-  if(bargeIv || bargeArming || !live || muted) return;
+  /* v7: typingMute keeps the whole mic off, the barge monitor included */
+  if(bargeIv || bargeArming || !live || muted || typingMute) return;
   bargeArming = true;
   let stream = media;   // whisper path: reuse the stream that is already open
   if(!stream){
@@ -1455,9 +1673,47 @@ function renderRich(el, text){
     }
   }
 }
+/* v7: copy any bubble's text ("Claude read out an error, I need it as
+   text"). clipboard API needs a secure context (the tunnel is https);
+   the hidden-textarea path covers plain-http and older browsers. */
+function legacyCopy(t){
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    ta.setAttribute('readonly', '');
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  }catch(e){ return false; }
+}
+function copyText(t){
+  const done = () => toast('copied');
+  const fail = () => { legacyCopy(t) ? done() : toast('copy failed'); };
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t).then(done, fail);
+      return;
+    }
+  }catch(e){}
+  fail();
+}
 function bubble(role, text, liveNow){
   const d = document.createElement('div');
   d.className = 'bub ' + (role === 'user' ? 'user' : 'assistant') + (liveNow ? ' live' : '');
+  /* the copy button goes FIRST so its float pulls it to the top-right
+     and the text wraps around it instead of underneath */
+  const cp = document.createElement('button');
+  cp.className = 'copybtn';
+  cp.setAttribute('aria-label', 'Copy this message');
+  cp.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="9" y="9" width="11" height="11" rx="2.5"/>' +
+    '<path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>';
+  cp.addEventListener('click', ev => { ev.stopPropagation(); copyText(String(text)); });
+  d.appendChild(cp);
   const wrap = document.createElement('div'); wrap.className = 'bwrap';
   renderRich(wrap, text);
   d.appendChild(wrap);
@@ -1476,40 +1732,86 @@ function bubble(role, text, liveNow){
   }
   return d;
 }
+/* v7 pill rule, bulletproof: the pill may exist ONLY when (sheet open) AND
+   (user scrolled up more than ~150px from the bottom) AND (content was
+   appended after they scrolled up). Every path that mutates the transcript
+   funnels through chatAdd or renderChat below, and both enforce it; a
+   scroll listener hides the pill the moment the bottom is reached. */
 function chatNearBottom(){
-  return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 120;
+  return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 150;
 }
 function chatScrollBottom(){
   chatScroll.scrollTop = chatScroll.scrollHeight;
   jumpBtn.classList.add('hidden');
 }
+chatScroll.addEventListener('scroll', () => {
+  if(chatNearBottom()) jumpBtn.classList.add('hidden');
+}, { passive:true });
+jumpBtn.addEventListener('click', chatScrollBottom);   // v6 bug: it had NO handler
+/* v7: "Claude is working" row pinned to the end of the transcript while a
+   turn is in flight; the orb is hidden in full-screen chat, so the chat
+   itself has to show progress. */
+function syncTyping(){
+  let row = document.getElementById('typingRow');
+  if(turnActive && live){
+    if(!row){
+      row = document.createElement('div');
+      row.id = 'typingRow'; row.className = 'typing';
+      const tl = document.createElement('span');
+      tl.className = 'tl'; tl.textContent = 'Claude is working';
+      row.appendChild(tl);
+      for(let i = 0; i < 3; i++){
+        const td = document.createElement('span'); td.className = 'td';
+        row.appendChild(td);
+      }
+    }
+    chatLines.appendChild(row);   // re-append keeps it LAST
+  }else if(row) row.remove();
+}
 function renderChat(){
+  const sheetOpen = chatOpenState;
+  const wasNear = !sheetOpen || chatNearBottom();
+  const keepTop = chatScroll.scrollTop;
+  const grew = localTurns.length > renderedTurns;
   chatLines.textContent = '';
   if(!localTurns.length){
     const p = document.createElement('p'); p.className = 'empty';
     p.textContent = 'The conversation with this session appears here.';
     chatLines.appendChild(p);
+    renderedTurns = 0;
+    jumpBtn.classList.add('hidden');
     return;
   }
   localTurns.forEach(t => chatLines.appendChild(bubble(t.role, t.text)));
-  chatScrollBottom();
+  syncTyping();
+  renderedTurns = localTurns.length;
+  /* respect the reader: a re-render (server transcript swap) must not yank
+     someone who scrolled up back to the bottom mid-read */
+  if(wasNear){ chatScrollBottom(); }
+  else{
+    chatScroll.scrollTop = keepTop;
+    if(grew) jumpBtn.classList.remove('hidden');
+  }
 }
 function chatAdd(role, text){
   if(!text) return;
   localTurns.push({ role: role, text: text });
   const empty = chatLines.querySelector('.empty');
   if(empty) empty.remove();
-  const sheetOpen = chatSheet.classList.contains('open');
+  const sheetOpen = chatOpenState;
   const stick = !sheetOpen || chatNearBottom();
   chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive));
-  /* respect the reader: if they scrolled up, offer a pill instead of yanking.
-     A CLOSED sheet has bogus scroll metrics, so the pill only ever appears
-     while the sheet is open (it falsely said "new messages" otherwise). */
+  syncTyping();
+  renderedTurns = localTurns.length;
+  /* a reply that lands while the sheet is CLOSED leaves a dot on the chat
+     button instead of a pill nobody can see */
+  if(role !== 'user' && !sheetOpen) chatBtn.classList.add('unread');
   if(stick) chatScrollBottom();
-  else jumpBtn.classList.remove('hidden');
+  else if(sheetOpen) jumpBtn.classList.remove('hidden');
 }
 function resetChat(){
   localTurns = []; chatHasServer = false;
+  chatBtn.classList.remove('unread');   // v7: the dot was about the old session
   renderChat();
 }
 async function refreshChat(){
@@ -1784,6 +2086,7 @@ function cancelTurn(){
   turnActive = false;
   stopWorkTicker();
   hideDecision();
+  syncTyping();   // v7: drop the "Claude is working" row with the turn
 }
 function handleUtterance(t){
   if(/^(stop listening|end call|hang up|goodbye)[.!]?$/i.test(t)){ endCall(); return; }
@@ -2077,6 +2380,12 @@ async function listenWhisper(){
   mr.start();
 }
 function listen(){
+  /* typingMute: the composer has focus, the mic stays off until blur; keep
+     the status honest instead of claiming "listening" with a dead mic */
+  if(typingMute){
+    if(live && !muted && state === 'listening') setState('muted', 'typing');
+    return;
+  }
   if(!live || muted || turnActive || decisionOpen) return;
   /* srDead: SR proved unusable this session (iOS service-not-allowed twice) */
   ((SR && !srDead) ? listenSR : listenWhisper)();
@@ -2103,6 +2412,8 @@ function resetStartOverlay(name){
 function micDenied(){
   live = false; liveGen++;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
+  /* v7: a full-screen chat would sit above the recovery overlay */
+  if(chatOpenState && chatPos === 'full') setChatPos('half');
   setState('ended', 'microphone blocked');
   $('startTitle').textContent = 'Microphone is blocked';
   $('startBody').textContent = 'Allow microphone access for this site in your browser settings, then start the call again.';
@@ -2118,6 +2429,7 @@ async function startCall(){
   live = true; muted = false;
   liveGen++;
   srFails = 0;   // a fresh call gets a fresh chance (srDead stays for the session)
+  chatPosPref = 'half';   // v7: the remembered sheet position is per call
   muteBtn.classList.remove('muted');
   muteBtn.setAttribute('aria-pressed', 'false');
   refreshVoices();
@@ -2142,6 +2454,8 @@ async function startCall(){
 function endCall(){
   live = false; liveGen++;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
+  /* v7: a full-screen chat would sit above the call-ended overlay */
+  if(chatOpenState && chatPos === 'full') setChatPos('half');
   setState('ended', 'call ended');
   $('startTitle').textContent = 'Call ended';
   $('startBody').textContent = 'Your session is still running on the Mac. Start a new call whenever you are ready.';
@@ -2240,20 +2554,171 @@ function closeClosedSheet(){
   closedSheet.classList.remove('open');
   syncScrim();
 }
-function closeChatSheet(){
-  chatSheet.classList.remove('open');
-  chatBtn.classList.remove('active');
-  chatBtn.setAttribute('aria-pressed', 'false');
-  chatBtn.setAttribute('aria-label', 'Show chat');
+/* ---- v7: the three-position chat sheet (closed / half / full) ---- */
+function applyChatPos(){
+  const full = chatOpenState && chatPos === 'full';
+  chatSheet.classList.toggle('open', chatOpenState);
+  chatSheet.classList.toggle('full', full);
+  document.body.classList.toggle('chat-full', full);
+  /* full screen: the slim top bar names the SESSION, not just "Chat" */
+  chatTitle.textContent = full ? (pillName.textContent || 'Chat') : 'Chat';
+  chatSizeBtn.setAttribute('aria-label',
+    full ? 'Collapse chat to half screen' : 'Expand chat to full screen');
+  chatBtn.classList.toggle('active', chatOpenState);
+  chatBtn.setAttribute('aria-pressed', String(chatOpenState));
+  chatBtn.setAttribute('aria-label', chatOpenState ? 'Hide chat' : 'Show chat');
 }
+function setChatPos(pos){
+  chatPos = pos;
+  chatPosPref = pos;   // remembered for the rest of this call
+  applyChatPos();
+}
+function openChatSheet(pos){
+  chatOpenState = true;
+  chatPos = pos || chatPosPref || 'half';
+  chatPosPref = chatPos;
+  chatBtn.classList.remove('unread');
+  applyChatPos();
+  chatScrollBottom();          // on open: ALWAYS at the bottom, pill hidden
+  refreshChat();
+  /* hardware/gesture back closes the sheet instead of leaving the page */
+  if(!chatHist){
+    try{ history.pushState({ vbchat: 1 }, ''); chatHist = true; }catch(e){}
+  }
+}
+function closeChatSheet(fromPop){
+  const was = chatOpenState;
+  chatOpenState = false;
+  applyChatPos();
+  jumpBtn.classList.add('hidden');
+  try{ composeIn.blur(); }catch(e){}
+  if(chatHist){
+    chatHist = false;
+    if(!fromPop && was){ try{ history.back(); }catch(e){} }
+  }
+}
+window.addEventListener('popstate', () => {
+  if(chatOpenState) closeChatSheet(true);
+  else chatHist = false;
+});
+chatSizeBtn.addEventListener('click', () => {
+  setChatPos(chatPos === 'full' ? 'half' : 'full');
+});
+/* drag the sheet header: up from half = full screen, down = half / closed.
+   During the drag the sheet tracks the finger with transitions off (half
+   mode resizes from its bottom anchor, full mode slides down); on release
+   distance OR a flick picks the snap target and the CSS transition
+   finishes the move. */
+(function(){
+  let dragging = false, y0 = 0, h0 = 0, lastY = 0, lastT = 0, vel = 0;
+  function endDrag(){
+    if(!dragging) return;
+    dragging = false;
+    chatSheet.classList.remove('dragging');
+    const dy = lastY - y0;   // down positive
+    const H = window.innerHeight || 1;
+    if(chatPos === 'half'){
+      const curH = h0 - dy;
+      if(vel < -.6 || curH > H * .72) setChatPos('full');
+      else if(vel > .6 || dy > 130) closeChatSheet();
+      else applyChatPos();                       // snap back to half
+    }else{
+      if(vel > 1.0 || dy > H * .55) closeChatSheet();
+      else if(vel > .25 || dy > 120) setChatPos('half');
+      else applyChatPos();                       // snap back to full
+    }
+    chatSheet.style.height = '';
+    chatSheet.style.transform = '';
+  }
+  chatHead.addEventListener('touchstart', e => {
+    if(!chatOpenState || e.touches.length !== 1) return;
+    dragging = true;
+    y0 = lastY = e.touches[0].clientY;
+    lastT = Date.now();
+    vel = 0;
+    h0 = chatSheet.getBoundingClientRect().height;
+    chatSheet.classList.add('dragging');
+  }, { passive:true });
+  chatHead.addEventListener('touchmove', e => {
+    if(!dragging) return;
+    e.preventDefault();
+    const y = e.touches[0].clientY, now = Date.now();
+    if(now > lastT) vel = (y - lastY) / (now - lastT);   // px per ms
+    lastY = y; lastT = now;
+    const dy = y - y0;
+    if(chatPos === 'half'){
+      /* bottom-anchored: growing height tracks an upward drag */
+      const nh = Math.min(window.innerHeight, Math.max(90, h0 - dy));
+      chatSheet.style.height = nh + 'px';
+    }else{
+      /* full: slide the whole sheet down with the finger */
+      chatSheet.style.transform = 'translateY(' + Math.max(0, dy) + 'px)';
+    }
+  }, { passive:false });
+  chatHead.addEventListener('touchend', endDrag);
+  chatHead.addEventListener('touchcancel', endDrag);
+})();
+/* ---- v7: the typed composer (silent prompts from the phone) ---- */
+function sendTyped(){
+  const t = (composeIn.value || '').trim();
+  if(!t) return;
+  if(!live){ toast('start the call first, then type away'); return; }
+  if(decisionOpen){ toast('answer the yes or no first'); return; }
+  if(turnActive){ toast('still working on the last one'); return; }
+  composeIn.value = '';
+  stopSpeaking();     // typing over a talking reply = silent barge-in
+  stopListening();
+  startTurn(t);       // the EXACT same turn engine as speech
+}
+sendBtn.addEventListener('click', sendTyped);
+/* keep the input focused across a send tap: iOS otherwise blurs first,
+   the keyboard collapses, the sheet shifts, and the tap can miss; this
+   also keeps the keyboard up for a quick follow-up */
+sendBtn.addEventListener('mousedown', e => e.preventDefault());
+composeIn.addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ e.preventDefault(); sendTyped(); }
+});
+/* focusing the field mutes the mic (no accidental hot mic in a meeting,
+   and no recognizer transcribing keyboard clicks); blur restores exactly
+   the state the call wants */
+composeIn.addEventListener('focus', () => {
+  typingMute = true;
+  stopListening();
+  stopBarge();
+  if(live && !muted && state === 'listening') setState('muted', 'typing');
+});
+composeIn.addEventListener('blur', () => {
+  typingMute = false;
+  if(live && !muted && !turnActive && !decisionOpen && state !== 'speaking'){
+    setState('listening'); listen();
+  }
+});
+/* lift the sheet over the on-screen keyboard (iOS lays the keyboard over
+   fixed elements; visualViewport is the only honest signal) */
+(function(){
+  const vv = window.visualViewport;
+  if(!vv) return;
+  function kb(){
+    const gap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    chatSheet.style.setProperty('--kb', (gap > 40 ? gap : 0) + 'px');
+    if(gap > 40 && chatOpenState && chatNearBottom()) chatScrollBottom();
+  }
+  vv.addEventListener('resize', kb);
+  vv.addEventListener('scroll', kb);
+})();
+/* ---- v7: tap the orb to stop the voice (read-along users finish before
+   the speech does; barge-in needs SPEAKING, which a meeting forbids) */
+function hushVoice(){
+  if(state !== 'speaking') return;
+  stopSpeaking();
+  resumeAfterSpeech();
+}
+$('orbzone').addEventListener('click', hushVoice);
+$('hushBtn').addEventListener('click', hushVoice);
 scrim.addEventListener('click', () => { closeSessSheet(); closeClosedSheet(); closeSetSheet(); });
 $('pill').addEventListener('click', () => { sessOpen ? closeSessSheet() : openSessSheet(); });
 chatBtn.addEventListener('click', () => {
-  const open = chatSheet.classList.toggle('open');
-  chatBtn.classList.toggle('active', open);
-  chatBtn.setAttribute('aria-pressed', String(open));
-  chatBtn.setAttribute('aria-label', open ? 'Hide chat' : 'Show chat');
-  if(open){ chatScrollBottom(); refreshChat(); }
+  chatOpenState ? closeChatSheet() : openChatSheet();
 });
 
 /* ============================================================ roster (shared) */
@@ -2480,6 +2945,7 @@ async function pollSessions(){
     if(cur.name){
       pillName.textContent = cur.name;
       $('pill').setAttribute('aria-label', 'Session: ' + cur.name + '. Open control room.');
+      if(chatPos === 'full' && chatOpenState) chatTitle.textContent = cur.name;   // v7 top bar
     }
     if(wantStartName && !live){
       $('startTitle').textContent = cur.name || 'voicebridge';
@@ -2551,6 +3017,7 @@ async function switchTo(s){
     if(s.id) currentSid = s.id;
     pillName.textContent = s.name || 'session';
     $('pill').setAttribute('aria-label', 'Session: ' + pillName.textContent + '. Open control room.');
+    if(chatPos === 'full' && chatOpenState) chatTitle.textContent = pillName.textContent;   // v7
     switchMsg.textContent = 'connected to ' + pillName.textContent;
     resetChat();                              // new session, new transcript
     refreshChat();
