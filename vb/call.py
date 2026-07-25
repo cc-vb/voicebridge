@@ -310,11 +310,95 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
-  voicebridge call page v7 (file: call_page_v11.html). Drop-in replacement
+  voicebridge call page v14 (file: call_page_v14.html). Drop-in replacement
   for PAGE in vb/call.py. Embed as a RAW string (r prefix) so regex
   backslashes survive. This file contains no triple double-quote sequence
   anywhere, so it is safe inside a Python raw triple-quoted string.
   100% ASCII.
+
+  CHANGES, v12 base to v14, each brief item and where it lives:
+
+    1. TOP BAR, fixed with safe-area insets. The back chevron (#backBtn,
+       44px, its own fixed button so it can float over the start overlay)
+       still ends the call confirm-free through backHome() with the brief
+       "ending call" beat on the switch overlay. The session pill (#pill,
+       state dot + name, 15px/600) is centered in the new fixed header and
+       opens the control room sheet; the settings gear (#setBtn, 44px)
+       mirrors it on the right. CSS: "header" block + #pill + #backBtn +
+       #setBtn.
+    2. AUDIO-ROUTE PILL directly under the bar: #chip, NON-tappable
+       (pointer-events:none), inline speaker-with-arcs + smartphone-outline
+       SVGs plus the text "Sound on this phone" (12px, dim). Shown only
+       while heartbeats land (beatOnce() toggles .on). No handset glyph,
+       no "audio" wording anywhere in it.
+    3. CENTER: the v12 orb rendering is untouched (gradient, breathe,
+       sheen, ripples, speakglow). A permanent state word (#stateWord,
+       13px/600, uppercase, .08em tracking, ui-rounded stack) sits under
+       the orb and mirrors the state: Listening / Thinking / Speaking /
+       Muted / Needs you, set inside setState(). The old #status line is
+       demoted to a small detail row (elapsed time, stitch countdown,
+       "typing"); it never repeats the state word. Only the orb is
+       tappable in the center (stop-the-voice, hushVoice()).
+    4. BOTTOM CONTROL ROW in the thumb zone, safe-area padded, 40px gaps
+       (>= 24px), every control in a .ctlwrap with an 11px/500 label:
+       - MUTE (#muteBtn, 56px): one inline mic SVG (rounded capsule +
+         stand arc + stem) plus a 45-degree slash group. Unmuted:
+         translucent white chip, label "Mute". Muted: chip fills #E5484D,
+         the slash shows (white line over a 2px-equivalent casing stroke
+         painted in the chip color so the mic reads through it), label
+         flips to "Muted" (#muteLbl). The slash shows the CURRENT state.
+       - END (#endBtn, 64px): solid #E5484D circle, white HORIZONTAL
+         on-hook handset, label "End". The only red-by-default control.
+       - CHAT (#chatBtn, 56px): speech bubble, label "Chat", mint unread
+         dot (.unread::after) when replies land while chat is closed.
+    5. CHAT IS A FULL-SCREEN MODE now (#chatSheet fills the viewport; the
+       drag gesture, half state, grab handle and size chevron are RETIRED,
+       code and CSS both). Entered via the Chat control, exited via the
+       chat header back chevron (#chatBackBtn) AND hardware back
+       (pushState on open, popstate closes, unchanged plumbing). The chat
+       header holds the back chevron, the session name (#chatTitle), a
+       state dot mirroring the orb color (#chatDot, var(--o2)), and the
+       speaker-x hush button (#hushBtn) shown only while speaking.
+    6. TRANSCRIPT, ChatGPT convention: USER messages are right-aligned
+       mint bubbles (.bub.user, max-width 85%); AGENT replies are OPEN
+       full-width text on the background (.msg-a, max column 65ch). Body
+       text 16px/1.5 on the system-ui chat stack (16px also stops the iOS
+       zoom-on-focus in the composer). Code blocks (.cblk) are 13px/1.45
+       ui-monospace cards on #0a0e18 with their own overflow-x so they
+       never widen the page. Timestamps render as grouped cluster
+       dividers (.tsdiv, 11.5px, dim, centered) when >= 10 minutes pass
+       between stamped messages, never per-message; refreshChat()
+       preserves stamps across server re-renders by role+text matching.
+    7. KEPT IN CHAT, wired as before: show-more clamp on long replies;
+       per-message copy button on user AND agent messages (top-right of
+       the text block); jump-to-bottom pill (#jumpBtn, same open+scrolled
+       up+appended rules); "Claude is working" three-dot row while
+       turnActive (syncTyping); pull-to-refresh; composer with "type
+       instead of talking", focus mutes the mic with status "typing",
+       Enter sends, visualViewport keyboard lift via --kb. NEW: delivery
+       state row (#deliveryRow / syncDelivery()) under the last user
+       bubble, "sending" / "delivered" / "failed, tap to retry", wired to
+       askDelivered and pendingSend; tapping retries with the same
+       idempotent key.
+    8. FONT STACKS, exact: display/state/labels = ui-rounded, "SF Pro
+       Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
+       (body). Chat body = system-ui, -apple-system, "Segoe UI", Roboto,
+       "Helvetica Neue", Arial, sans-serif (.bub, .msg-a, #composeIn,
+       .tsdiv, .dstate, .typing). Code = ui-monospace, "SF Mono",
+       SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono",
+       monospace (.cblk, .ichip).
+    9. SETTINGS SHEET kept: source toggle (Phone / Natural voice) plus
+       the Heart / Bella / Michael voice cards (#voiceCards), restyled to
+       the new type roles; each hint is one sentence. The chosen Kokoro
+       id persists (vbvoice_name) and rides every /tts body as
+       {"voice": id} (fetchTts).
+   10. STATES: all v12 orb colors and motion kept; the state word always
+       mirrors them; reduced-motion keeps color + text (animations off,
+       ripples static). Battery: home parks the call screen (visibility)
+       and full-screen chat parks the orb/controls the same way.
+
+  Everything below this line in the older notes still applies to the
+  turn engine, stream protocol, stitching, barge-in and iOS quirks.
 
   CHANGES v6 to v7, a user-perspective overhaul of the chat experience:
 
@@ -502,16 +586,17 @@ PAGE = r"""<!DOCTYPE html>
                       when the endpoint is missing.
     POST /heartbeat   empty body, every 5s while the call is live. Freshness
                       tells the Mac to keep its own speakers quiet; the page
-                      shows the "audio on phone" chip while beats land.
+                      shows the "Sound on this phone" pill while beats land.
     POST /stt         audio blob returns {"text":"..."}, the whisper fallback
                       when native SpeechRecognition is absent or disabled.
                       The page sets Content-Type to the recorder's real
                       mimeType (audio/webm on Android, audio/mp4 on iOS).
-    POST /tts         body {"text":"..."} returns audio/wav synthesized by
-                      the Mac's Kokoro neural voice; 503 when Kokoro is
+    POST /tts         body {"text":"...","voice":"af_heart|af_bella|
+                      am_michael"} returns audio/wav synthesized by the
+                      Mac's Kokoro neural voice; 503 when Kokoro is
                       unavailable; max ~600 chars per request (the page
                       sends <=300). Used only when the settings sheet has
-                      Voice set to "Mac (natural)"; every failure path
+                      Voice set to "Natural voice"; every failure path
                       falls back to the phone's SpeechSynthesis.
 
   All inline, no external assets or CDNs. iOS Safari and Android Chrome
@@ -545,7 +630,7 @@ body {
   position:fixed; inset:0; margin:0;
   display:flex; flex-direction:column;
   background:#0a0d14; color:#e8ebf2;
-  font-family:ui-rounded, -apple-system, "SF Pro Rounded", system-ui, "Segoe UI", Roboto, sans-serif;
+  font-family:ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   user-select:none; -webkit-user-select:none; touch-action:manipulation;
   transition:--o1 .9s ease, --o2 .9s ease, --o3 .9s ease, --glow .9s ease, --ring .9s ease;
   --o1:#dfe7f8; --o2:#5f74b0; --o3:#1c2440;
@@ -665,43 +750,65 @@ body.home #setBtn { display:none; }
 }
 .seg button.sel { background:#e8ebf2; color:#0a0d14; font-weight:600; }
 .seg button:not(.sel):active { background:rgba(255,255,255,.08); }
+/* the curated Natural voices: three cards under the source toggle */
+#voiceCards { display:flex; gap:8px; padding:8px 2px 4px; }
+#voiceCards.off { display:none; }
+.vcard {
+  flex:1; display:flex; flex-direction:column; align-items:center; gap:3px;
+  background:rgba(255,255,255,.04); border:1px solid var(--line);
+  border-radius:14px; padding:13px 8px 11px; min-height:44px;
+  transition:border-color .2s ease, background .2s ease;
+}
+.vcard:active { transform:scale(.97); }
+.vcard.sel { border-color:rgba(70,215,195,.55); background:rgba(70,215,195,.08); }
+.vcard .vn { font-size:15px; font-weight:600; color:#dfe4ee; }
+.vcard.sel .vn { color:#7fe6d5; }
+.vcard .vd { font-size:11px; font-weight:500; color:var(--dim); text-align:center; line-height:1.35; }
 
 /* iOS A2HS standalone quirk: with a black-translucent status bar the page
    sits under the clock, and some older devices report a 0 top inset in
    standalone mode. Give the top rows a hard floor so nothing hides. */
 body.standalone .hhead { padding-top:max(calc(env(safe-area-inset-top, 0px) + 24px), 46px); }
-body.standalone header { padding-top:max(calc(env(safe-area-inset-top, 0px) + 14px), 36px); }
+body.standalone header { padding-top:max(calc(env(safe-area-inset-top, 0px) + 12px), 34px); }
 body.standalone #backBtn { top:max(calc(env(safe-area-inset-top, 0px) + 12px), 34px); }
 body.standalone #setBtn { top:max(calc(env(safe-area-inset-top, 0px) + 12px), 34px); }
 
-/* ==== top: session pill + audio-ownership chip ==== */
+/* ==== top bar: fixed, safe-area. The back chevron and the gear are their
+   own fixed 44px buttons (z:65, they float over the start overlay); the
+   header carries the centered session pill and, DIRECTLY UNDER the bar,
+   the non-tappable audio-route pill. ==== */
 header {
-  padding:calc(env(safe-area-inset-top, 0px) + 14px) 16px 6px;
+  position:fixed; top:0; left:0; right:0; z-index:55;
+  padding:calc(env(safe-area-inset-top, 0px) + 12px) 64px 0;
   display:flex; flex-direction:column; align-items:center; gap:8px;
+  pointer-events:none;
 }
 #pill {
+  pointer-events:auto;
   display:flex; align-items:center; gap:8px;
   min-height:44px; padding:10px 16px; border-radius:999px;
   background:rgba(255,255,255,.055); border:1px solid var(--line);
-  font-size:15px; color:#dfe4ee; max-width:62vw;
+  font-size:15px; font-weight:600; color:#dfe4ee; max-width:58vw;
 }
 #pill .dot { width:8px; height:8px; border-radius:50%; background:var(--o2); flex:none;
   transition:background .9s ease; }
 #pill .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-#pill svg { width:14px; height:14px; opacity:.6; flex:none; }
+/* the audio-route pill: pure status, never a button, never a handset glyph */
 #chip {
   display:none; align-items:center; gap:6px;
-  padding:4px 12px; border-radius:999px;
-  background:rgba(70,215,195,.08); border:1px solid rgba(70,215,195,.28);
-  font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:#6fd8c8;
+  padding:5px 12px; border-radius:999px;
+  background:rgba(255,255,255,.04); border:1px solid var(--line);
+  font-size:12px; letter-spacing:.02em; color:var(--dim);
+  pointer-events:none;
 }
 #chip.on { display:inline-flex; }
-#chip .cdot { width:6px; height:6px; border-radius:50%; background:var(--mint);
-  animation:softpulse 2.4s ease-in-out infinite; }
+#chip svg { width:13px; height:13px; flex:none; opacity:.85; }
 @keyframes softpulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
 
-/* ==== middle: the orb ==== */
-main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:34px; min-height:0; }
+/* ==== middle: the orb (v12 rendering kept as-is) ==== */
+main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:24px; min-height:0;
+  padding-top:calc(env(safe-area-inset-top, 0px) + 100px); }
 #orbzone { position:relative; width:min(64vw, 280px); aspect-ratio:1; }
 .ripple {
   position:absolute; inset:0; border-radius:50%;
@@ -741,33 +848,51 @@ body[data-state="speaking"] #orb::after { animation-duration:4.5s; }
 }
 body[data-state="ended"] #orb, body[data-state="muted"] #orb { animation:none; }
 
+/* the permanent one-word state label under the orb (ui-rounded chain via
+   the body font); #status is demoted to a small detail line beneath it */
+#stateWord {
+  font-size:13px; font-weight:600; text-transform:uppercase;
+  letter-spacing:.08em; text-indent:.08em; /* balance tracking */
+  color:#b9c2d4; min-height:18px; text-align:center;
+  transition:color .4s ease;
+}
+body[data-state="needs"] #stateWord { color:#f0a294; }
+body[data-state="listening"] #stateWord { color:#7fe0d2; }
+body[data-state="speaking"] #stateWord { color:#aac6f6; }
+body[data-state="thinking"] #stateWord { color:#b3a6f2; }
 #status {
-  font-size:15px; letter-spacing:.42em; text-indent:.42em; /* balance tracking */
-  text-transform:lowercase; color:var(--dim); min-height:22px; text-align:center;
-  padding:0 24px; font-variant-numeric:tabular-nums;
+  font-size:12.5px; letter-spacing:.06em; text-indent:.06em;
+  text-transform:lowercase; color:var(--dim); min-height:18px; text-align:center;
+  padding:0 24px; font-variant-numeric:tabular-nums; margin-top:-14px;
 }
 body[data-state="needs"] #status { color:#f0a294; }
 
-/* ==== bottom: call controls ==== */
+/* ==== bottom: the control row (thumb zone). Mute / End / Chat, each with
+   an 11px/500 label beneath; End is the only red-by-default control. ==== */
 footer {
-  display:flex; align-items:center; justify-content:center; gap:34px;
-  padding:10px 24px calc(env(safe-area-inset-bottom, 0px) + 26px);
+  display:flex; align-items:flex-start; justify-content:center; gap:40px;
+  padding:10px 24px calc(env(safe-area-inset-bottom, 0px) + 22px);
 }
+.ctlwrap { display:flex; flex-direction:column; align-items:center; gap:7px; min-width:64px; }
+.ctllbl { font-size:11px; font-weight:500; color:var(--dim); letter-spacing:.02em; }
 .ctl {
-  width:64px; height:64px; border-radius:50%; position:relative;
+  width:56px; height:56px; border-radius:50%; position:relative;
   display:flex; align-items:center; justify-content:center;
   background:rgba(255,255,255,.07); border:1px solid var(--line);
   transition:background .25s ease, transform .1s ease;
 }
 .ctl:active { transform:scale(.93); }
-.ctl svg { width:26px; height:26px; }
-#muteBtn { width:80px; height:80px; background:rgba(255,255,255,.1); }
-#muteBtn svg { width:32px; height:32px; }
-#muteBtn.muted { background:#e8ebf2; color:#0a0d14; }
-#muteBtn .off { display:none; }
-#muteBtn.muted .off { display:block; }
-#muteBtn.muted .on { display:none; }
-#endBtn { background:var(--danger); border-color:transparent; color:#fff; }
+.ctl svg { width:24px; height:24px; }
+#muteBtn { background:rgba(255,255,255,.1); }
+/* the 45-degree slash shows the CURRENT state: visible only while muted,
+   its casing stroke painted in the chip color so the mic reads through */
+#muteBtn .slash { display:none; }
+#muteBtn.muted { background:var(--danger); border-color:transparent; color:#fff; }
+#muteBtn.muted .slash { display:block; }
+#muteBtn .slashcase { stroke:var(--danger); stroke-width:6; }
+#muteBtn .slashline { stroke:currentColor; stroke-width:2.2; }
+#endBtn { width:64px; height:64px; background:var(--danger); border-color:transparent; color:#fff; }
+#endBtn svg { width:28px; height:28px; }
 #chatBtn.active { background:rgba(255,255,255,.18); }
 
 /* ==== decision panel: the permission relay ==== */
@@ -844,76 +969,67 @@ body.sheet-open #scrim { opacity:1; pointer-events:auto; }
   margin:0; padding:2px 4px 8px;
 }
 
-/* chat: non-modal in HALF (floats above the call controls so mute and end
-   stay reachable while reading); a real three-position sheet in v7:
-   half (default) / full screen / closed. --kb lifts it over the on-screen
-   keyboard (set from visualViewport while the composer is focused). */
+/* chat: a FULL-SCREEN MODE (the v7 drag sheet, half state, grab handle
+   and size chevron are retired). Slides up over the call screen; the call
+   keeps running underneath (the orb/controls hide via body.chat-full,
+   visibility only). --kb lifts the composer over the on-screen keyboard
+   (set from visualViewport while the composer is focused). */
 #chatSheet {
-  left:10px; right:10px;
-  bottom:calc(env(safe-area-inset-bottom, 0px) + 122px + var(--kb, 0px));
-  border:1px solid var(--line); border-radius:20px;
-  height:52vh;
-  height:min(52dvh, calc(100dvh - var(--kb, 0px) - 150px));
-  max-height:none; padding-bottom:10px; z-index:30;
-  transform:translateY(calc(100% + 140px));
-  transition:transform .3s cubic-bezier(.3,.9,.3,1), top .3s ease,
-    left .3s ease, right .3s ease, bottom .3s ease, height .3s ease,
-    border-radius .3s ease, padding .3s ease;
+  position:fixed; inset:0; z-index:62;
+  background:#0a0d14; border:0; border-radius:0;
+  display:flex; flex-direction:column;
+  transform:translateY(100%); transition:transform .3s cubic-bezier(.3,.9,.3,1);
+  padding:0 0 calc(env(safe-area-inset-bottom, 0px) + 10px + var(--kb, 0px));
 }
 #chatSheet.open { transform:translateY(0); }
-#chatSheet.dragging { transition:none; }
-/* FULL SCREEN: chat fills everything, safe areas respected. The orb, the
-   call controls, and the corner buttons hide via body.chat-full below
-   (visibility only, the call keeps running); a slim top bar (chatbar)
-   shows the session name + the collapse chevron. */
-#chatSheet.full {
-  left:0; right:0; bottom:var(--kb, 0px);
-  height:100vh;
-  height:calc(100dvh - var(--kb, 0px));
-  border-radius:0; border:0; z-index:62;
-  padding-top:calc(env(safe-area-inset-top, 0px) + 8px);
-  padding-bottom:calc(env(safe-area-inset-bottom, 0px) + 10px);
-}
 body.chat-full header, body.chat-full main, body.chat-full footer,
 body.chat-full #backBtn, body.chat-full #setBtn { visibility:hidden; }
-/* "needs you" and toasts must NEVER hide behind the full chat */
+/* "needs you" and toasts must NEVER hide behind the full-screen chat */
 body.chat-full #decide { z-index:66; }
 body.chat-full #toast { z-index:66; }
-body.standalone #chatSheet.full {
-  padding-top:max(calc(env(safe-area-inset-top, 0px) + 8px), 38px); }
-/* v7 sheet header: grab handle + title bar + expand/collapse chevron.
-   touch-action none so the drag gesture owns it, never the page scroll. */
-#chatHead { flex:none; touch-action:none; }
-.chatbar { display:flex; align-items:center; gap:10px; padding:0 2px 8px; }
-.chatbar h2 { margin:0; flex:1; min-width:0; overflow:hidden;
-  text-overflow:ellipsis; white-space:nowrap; display:block; }
-#chatSizeBtn, #hushBtn {
-  flex:none; width:38px; height:38px; border-radius:50%;
-  display:flex; align-items:center; justify-content:center;
-  background:rgba(255,255,255,.06); border:1px solid var(--line);
-  color:#96a0b5;
+/* chat header: back chevron + session name + state dot + hush */
+#chatHead {
+  flex:none; display:flex; align-items:center; gap:10px;
+  padding:calc(env(safe-area-inset-top, 0px) + 10px) 12px 10px;
+  border-bottom:1px solid var(--line);
 }
-/* stop-the-voice lives in the chat bar because the orb (the other stop
-   surface) is hidden in full screen; only shown while a reply speaks */
-#hushBtn { display:none; color:#9db9ff; border-color:rgba(140,170,240,.35); }
+body.standalone #chatHead {
+  padding-top:max(calc(env(safe-area-inset-top, 0px) + 10px), 34px); }
+#chatBackBtn {
+  flex:none; width:44px; height:44px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.07); border:1px solid var(--line);
+}
+#chatBackBtn:active { transform:scale(.92); }
+#chatBackBtn svg { width:20px; height:20px; }
+/* the dot mirrors the orb state color, same tween as the pill dot */
+#chatDot { flex:none; width:8px; height:8px; border-radius:50%;
+  background:var(--o2); transition:background .9s ease; }
+#chatTitle {
+  margin:0; flex:1; min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap;
+  font-size:16px; font-weight:600; letter-spacing:.01em; color:#dfe4ee;
+}
+#hushBtn {
+  flex:none; width:38px; height:38px; border-radius:50%;
+  display:none; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.06); border:1px solid rgba(140,170,240,.35);
+  color:#9db9ff;
+}
+/* stop-the-voice lives in the chat header because the orb (the other stop
+   surface) is hidden in chat mode; only shown while a reply speaks */
 body[data-state="speaking"] #hushBtn { display:flex; }
 #hushBtn:active { transform:scale(.92); }
 #hushBtn svg { width:18px; height:18px; }
-#chatSizeBtn:active { transform:scale(.92); }
-#chatSizeBtn svg { width:18px; height:18px; transition:transform .25s ease; }
-#chatSheet.full #chatSizeBtn svg { transform:rotate(180deg); }
-/* full screen: the top bar reads as a real title (the session name),
-   not an uppercase section label */
-#chatSheet.full .chatbar h2 {
-  font-size:16px; font-weight:600; text-transform:none;
-  letter-spacing:.01em; color:#dfe4ee;
-}
-/* v7 composer: type instead of talking (meetings, quiet rooms) */
-.composer { flex:none; display:flex; align-items:center; gap:8px; padding:8px 2px 0; }
+/* composer: type instead of talking (meetings, quiet rooms) */
+.composer { flex:none; display:flex; align-items:center; gap:8px; padding:8px 14px 0; }
 #composeIn {
   flex:1; min-width:0; min-height:44px;
   background:#0e1420; border:1px solid var(--line); border-radius:999px;
-  color:#e8ebf2; padding:11px 16px; font-size:15px; font-family:inherit;
+  color:#e8ebf2; padding:11px 16px;
+  /* 16px stops the iOS zoom-on-focus */
+  font-size:16px; line-height:1.5;
+  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   user-select:text; -webkit-user-select:text;
 }
 #composeIn::placeholder { color:#5b6479; }
@@ -924,64 +1040,94 @@ body[data-state="speaking"] #hushBtn { display:flex; }
 }
 #sendBtn:active { transform:scale(.92); }
 #sendBtn svg { width:20px; height:20px; }
-/* v7 typing indicator: "Claude is working" row while a turn is in flight */
+/* typing indicator: "Claude is working" row while a turn is in flight */
 .typing {
   align-self:flex-start; display:flex; align-items:center; gap:5px;
-  padding:10px 14px; border-radius:18px; border-bottom-left-radius:6px;
-  border:1px solid var(--line); background:rgba(255,255,255,.04);
-  color:var(--dim); font-size:13.5px;
+  padding:4px 2px; color:var(--dim); font-size:13.5px;
+  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 .typing .tl { margin-right:4px; }
 .typing .td { width:6px; height:6px; border-radius:50%; background:var(--dim);
   animation:softpulse 1.2s ease-in-out infinite; }
 .typing .td:nth-child(3) { animation-delay:.2s; }
 .typing .td:nth-child(4) { animation-delay:.4s; }
-/* v7 copy button: floats top-right INSIDE the bubble (a button, not
-   long-press: long-press means text selection on iOS) */
+/* copy button: floats top-right INSIDE the text block on user AND agent
+   messages (a button, not long-press: long-press means selection on iOS) */
 .copybtn {
   float:right; width:30px; height:30px; margin:-4px -8px 2px 8px;
   border-radius:9px; display:flex; align-items:center; justify-content:center;
   color:#8a94a8; background:rgba(10,13,20,.3);
 }
+.msg-a .copybtn { margin-right:0; background:rgba(255,255,255,.05); }
 .copybtn:active { transform:scale(.9); color:#e8ebf2; }
 .copybtn svg { width:15px; height:15px; }
-/* v7 unread dot: a reply arrived while the sheet was closed */
+/* unread dot: a reply arrived while chat was closed */
 #chatBtn.unread::after {
-  content:''; position:absolute; top:11px; right:11px;
+  content:''; position:absolute; top:9px; right:9px;
   width:9px; height:9px; border-radius:50%; background:var(--mint);
   box-shadow:0 0 7px rgba(70,215,195,.8);
 }
-/* the pill and the home filter hid via a class that had NO rule (v6 bug):
-   targeted so the .hidden overlays keep their opacity fade */
+/* the pill and the home filter hide via a targeted rule so the .hidden
+   overlays keep their opacity fade */
 #jumpBtn.hidden, #homeFilter.hidden { display:none; }
 #pullHint { height:0; overflow:hidden; text-align:center; font-size:12px;
   color:var(--dim); line-height:28px; transition:height .18s ease; flex:none; }
-#chatLines { display:flex; flex-direction:column; gap:8px; padding:2px 2px 6px; }
+#chatScroll {
+  flex:1; min-height:0; padding:0 16px;
+  overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
+}
+#chatLines {
+  display:flex; flex-direction:column; gap:12px; padding:10px 0 8px;
+  width:100%; max-width:720px; margin:0 auto;
+}
+/* USER messages only get bubbles: right-aligned, mint tint, max 85%.
+   16px/1.5 on the system-ui chat stack. */
 .bub {
-  max-width:84%; padding:10px 14px; border-radius:18px;
-  font-size:15.5px; line-height:1.5; white-space:pre-wrap; word-break:break-word;
+  max-width:85%; padding:10px 14px; border-radius:18px;
+  font-size:16px; line-height:1.5; white-space:pre-wrap; word-break:break-word;
+  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   user-select:text; -webkit-user-select:text;
 }
 .bub.user { align-self:flex-end; background:rgba(70,215,195,.15);
   border:1px solid rgba(70,215,195,.22); border-bottom-right-radius:6px; color:#e7fffa; }
-.bub.assistant { align-self:flex-start; background:rgba(255,255,255,.06);
-  border:1px solid var(--line); border-bottom-left-radius:6px; }
 .bub.live { border-style:dashed; }
-.bub .bwrap { display:block; }
-.bub.clamp .bwrap { max-height:19em; overflow:hidden;
+/* AGENT replies: OPEN full-width text on the background, max column 65ch */
+.msg-a {
+  align-self:flex-start; width:100%; max-width:65ch; padding:2px 0;
+  font-size:16px; line-height:1.5; white-space:pre-wrap; word-break:break-word;
+  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color:#e8ebf2; user-select:text; -webkit-user-select:text;
+}
+.bub .bwrap, .msg-a .bwrap { display:block; }
+.bub.clamp .bwrap, .msg-a.clamp .bwrap { max-height:19em; overflow:hidden;
   -webkit-mask-image:linear-gradient(#000 72%, transparent);
   mask-image:linear-gradient(#000 72%, transparent); }
 .showmore { display:block; margin-top:6px; background:none; border:0;
   color:#46d7c3; font-size:13px; padding:2px 0; letter-spacing:.03em; }
+/* code: monospace cards with their own x-scroll, never widening the page */
 .cblk { background:#0a0e18; border:1px solid var(--line); border-radius:10px;
-  padding:10px 12px; margin:8px 0; font:12.5px/1.45 ui-monospace,Menlo,monospace;
+  padding:10px 12px; margin:8px 0;
+  font:13px/1.45 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
   overflow-x:auto; white-space:pre; max-width:100%; }
 .ichip { background:rgba(255,255,255,.09); border-radius:5px; padding:1px 5px;
-  font:.92em ui-monospace,Menlo,monospace; }
-#jumpBtn { position:absolute; bottom:74px; left:50%; transform:translateX(-50%);
+  font:.92em ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace; }
+/* timestamps: grouped cluster dividers, never per-message */
+.tsdiv {
+  align-self:center; text-align:center; font-size:11.5px; color:#5b6479;
+  padding:8px 0 0; letter-spacing:.04em;
+  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+/* delivery state under the last user bubble */
+.dstate {
+  align-self:flex-end; font-size:11.5px; color:var(--dim);
+  padding:0 4px; margin-top:-6px; background:none; border:0;
+  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.dstate.fail { color:#ff9a9e; }
+#jumpBtn { position:absolute; left:50%; transform:translateX(-50%);
+  bottom:calc(84px + env(safe-area-inset-bottom, 0px) + var(--kb, 0px));
   z-index:5; background:#182032; color:#46d7c3; border:1px solid rgba(70,215,195,.35);
   border-radius:999px; padding:7px 14px; font-size:13px; }
-#chatSheet.full #jumpBtn { bottom:calc(74px + env(safe-area-inset-bottom, 0px)); }
 #homeFilter { width:100%; box-sizing:border-box; margin:0 0 10px;
   background:#131a29; border:1px solid var(--line); border-radius:12px;
   color:#e5ecf7; padding:10px 14px; font-size:15px; }
@@ -1057,12 +1203,11 @@ body[data-state="speaking"] #hushBtn { display:flex; }
   body[data-state="thinking"] .ripple,
   body[data-state="needs"] .ripple { animation:none; opacity:.35; transform:scale(1.25); }
   #orbscale { transition:none; transform:none; }
-  .sheet, #decide, #toast, #home, .hcard { transition:none; }
+  .sheet, #chatSheet, #decide, #toast, #home, .hcard { transition:none; }
   #switchOverlay .spin { animation:none; border-top-color:var(--line); }
-  .sdot.working, .badge.needs, #chip .cdot, #decide .eyebrow .ddot { animation:none; }
-  /* v7: typing dots hold steady, the size chevron snaps */
+  .sdot.working, .badge.needs, #decide .eyebrow .ddot { animation:none; }
+  /* typing dots hold steady; state stays legible via color and text */
   .typing .td { animation:none; }
-  #chatSizeBtn svg { transition:none; }
 }
 </style></head><body data-state="ended" class="home">
 
@@ -1094,10 +1239,20 @@ body[data-state="speaking"] #hushBtn { display:flex; }
   <button id="pill" aria-haspopup="dialog" aria-label="Session: live session. Open control room.">
     <span class="dot" aria-hidden="true"></span>
     <span class="name" id="pillName">live session</span>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
   </button>
-  <span id="chip" role="status"><span class="cdot" aria-hidden="true"></span>audio on phone</span>
+  <span id="chip" role="status">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none"/>
+      <path d="M15 9a4.2 4.2 0 0 1 0 6"/><path d="M17.8 6.6a8 8 0 0 1 0 10.8"/>
+    </svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="7" y="2.5" width="10" height="19" rx="2.5"/>
+      <path d="M10.5 18.5h3"/>
+    </svg>
+    Sound on this phone
+  </span>
 </header>
 
 <main>
@@ -1105,34 +1260,40 @@ body[data-state="speaking"] #hushBtn { display:flex; }
     <div class="ripple"></div><div class="ripple"></div><div class="ripple"></div>
     <div id="orbscale"><div id="orb"></div></div>
   </div>
+  <div id="stateWord" role="status" aria-live="polite"></div>
   <div id="status" role="status" aria-live="polite">call ended</div>
 </main>
 
 <footer>
-  <button class="ctl" id="chatBtn" aria-pressed="false" aria-label="Show chat">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.2 9.2 0 0 1-3.9-.9L3 20l1-4.1a8.2 8.2 0 0 1-1-4.4 8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 9 8.4z"/>
-      <path d="M8.5 10.5h7"/><path d="M8.5 13.5h4.5"/>
-    </svg>
-  </button>
-  <button class="ctl" id="muteBtn" aria-pressed="false" aria-label="Mute microphone">
-    <svg class="on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor" stroke="none"/>
-      <path d="M6 12a6 6 0 0 0 12 0"/><path d="M12 18v3"/>
-    </svg>
-    <svg class="off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor" stroke="none"/>
-      <path d="M6 12a6 6 0 0 0 12 0"/><path d="M12 18v3"/><path d="M4 4l16 16"/>
-    </svg>
-  </button>
-  <button class="ctl" id="endBtn" aria-label="End call">
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M12 9.5c-3.3 0-6.4 1-8.9 2.9-.6.4-.8 1.2-.5 1.9l.9 1.9c.3.7 1.1 1 1.8.8l2.6-.9c.6-.2 1-.8 1-1.4v-1.3c2-.6 4.2-.6 6.2 0v1.3c0 .6.4 1.2 1 1.4l2.6.9c.7.2 1.5-.1 1.8-.8l.9-1.9c.3-.7.1-1.5-.5-1.9A14.6 14.6 0 0 0 12 9.5z"/>
-    </svg>
-  </button>
+  <div class="ctlwrap">
+    <button class="ctl" id="muteBtn" aria-pressed="false" aria-label="Mute microphone">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor" stroke="none"/>
+        <path d="M6 12a6 6 0 0 0 12 0"/><path d="M12 18v3"/>
+        <g class="slash"><path class="slashcase" d="M5 4l14 14"/><path class="slashline" d="M5 4l14 14"/></g>
+      </svg>
+    </button>
+    <span class="ctllbl" id="muteLbl">Mute</span>
+  </div>
+  <div class="ctlwrap">
+    <button class="ctl" id="endBtn" aria-label="End call">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M12 9.5c-3.3 0-6.4 1-8.9 2.9-.6.4-.8 1.2-.5 1.9l.9 1.9c.3.7 1.1 1 1.8.8l2.6-.9c.6-.2 1-.8 1-1.4v-1.3c2-.6 4.2-.6 6.2 0v1.3c0 .6.4 1.2 1 1.4l2.6.9c.7.2 1.5-.1 1.8-.8l.9-1.9c.3-.7.1-1.5-.5-1.9A14.6 14.6 0 0 0 12 9.5z"/>
+      </svg>
+    </button>
+    <span class="ctllbl">End</span>
+  </div>
+  <div class="ctlwrap">
+    <button class="ctl" id="chatBtn" aria-pressed="false" aria-label="Show chat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.2 9.2 0 0 1-3.9-.9L3 20l1-4.1a8.2 8.2 0 0 1-1-4.4 8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 9 8.4z"/>
+        <path d="M8.5 10.5h7"/><path d="M8.5 13.5h4.5"/>
+      </svg>
+    </button>
+    <span class="ctllbl">Chat</span>
+  </div>
 </footer>
 
 <section id="decide" role="alertdialog" aria-label="Claude needs a decision" aria-live="assertive">
@@ -1150,23 +1311,21 @@ body[data-state="speaking"] #hushBtn { display:flex; }
 
 <div id="scrim"></div>
 
-<section class="sheet" id="chatSheet" role="dialog" aria-label="Chat">
+<section id="chatSheet" role="dialog" aria-label="Chat">
   <div id="chatHead">
-    <div class="grab" aria-hidden="true"></div>
-    <div class="chatbar">
-      <h2 id="chatTitle">Chat</h2>
-      <button id="hushBtn" aria-label="Stop the voice, keep reading">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none"/>
-          <path d="M15 9.5l5 5"/><path d="M20 9.5l-5 5"/>
-        </svg>
-      </button>
-      <button id="chatSizeBtn" aria-label="Expand chat to full screen">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
-      </button>
-    </div>
+    <button id="chatBackBtn" aria-label="Back to the call">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <span id="chatDot" aria-hidden="true"></span>
+    <h2 id="chatTitle">Chat</h2>
+    <button id="hushBtn" aria-label="Stop the voice, keep reading">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none"/>
+        <path d="M15 9.5l5 5"/><path d="M20 9.5l-5 5"/>
+      </svg>
+    </button>
   </div>
   <button id="jumpBtn" class="hidden" aria-label="Jump to newest">new messages</button>
   <div class="scroll" id="chatScroll">
@@ -1210,9 +1369,20 @@ body[data-state="speaking"] #hushBtn { display:flex; }
       <button id="voiceMacBtn" role="radio" aria-checked="false">Natural voice</button>
     </div>
   </div>
-  <p class="hint">Natural voice is the Kokoro neural voice from your Mac. The phone plays
-     it; your Mac just makes the audio. It sounds much better; the first words arrive about
-     a second later. If the Mac is unreachable the phone voice takes over automatically.</p>
+  <div id="voiceCards" role="radiogroup" aria-label="Natural voice">
+    <button class="vcard" data-v="af_heart" role="radio" aria-checked="true">
+      <span class="vn">Heart</span><span class="vd">warm, the default</span>
+    </button>
+    <button class="vcard" data-v="af_bella" role="radio" aria-checked="false">
+      <span class="vn">Bella</span><span class="vd">bright, conversational</span>
+    </button>
+    <button class="vcard" data-v="am_michael" role="radio" aria-checked="false">
+      <span class="vn">Michael</span><span class="vd">calm, male</span>
+    </button>
+  </div>
+  <p class="hint">Natural voice is made on your Mac and played here, and the phone voice
+     takes over automatically if the Mac is unreachable.</p>
+  <p class="hint">A new voice takes effect on the next reply.</p>
 </section>
 
 <div class="overlay hidden" id="startOverlay">
@@ -1237,9 +1407,10 @@ const PARAMS = new URLSearchParams(location.search);
 const K = PARAMS.get('k') || '';
 const S = PARAMS.get('s') || '';   /* deep link: skip home, land on this session */
 const $ = id => document.getElementById(id);
-const statusEl=$('status'), pillName=$('pillName'), muteBtn=$('muteBtn'),
+const statusEl=$('status'), stateWord=$('stateWord'), pillName=$('pillName'),
+      muteBtn=$('muteBtn'), muteLbl=$('muteLbl'),
       chatBtn=$('chatBtn'), chatLines=$('chatLines'), chatScroll=$('chatScroll'), jumpBtn=$('jumpBtn'),
-      chatHead=$('chatHead'), chatTitle=$('chatTitle'), chatSizeBtn=$('chatSizeBtn'),
+      chatHead=$('chatHead'), chatTitle=$('chatTitle'), chatBackBtn=$('chatBackBtn'),
       composeIn=$('composeIn'), sendBtn=$('sendBtn'),
       pullHint=$('pullHint'), chipEl=$('chip'), decideEl=$('decide'),
       decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
@@ -1273,24 +1444,41 @@ try{
      to the phone voice mid-reply, so the default is safe everywhere. */
   voicePref = (_vp === 'phone') ? 'phone' : 'mac';
 }catch(e){ voicePref = 'mac'; }
+/* WHICH Kokoro voice speaks. Three curated ids, picked in settings,
+   persisted, sent as {"voice": id} in every /tts body. A switch applies
+   from the next reply (no mid-reply engine restart). */
+const VOICE_IDS = ['af_heart', 'af_bella', 'am_michael'];
+let voiceName = 'af_heart';
+try{
+  var _vn = localStorage.getItem('vbvoice_name');
+  if(VOICE_IDS.indexOf(_vn) >= 0) voiceName = _vn;
+}catch(e){}
 let macDead=false;        // 2 consecutive failed Mac replies: stop trying this session
 let macFails=0;           // consecutive reply-level /tts failures
 let macToastShown=false;  // the fallback toast shows once, then falls back silently
 let macSrc=null;          // the AudioBufferSourceNode currently playing Mac audio
-/* v7 chat sheet state: three positions (closed / half / full). chatPosPref
-   remembers the last open position for the rest of the call; typingMute
-   keeps the mic off while the composer has focus. */
-let chatOpenState=false, chatPos='half', chatPosPref='half', chatHist=false;
+/* chat is a full-screen MODE now (open / closed, no drag positions);
+   typingMute keeps the mic off while the composer has focus. */
+let chatOpenState=false, chatHist=false;
 let typingMute=false;
 let renderedTurns=0;      // turns currently in the DOM (pill append detection)
 
 /* rows without "active" come from an older server: treat them as live */
 function isActiveSess(s){ return !s || s.active !== false; }
 
+/* the permanent one-word state label under the orb; the old status line is
+   the small detail row (elapsed time, countdown dots, "typing") and never
+   just repeats the word */
+const STATE_WORDS = { listening:'Listening', thinking:'Thinking', speaking:'Speaking',
+  muted:'Muted', needs:'Needs you', ended:'' };
 function setState(s, label){
   state=s;
   document.body.dataset.state = s;
-  statusEl.textContent = label !== undefined ? label : s;
+  const word = STATE_WORDS[s] !== undefined ? STATE_WORDS[s] : s;
+  stateWord.textContent = word;
+  let detail = label !== undefined ? label : '';
+  if(detail && detail.toLowerCase() === word.toLowerCase()) detail = '';
+  statusEl.textContent = detail;
 }
 function urlFor(path){
   return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'k=' + encodeURIComponent(K);
@@ -1473,7 +1661,7 @@ function fetchTts(text){
   const tm = setTimeout(() => ctl.abort(), 4000);   // 4s per chunk, then phone voice
   const p = fetch(urlFor('/tts'), {
     method:'POST', headers:{ 'Content-Type':'application/json' },
-    body:JSON.stringify({ text: text }), signal: ctl.signal })
+    body:JSON.stringify({ text: text, voice: voiceName }), signal: ctl.signal })
   .then(r => {
     if(!r.ok) throw new Error('tts ' + r.status);   // 503 = Kokoro unavailable
     return r.arrayBuffer();
@@ -1727,8 +1915,10 @@ function copyText(t){
   fail();
 }
 function bubble(role, text, liveNow){
+  /* ChatGPT convention: USER messages get right-aligned mint bubbles;
+     AGENT replies are open full-width text on the background */
   const d = document.createElement('div');
-  d.className = 'bub ' + (role === 'user' ? 'user' : 'assistant') + (liveNow ? ' live' : '');
+  d.className = (role === 'user' ? 'bub user' : 'msg-a') + (liveNow ? ' live' : '');
   /* the copy button goes FIRST so its float pulls it to the top-right
      and the text wraps around it instead of underneath */
   const cp = document.createElement('button');
@@ -1774,9 +1964,9 @@ chatScroll.addEventListener('scroll', () => {
   if(chatNearBottom()) jumpBtn.classList.add('hidden');
 }, { passive:true });
 jumpBtn.addEventListener('click', chatScrollBottom);   // v6 bug: it had NO handler
-/* v7: "Claude is working" row pinned to the end of the transcript while a
-   turn is in flight; the orb is hidden in full-screen chat, so the chat
-   itself has to show progress. */
+/* "Claude is working" row pinned to the end of the transcript while a
+   turn is in flight; the orb is hidden in chat mode, so the chat itself
+   has to show progress. */
 function syncTyping(){
   let row = document.getElementById('typingRow');
   if(turnActive && live){
@@ -1793,6 +1983,51 @@ function syncTyping(){
     }
     chatLines.appendChild(row);   // re-append keeps it LAST
   }else if(row) row.remove();
+  syncDelivery();
+}
+/* delivery state under the LAST user bubble: "sending" until the ask is
+   acked, "delivered" once askDelivered, "failed, tap to retry" when the
+   retry queue (pendingSend) holds it; tapping resends the SAME idempotent
+   key, so a retry can never double-type the prompt. */
+function syncDelivery(){
+  let row = document.getElementById('deliveryRow');
+  const bubs = chatLines.querySelectorAll('.bub.user');
+  const last = bubs.length ? bubs[bubs.length - 1] : null;
+  if(!turnActive || !live || !last){ if(row) row.remove(); return; }
+  if(!row){
+    row = document.createElement('button');
+    row.id = 'deliveryRow'; row.className = 'dstate';
+    row.addEventListener('click', () => {
+      if(pendingSend && live && !askDelivered){
+        setState('thinking', 'retrying...');
+        sendAsk(pendingSend.id, pendingSend.text, 3);
+        syncDelivery();
+      }
+    });
+  }
+  if(pendingSend && !askDelivered){
+    row.classList.add('fail'); row.textContent = 'failed, tap to retry';
+  }else if(askDelivered){
+    row.classList.remove('fail'); row.textContent = 'delivered';
+  }else{
+    row.classList.remove('fail'); row.textContent = 'sending';
+  }
+  last.insertAdjacentElement('afterend', row);
+}
+/* timestamps render as grouped CLUSTER dividers (>= 10 minutes of gap),
+   never per-message; turns without a stamp simply never open a cluster */
+const CLUSTER_MS = 600000;
+function fmtStamp(ts){
+  const d = new Date(ts), now = new Date();
+  const hm = d.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
+  if(d.toDateString() === now.toDateString()) return hm;
+  return d.toLocaleDateString([], { weekday:'short' }) + ' ' + hm;
+}
+function tsDivider(ts){
+  const el = document.createElement('div');
+  el.className = 'tsdiv';
+  el.textContent = fmtStamp(ts);
+  return el;
 }
 function renderChat(){
   const sheetOpen = chatOpenState;
@@ -1808,7 +2043,12 @@ function renderChat(){
     jumpBtn.classList.add('hidden');
     return;
   }
-  localTurns.forEach(t => chatLines.appendChild(bubble(t.role, t.text)));
+  let prevTs = 0;
+  localTurns.forEach(t => {
+    if(t.ts && (!prevTs || t.ts - prevTs >= CLUSTER_MS)) chatLines.appendChild(tsDivider(t.ts));
+    if(t.ts) prevTs = t.ts;
+    chatLines.appendChild(bubble(t.role, t.text));
+  });
   syncTyping();
   renderedTurns = localTurns.length;
   /* respect the reader: a re-render (server transcript swap) must not yank
@@ -1819,17 +2059,26 @@ function renderChat(){
     if(grew) jumpBtn.classList.remove('hidden');
   }
 }
+function lastStampTs(){
+  for(let i = localTurns.length - 1; i >= 0; i--){
+    if(localTurns[i].ts) return localTurns[i].ts;
+  }
+  return 0;
+}
 function chatAdd(role, text){
   if(!text) return;
-  localTurns.push({ role: role, text: text });
+  const ts = Date.now();
+  const prevTs = lastStampTs();
+  localTurns.push({ role: role, text: text, ts: ts });
   const empty = chatLines.querySelector('.empty');
   if(empty) empty.remove();
   const sheetOpen = chatOpenState;
   const stick = !sheetOpen || chatNearBottom();
+  if(!prevTs || ts - prevTs >= CLUSTER_MS) chatLines.appendChild(tsDivider(ts));
   chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive));
   syncTyping();
   renderedTurns = localTurns.length;
-  /* a reply that lands while the sheet is CLOSED leaves a dot on the chat
+  /* a reply that lands while chat is CLOSED leaves a dot on the chat
      button instead of a pill nobody can see */
   if(role !== 'user' && !sheetOpen) chatBtn.classList.add('unread');
   if(stick) chatScrollBottom();
@@ -1837,17 +2086,29 @@ function chatAdd(role, text){
 }
 function resetChat(){
   localTurns = []; chatHasServer = false;
-  chatBtn.classList.remove('unread');   // v7: the dot was about the old session
+  chatBtn.classList.remove('unread');   // the dot was about the old session
   renderChat();
 }
 async function refreshChat(){
   try{
     const j = await jget('/chat');
     if(Array.isArray(j.turns)){
+      /* the server transcript has no timestamps: carry local stamps over
+         by role+text so cluster dividers survive the re-render */
+      const tsMap = {};
+      localTurns.forEach(t => {
+        if(!t.ts) return;
+        const k = t.role + '\n' + t.text;
+        (tsMap[k] = tsMap[k] || []).push(t.ts);
+      });
       localTurns = j.turns
         .map(t => ({ role: t.role === 'user' ? 'user' : 'assistant',
                      text: String(t.text || '').trim() }))
         .filter(t => t.text);
+      localTurns.forEach(t => {
+        const k = t.role + '\n' + t.text;
+        if(tsMap[k] && tsMap[k].length) t.ts = tsMap[k].shift();
+      });
       chatHasServer = true;
       renderChat();
       return true;
@@ -1915,6 +2176,9 @@ function stopWorkTicker(){ if(workTicker){ clearInterval(workTicker); workTicker
 async function startTurn(text){
   const id = ++turnId;
   turnActive = true;
+  /* reset the delivery flags BEFORE the bubble renders so the delivery
+     row starts at "sending", never a stale "delivered" */
+  askDelivered = false; pendingSend = null;
   chatAdd('user', text);
   workT0 = Date.now();
   setWorking();
@@ -1945,6 +2209,7 @@ function sendAsk(id, text, attempt){
       askDelivered = true; pendingSend = null;
       if(j.uuid && !baselineUuid) baselineUuid = j.uuid;
       setState('thinking', 'working, delivered');
+      syncDelivery();
       return;
     }
     const rep = String(j.reply || '').trim();
@@ -1971,6 +2236,7 @@ function sendAsk(id, text, attempt){
       toast('connection is down, retrying automatically');
       speakAside('The connection is down. I will keep trying to send that.');
       setState('thinking', 'retrying...');
+      syncDelivery();
     }
   });
 }
@@ -2065,6 +2331,7 @@ function startEvents(){
       if(turnActive && d.id === curAskKey){
         askDelivered = true;
         setState('thinking', 'working, delivered');
+        syncDelivery();
       }
     }catch(x){}
   });
@@ -2438,8 +2705,8 @@ function resetStartOverlay(name){
 function micDenied(){
   live = false; liveGen++;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
-  /* v7: a full-screen chat would sit above the recovery overlay */
-  if(chatOpenState && chatPos === 'full') setChatPos('half');
+  /* the full-screen chat would sit above the recovery overlay */
+  closeChatSheet();
   setState('ended', 'microphone blocked');
   $('startTitle').textContent = 'Microphone is blocked';
   $('startBody').textContent = 'Allow microphone access for this site in your browser settings, then start the call again.';
@@ -2455,9 +2722,9 @@ async function startCall(){
   live = true; muted = false;
   liveGen++;
   srFails = 0;   // a fresh call gets a fresh chance (srDead stays for the session)
-  chatPosPref = 'half';   // v7: the remembered sheet position is per call
   muteBtn.classList.remove('muted');
   muteBtn.setAttribute('aria-pressed', 'false');
+  muteLbl.textContent = 'Mute';
   refreshVoices();
   acquireWakeLock();
   setState('thinking', 'connecting');
@@ -2480,8 +2747,8 @@ async function startCall(){
 function endCall(){
   live = false; liveGen++;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
-  /* v7: a full-screen chat would sit above the call-ended overlay */
-  if(chatOpenState && chatPos === 'full') setChatPos('half');
+  /* the full-screen chat would sit above the call-ended overlay */
+  closeChatSheet();
   setState('ended', 'call ended');
   $('startTitle').textContent = 'Call ended';
   $('startBody').textContent = 'Your session is still running on the Mac. Start a new call whenever you are ready.';
@@ -2497,6 +2764,7 @@ muteBtn.addEventListener('click', () => {
   muteBtn.classList.toggle('muted', muted);
   muteBtn.setAttribute('aria-pressed', String(muted));
   muteBtn.setAttribute('aria-label', muted ? 'Unmute microphone' : 'Mute microphone');
+  muteLbl.textContent = muted ? 'Muted' : 'Mute';   // the label shows CURRENT state
   if(muted){
     stopListening();
     stopBarge();   // muted means muted: no barge monitor either
@@ -2526,13 +2794,36 @@ function closeSessSheet(){
   sessSheet.classList.remove('open');
   syncScrim();
 }
-/* v6: settings sheet (the gear). One option today: the voice source. */
+/* settings sheet (the gear): the voice source + the curated voice cards */
+function renderVoiceCards(){
+  const cards = setSheet.querySelectorAll('#voiceCards .vcard');
+  for(let i = 0; i < cards.length; i++){
+    const sel = cards[i].getAttribute('data-v') === voiceName;
+    cards[i].classList.toggle('sel', sel);
+    cards[i].setAttribute('aria-checked', String(sel));
+  }
+  /* the picker only makes sense while the Natural source is active */
+  $('voiceCards').classList.toggle('off', voicePref !== 'mac');
+}
+function setVoiceName(id){
+  if(VOICE_IDS.indexOf(id) < 0) return;
+  const changed = id !== voiceName;
+  voiceName = id;
+  try{ localStorage.setItem('vbvoice_name', id); }catch(e){}
+  renderVoiceCards();
+  if(changed) toast('voice changes on the next reply');
+}
+$('voiceCards').addEventListener('click', ev => {
+  const card = ev.target.closest ? ev.target.closest('.vcard') : null;
+  if(card) setVoiceName(card.getAttribute('data-v'));
+});
 function renderVoicePref(){
   const mac = voicePref === 'mac';
   $('voiceMacBtn').classList.toggle('sel', mac);
   $('voiceMacBtn').setAttribute('aria-checked', String(mac));
   $('voicePhoneBtn').classList.toggle('sel', !mac);
   $('voicePhoneBtn').setAttribute('aria-checked', String(!mac));
+  renderVoiceCards();
 }
 function setVoicePref(p){
   voicePref = p;
@@ -2580,34 +2871,25 @@ function closeClosedSheet(){
   closedSheet.classList.remove('open');
   syncScrim();
 }
-/* ---- v7: the three-position chat sheet (closed / half / full) ---- */
-function applyChatPos(){
-  const full = chatOpenState && chatPos === 'full';
+/* ---- chat as a full-screen MODE (the drag sheet and half state are
+   retired). In: the Chat control. Out: the chat header back chevron OR
+   hardware/gesture back (pushState on open, popstate closes). ---- */
+function applyChatMode(){
   chatSheet.classList.toggle('open', chatOpenState);
-  chatSheet.classList.toggle('full', full);
-  document.body.classList.toggle('chat-full', full);
-  /* full screen: the slim top bar names the SESSION, not just "Chat" */
-  chatTitle.textContent = full ? (pillName.textContent || 'Chat') : 'Chat';
-  chatSizeBtn.setAttribute('aria-label',
-    full ? 'Collapse chat to half screen' : 'Expand chat to full screen');
+  document.body.classList.toggle('chat-full', chatOpenState);
+  /* the chat header names the SESSION; the dot beside it mirrors the orb */
+  chatTitle.textContent = pillName.textContent || 'Chat';
   chatBtn.classList.toggle('active', chatOpenState);
   chatBtn.setAttribute('aria-pressed', String(chatOpenState));
   chatBtn.setAttribute('aria-label', chatOpenState ? 'Hide chat' : 'Show chat');
 }
-function setChatPos(pos){
-  chatPos = pos;
-  chatPosPref = pos;   // remembered for the rest of this call
-  applyChatPos();
-}
-function openChatSheet(pos){
+function openChatSheet(){
   chatOpenState = true;
-  chatPos = pos || chatPosPref || 'half';
-  chatPosPref = chatPos;
   chatBtn.classList.remove('unread');
-  applyChatPos();
+  applyChatMode();
   chatScrollBottom();          // on open: ALWAYS at the bottom, pill hidden
   refreshChat();
-  /* hardware/gesture back closes the sheet instead of leaving the page */
+  /* hardware/gesture back closes the chat instead of leaving the page */
   if(!chatHist){
     try{ history.pushState({ vbchat: 1 }, ''); chatHist = true; }catch(e){}
   }
@@ -2615,7 +2897,7 @@ function openChatSheet(pos){
 function closeChatSheet(fromPop){
   const was = chatOpenState;
   chatOpenState = false;
-  applyChatPos();
+  applyChatMode();
   jumpBtn.classList.add('hidden');
   try{ composeIn.blur(); }catch(e){}
   if(chatHist){
@@ -2627,63 +2909,7 @@ window.addEventListener('popstate', () => {
   if(chatOpenState) closeChatSheet(true);
   else chatHist = false;
 });
-chatSizeBtn.addEventListener('click', () => {
-  setChatPos(chatPos === 'full' ? 'half' : 'full');
-});
-/* drag the sheet header: up from half = full screen, down = half / closed.
-   During the drag the sheet tracks the finger with transitions off (half
-   mode resizes from its bottom anchor, full mode slides down); on release
-   distance OR a flick picks the snap target and the CSS transition
-   finishes the move. */
-(function(){
-  let dragging = false, y0 = 0, h0 = 0, lastY = 0, lastT = 0, vel = 0;
-  function endDrag(){
-    if(!dragging) return;
-    dragging = false;
-    chatSheet.classList.remove('dragging');
-    const dy = lastY - y0;   // down positive
-    const H = window.innerHeight || 1;
-    if(chatPos === 'half'){
-      const curH = h0 - dy;
-      if(vel < -.6 || curH > H * .72) setChatPos('full');
-      else if(vel > .6 || dy > 130) closeChatSheet();
-      else applyChatPos();                       // snap back to half
-    }else{
-      if(vel > 1.0 || dy > H * .55) closeChatSheet();
-      else if(vel > .25 || dy > 120) setChatPos('half');
-      else applyChatPos();                       // snap back to full
-    }
-    chatSheet.style.height = '';
-    chatSheet.style.transform = '';
-  }
-  chatHead.addEventListener('touchstart', e => {
-    if(!chatOpenState || e.touches.length !== 1) return;
-    dragging = true;
-    y0 = lastY = e.touches[0].clientY;
-    lastT = Date.now();
-    vel = 0;
-    h0 = chatSheet.getBoundingClientRect().height;
-    chatSheet.classList.add('dragging');
-  }, { passive:true });
-  chatHead.addEventListener('touchmove', e => {
-    if(!dragging) return;
-    e.preventDefault();
-    const y = e.touches[0].clientY, now = Date.now();
-    if(now > lastT) vel = (y - lastY) / (now - lastT);   // px per ms
-    lastY = y; lastT = now;
-    const dy = y - y0;
-    if(chatPos === 'half'){
-      /* bottom-anchored: growing height tracks an upward drag */
-      const nh = Math.min(window.innerHeight, Math.max(90, h0 - dy));
-      chatSheet.style.height = nh + 'px';
-    }else{
-      /* full: slide the whole sheet down with the finger */
-      chatSheet.style.transform = 'translateY(' + Math.max(0, dy) + 'px)';
-    }
-  }, { passive:false });
-  chatHead.addEventListener('touchend', endDrag);
-  chatHead.addEventListener('touchcancel', endDrag);
-})();
+chatBackBtn.addEventListener('click', () => closeChatSheet());
 /* ---- v7: the typed composer (silent prompts from the phone) ---- */
 function sendTyped(){
   const t = (composeIn.value || '').trim();
@@ -2971,7 +3197,7 @@ async function pollSessions(){
     if(cur.name){
       pillName.textContent = cur.name;
       $('pill').setAttribute('aria-label', 'Session: ' + cur.name + '. Open control room.');
-      if(chatPos === 'full' && chatOpenState) chatTitle.textContent = cur.name;   // v7 top bar
+      chatTitle.textContent = cur.name;   // the chat header names the session
     }
     if(wantStartName && !live){
       $('startTitle').textContent = cur.name || 'voicebridge';
@@ -3043,7 +3269,7 @@ async function switchTo(s){
     if(s.id) currentSid = s.id;
     pillName.textContent = s.name || 'session';
     $('pill').setAttribute('aria-label', 'Session: ' + pillName.textContent + '. Open control room.');
-    if(chatPos === 'full' && chatOpenState) chatTitle.textContent = pillName.textContent;   // v7
+    chatTitle.textContent = pillName.textContent;   // the chat header names the session
     switchMsg.textContent = 'connected to ' + pillName.textContent;
     resetChat();                              // new session, new transcript
     refreshChat();
