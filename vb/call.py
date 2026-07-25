@@ -310,11 +310,68 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
-  voicebridge call page v14 (file: call_page_v14.html). Drop-in replacement
+  voicebridge call page v15 (file: call_page_v15.html). Drop-in replacement
   for PAGE in vb/call.py. Embed as a RAW string (r prefix) so regex
   backslashes survive. This file contains no triple double-quote sequence
   anywhere, so it is safe inside a Python raw triple-quoted string.
   100% ASCII.
+
+  CHANGES, v14 to v15, two scoped upgrades, each item and where it lives:
+
+    TASK 1, CHAT RENDERING (Lovable-style):
+    1. SENDER ROWS: each message CLUSTER (speaker change, or the first
+       message after a timestamp divider) opens with a small round avatar
+       plus a 13px/600 name row (.sender / .avatar / .sname). The user is
+       a mint-gradient "Y" + "You"; the agent is the session-colored
+       monogram (same hash as the home cards) + the session name. Built in
+       senderRow(), wired in renderChat() and chatAdd().
+    2. TIMESTAMP DIVIDERS restyled to "Jul 25 at 3:16 PM": fmtStamp() now
+       emits month-day at time; .tsdiv is 13px, dim, centered, with
+       comfortable margins. The >= 10 minute cluster rule is unchanged.
+    3. STRUCTURED AGENT TEXT, still 100% textContent-safe (escape-free by
+       construction, no raw innerHTML of message content): renderRich()
+       keeps the fenced-code cards and splits everything else through
+       renderBlocks() (lines starting "## "/"# " become 17px/600 .mhead
+       headings; "1. " and "- "/"* " lines become real .lirow list rows
+       with hanging indents and a CSS dot or tabular number marker) and
+       renderInline() (**bold** -> <strong>, `code` -> .ichip chips).
+       Agent replies stay open full-width text; user bubbles unchanged.
+    4. WORKING ROW like Lovable's dim label: the turn-in-flight row is now
+       a quiet 13px dim ITALIC "Working" with the three pulsing dots kept
+       inside it (.typing restyle; syncTyping() text change). It still
+       disappears completely the moment the turn finishes, no residue.
+    5. COMPOSER restyled to the reference: one rounded-16px card (.cwrap,
+       #161c29 on a 1px #232b3d border) holds a borderless input, a round
+       mic-toggle chip (#micChip: blurs the composer and lifts a manual
+       mute, i.e. back to voice input) and a 36px circular mint send
+       button with an up arrow. No plus button (no attachments). The
+       keyboard lift (--kb via visualViewport) and focus-mutes-the-mic
+       behavior are untouched.
+
+    TASK 2, THE LIVING ORB (ported from the v13 designer pass, visuals
+    only; container, size, position, tap-to-hush, state word and all v14
+    chrome untouched):
+    6. The orb is a masked gradient SPHERE again: deep-navy base, four
+       drifting radial-gradient layers (.gl1 aqua, .gl2 teal, .gl3 violet,
+       .glw warm peach), a conic .sheen, a static SVG-turbulence .grain,
+       and a .halo glow layer that pulses via opacity/scale only. Layer
+       inks are registered @property colors (--ga --gb --gc --gw) so state
+       changes tween over .9s. All motion is transform/opacity only:
+       compositor work, no per-frame paint.
+    7. STATES: agent SPEAKING = the liquid flows (drift periods drop to
+       7-13s) plus the breathing halo. USER SPEAKING = NO liquid flow (the
+       .gl layers pause); the sphere scale pulses with the mic level via
+       the --level pipeline (bumpLevel now also fed by the whisper RMS and
+       the barge monitor), with a 1.2s heart-beat fallback
+       (#orbscale.steady) when no fresh level lands for 2s. THINKING =
+       slow shimmer (the sheen spins fast at higher opacity) + ripples.
+       IDLE/ENDED = near-still breathe, layers parked. MUTED = frozen dim
+       (layers, sheen and breathe paused on the muted palette). Reduced
+       motion = fully static gradient.
+    8. BATTERY: body.bg (page hidden, toggled on visibilitychange),
+       body.home and body.chat-full pause every orb animation via
+       animation-play-state, so a pocketed phone or an open chat burns
+       nothing.
 
   CHANGES, v12 base to v14, each brief item and where it lives:
 
@@ -623,6 +680,11 @@ PAGE = r"""<!DOCTYPE html>
 @property --o3 { syntax:'<color>'; inherits:true; initial-value:#1c2440; }
 @property --glow { syntax:'<color>'; inherits:true; initial-value:rgba(95,116,176,.34); }
 @property --ring { syntax:'<color>'; inherits:true; initial-value:rgba(120,140,200,.5); }
+/* v15: the FOUR gradient-layer inks of the living sphere (from v13) */
+@property --ga { syntax:'<color>'; inherits:true; initial-value:rgba(126,150,220,.55); }
+@property --gb { syntax:'<color>'; inherits:true; initial-value:rgba(70,215,195,.30); }
+@property --gc { syntax:'<color>'; inherits:true; initial-value:rgba(134,116,230,.34); }
+@property --gw { syntax:'<color>'; inherits:true; initial-value:rgba(232,170,124,.18); }
 
 * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 html, body { height:100%; overflow:hidden; overscroll-behavior:none; }
@@ -632,18 +694,27 @@ body {
   background:#0a0d14; color:#e8ebf2;
   font-family:ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   user-select:none; -webkit-user-select:none; touch-action:manipulation;
-  transition:--o1 .9s ease, --o2 .9s ease, --o3 .9s ease, --glow .9s ease, --ring .9s ease;
+  transition:--o1 .9s ease, --o2 .9s ease, --o3 .9s ease, --glow .9s ease, --ring .9s ease,
+    --ga .9s ease, --gb .9s ease, --gc .9s ease, --gw .9s ease;
   --o1:#dfe7f8; --o2:#5f74b0; --o3:#1c2440;
   --glow:rgba(95,116,176,.34); --ring:rgba(120,140,200,.5);
+  --ga:rgba(126,150,220,.55); --gb:rgba(70,215,195,.30);
+  --gc:rgba(134,116,230,.34); --gw:rgba(232,170,124,.18);
   --danger:#e5484d; --amber:#e5a13d; --mint:#46d7c3;
   --dim:#96a0b5; --surface:#141926; --line:#232b3d;
 }
-body[data-state="listening"] { --o1:#e4fff8; --o2:#37bfae; --o3:#093330; --glow:rgba(70,215,195,.42); --ring:rgba(90,225,205,.55); }
-body[data-state="thinking"]  { --o1:#ece4ff; --o2:#8674e6; --o3:#241d4e; --glow:rgba(140,120,235,.42); --ring:rgba(160,140,255,.55); }
-body[data-state="speaking"]  { --o1:#ffffff; --o2:#8fb2f2; --o3:#16294f; --glow:rgba(160,195,255,.55); --ring:rgba(180,205,255,.6); }
-body[data-state="needs"]     { --o1:#ffe9df; --o2:#e0755f; --o3:#3f150f; --glow:rgba(235,125,100,.45); --ring:rgba(255,150,125,.55); }
-body[data-state="muted"]     { --o1:#ccd1db; --o2:#59606f; --o3:#191d26; --glow:rgba(120,128,148,.22); --ring:rgba(130,138,158,.35); }
-body[data-state="ended"]     { --o1:#b9bfca; --o2:#464c5a; --o3:#14171f; --glow:rgba(100,106,124,.16); --ring:rgba(110,118,138,.25); }
+body[data-state="listening"] { --o1:#e4fff8; --o2:#37bfae; --o3:#093330; --glow:rgba(70,215,195,.42); --ring:rgba(90,225,205,.55);
+  --ga:rgba(120,240,220,.60); --gb:rgba(47,174,157,.44); --gc:rgba(64,120,200,.32); --gw:rgba(232,170,124,.20); }
+body[data-state="thinking"]  { --o1:#ece4ff; --o2:#8674e6; --o3:#241d4e; --glow:rgba(140,120,235,.42); --ring:rgba(160,140,255,.55);
+  --ga:rgba(183,166,255,.58); --gb:rgba(122,103,224,.44); --gc:rgba(56,150,205,.26); --gw:rgba(232,170,124,.15); }
+body[data-state="speaking"]  { --o1:#ffffff; --o2:#8fb2f2; --o3:#16294f; --glow:rgba(160,195,255,.55); --ring:rgba(180,205,255,.6);
+  --ga:rgba(236,246,255,.72); --gb:rgba(127,180,240,.52); --gc:rgba(134,116,230,.38); --gw:rgba(240,190,150,.24); }
+body[data-state="needs"]     { --o1:#ffe9df; --o2:#e0755f; --o3:#3f150f; --glow:rgba(235,125,100,.45); --ring:rgba(255,150,125,.55);
+  --ga:rgba(255,196,168,.62); --gb:rgba(224,117,95,.48); --gc:rgba(150,60,84,.40); --gw:rgba(240,170,120,.30); }
+body[data-state="muted"]     { --o1:#ccd1db; --o2:#59606f; --o3:#191d26; --glow:rgba(120,128,148,.22); --ring:rgba(130,138,158,.35);
+  --ga:rgba(172,180,198,.32); --gb:rgba(96,106,126,.28); --gc:rgba(66,74,98,.28); --gw:rgba(190,170,158,.10); }
+body[data-state="ended"]     { --o1:#b9bfca; --o2:#464c5a; --o3:#14171f; --glow:rgba(100,106,124,.16); --ring:rgba(110,118,138,.25);
+  --ga:rgba(140,155,200,.28); --gb:rgba(72,96,136,.22); --gc:rgba(96,84,168,.20); --gw:rgba(210,170,140,.08); }
 
 button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; padding:0; }
 button:focus-visible { outline:2px solid #9db9ff; outline-offset:3px; border-radius:14px; }
@@ -822,31 +893,95 @@ body[data-state="thinking"] .ripple:nth-child(3),
 body[data-state="needs"] .ripple:nth-child(3) { animation-delay:1.7s; }
 @keyframes ripple { 0% { transform:scale(1); opacity:.55; } 100% { transform:scale(1.85); opacity:0; } }
 
+/* mic level drives the sphere scale via --level (0..1); .steady is the
+   1.2s heart-beat fallback when no fresh level is available (native SR
+   gives none between results) */
 #orbscale { position:absolute; inset:0;
   transform:scale(calc(1 + var(--level, 0) * .16));
   transition:transform .14s linear;
 }
+@keyframes hb {
+  0%, 100% { transform:scale(1); }
+  14% { transform:scale(1.05); }
+  28% { transform:scale(1.012); }
+  42% { transform:scale(1.065); }
+  62% { transform:scale(1); }
+}
+body[data-state="listening"] #orbscale.steady { animation:hb 1.2s ease-in-out infinite; }
+
+/* the glow lives on its own layer and pulses via opacity/scale ONLY
+   (an animated box-shadow would repaint every frame) */
+.halo {
+  position:absolute; inset:-22%; border-radius:50%; pointer-events:none;
+  background:radial-gradient(circle, var(--glow) 0%, rgba(0,0,0,0) 62%);
+  opacity:.85; transition:opacity .9s ease;
+}
+body[data-state="speaking"] .halo { animation:halopulse 1.6s ease-in-out infinite; }
+@keyframes halopulse { 0%,100% { opacity:.5; transform:scale(1); } 50% { opacity:1; transform:scale(1.07); } }
+body[data-state="ended"] .halo, body[data-state="muted"] .halo { opacity:.35; }
+
+/* the masked sphere: deep navy base, drifting watercolor layers on top */
 #orb {
-  position:absolute; inset:0; border-radius:50%;
-  background:radial-gradient(circle at 33% 28%, var(--o1) 0%, var(--o2) 46%, var(--o3) 82%);
-  box-shadow:0 0 70px 6px var(--glow), inset 0 0 46px rgba(0,0,0,.35);
-  animation:breathe 5.4s ease-in-out infinite;
-  overflow:hidden;
+  position:absolute; inset:0; border-radius:50%; overflow:hidden;
+  background:radial-gradient(circle at 50% 40%, #1a2445 0%, #0c1122 60%, #070a13 100%);
+  box-shadow:0 0 60px 4px var(--glow), inset 0 0 46px rgba(3,5,12,.5);
+  animation:breathe 6.5s ease-in-out infinite;
 }
-#orb::after { /* slow drifting sheen so the sphere feels alive, not flat */
-  content:""; position:absolute; inset:-30%;
-  background:conic-gradient(from 0deg, transparent 0 62%, rgba(255,255,255,.16) 74%, transparent 86%);
-  animation:sheen 11s linear infinite;
+@keyframes breathe { 0%,100% { transform:scale(1); } 50% { transform:scale(1.03); } }
+.gl {
+  position:absolute; inset:-30%; border-radius:50%; pointer-events:none;
+  will-change:transform;
 }
-@keyframes breathe { 0%,100% { transform:scale(1); } 50% { transform:scale(1.045); } }
-@keyframes sheen { to { transform:rotate(360deg); } }
-body[data-state="speaking"] #orb { animation:breathe 5.4s ease-in-out infinite, speakglow 1.5s ease-in-out infinite; }
-body[data-state="speaking"] #orb::after { animation-duration:4.5s; }
-@keyframes speakglow {
-  0%,100% { box-shadow:0 0 70px 6px var(--glow), inset 0 0 46px rgba(0,0,0,.35); }
-  50%     { box-shadow:0 0 120px 26px var(--glow), inset 0 0 32px rgba(0,0,0,.22); }
+.gl1 { background:radial-gradient(46% 46% at 31% 30%, var(--ga) 0%, rgba(0,0,0,0) 72%);
+  animation:drift1 21s ease-in-out infinite; }
+.gl2 { background:radial-gradient(50% 50% at 69% 64%, var(--gb) 0%, rgba(0,0,0,0) 74%);
+  animation:drift2 27s ease-in-out infinite; }
+.gl3 { background:radial-gradient(42% 42% at 52% 80%, var(--gc) 0%, rgba(0,0,0,0) 75%);
+  animation:drift3 34s ease-in-out infinite; }
+.glw { background:radial-gradient(26% 26% at 76% 26%, var(--gw) 0%, rgba(0,0,0,0) 70%);
+  animation:drift2 41s ease-in-out infinite reverse; }
+/* seamless back-and-forth loops: 0% and 100% match, the middle sloshes */
+@keyframes drift1 {
+  0%, 100% { transform:rotate(0deg) translate3d(2%,-1%,0) scale(1); }
+  50% { transform:rotate(170deg) translate3d(-3%,3%,0) scale(1.1); }
 }
-body[data-state="ended"] #orb, body[data-state="muted"] #orb { animation:none; }
+@keyframes drift2 {
+  0%, 100% { transform:rotate(0deg) translate3d(-2%,2%,0) scale(1.04); }
+  50% { transform:rotate(-150deg) translate3d(3%,-3%,0) scale(.94); }
+}
+@keyframes drift3 {
+  0%, 100% { transform:rotate(0deg) translate3d(0,2%,0) scale(1); }
+  50% { transform:rotate(120deg) translate3d(-2%,-3%,0) scale(1.12); }
+}
+/* agent speaking: the liquid FLOWS (shorter periods = visible swirl) */
+body[data-state="speaking"] .gl1 { animation-duration:7s; }
+body[data-state="speaking"] .gl2 { animation-duration:9s; }
+body[data-state="speaking"] .gl3 { animation-duration:11s; }
+body[data-state="speaking"] .glw { animation-duration:13s; }
+/* USER speaking: NO liquid flow; the mic-level scale pulse IS the state */
+body[data-state="listening"] .gl { animation-play-state:paused; }
+/* idle (ended): near-still breathe only, layers parked; the .9s color
+   tween still dusks the sphere. Muted: frozen dim, everything paused. */
+body[data-state="ended"] .gl { animation-play-state:paused; }
+body[data-state="muted"] .gl, body[data-state="muted"] #orb,
+body[data-state="muted"] .sheen { animation-play-state:paused; }
+/* the sheen: a slow conic glint; THINKING spins it fast = the shimmer */
+.sheen {
+  position:absolute; inset:-25%; pointer-events:none;
+  background:conic-gradient(from 0deg, rgba(0,0,0,0) 0 58%, rgba(255,255,255,.10) 72%, rgba(0,0,0,0) 86%);
+  animation:sheenspin 26s linear infinite;
+  opacity:.5; transition:opacity .9s ease;
+}
+body[data-state="thinking"] .sheen { animation-duration:6.5s; opacity:.95; }
+body[data-state="speaking"] .sheen { animation-duration:11s; opacity:.55; }
+body[data-state="ended"] .sheen, body[data-state="muted"] .sheen { opacity:.15; }
+@keyframes sheenspin { to { transform:rotate(360deg); } }
+/* faint grain: a static SVG-turbulence tile, the watercolor-paper tooth */
+.grain {
+  position:absolute; inset:0; pointer-events:none; opacity:.07;
+  mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
+}
 
 /* the permanent one-word state label under the orb (ui-rounded chain via
    the body font); #status is demoted to a small detail line beneath it */
@@ -1021,33 +1156,52 @@ body.standalone #chatHead {
 body[data-state="speaking"] #hushBtn { display:flex; }
 #hushBtn:active { transform:scale(.92); }
 #hushBtn svg { width:18px; height:18px; }
-/* composer: type instead of talking (meetings, quiet rooms) */
-.composer { flex:none; display:flex; align-items:center; gap:8px; padding:8px 14px 0; }
+/* composer: type instead of talking (meetings, quiet rooms). v15: one
+   rounded card holds the borderless input, the mic-toggle chip (back to
+   voice input) and the 36px mint send button. No plus button: there are
+   no attachments here. */
+.composer { flex:none; padding:8px 14px 0; }
+.cwrap {
+  display:flex; align-items:center; gap:6px;
+  background:#161c29; border:1px solid #232b3d; border-radius:16px;
+  padding:6px 6px 6px 14px;
+  transition:border-color .2s ease;
+}
+.cwrap:focus-within { border-color:#31405c; }
 #composeIn {
-  flex:1; min-width:0; min-height:44px;
-  background:#0e1420; border:1px solid var(--line); border-radius:999px;
-  color:#e8ebf2; padding:11px 16px;
+  flex:1; min-width:0; min-height:36px;
+  background:none; border:0; outline:none;
+  color:#e8ebf2; padding:6px 0;
   /* 16px stops the iOS zoom-on-focus */
   font-size:16px; line-height:1.5;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   user-select:text; -webkit-user-select:text;
 }
 #composeIn::placeholder { color:#5b6479; }
+#micChip {
+  flex:none; width:36px; height:36px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.06); border:1px solid var(--line);
+  color:var(--dim);
+}
+#micChip:active { transform:scale(.92); }
+#micChip svg { width:17px; height:17px; }
 #sendBtn {
-  flex:none; width:44px; height:44px; border-radius:50%;
+  flex:none; width:36px; height:36px; border-radius:50%;
   background:var(--mint); color:#06231f;
   display:flex; align-items:center; justify-content:center;
 }
 #sendBtn:active { transform:scale(.92); }
-#sendBtn svg { width:20px; height:20px; }
-/* typing indicator: "Claude is working" row while a turn is in flight */
+#sendBtn svg { width:18px; height:18px; }
+/* working indicator, Lovable-style: a quiet dim italic "Working" row with
+   the three pulsing dots; it vanishes with the turn, no finished residue */
 .typing {
-  align-self:flex-start; display:flex; align-items:center; gap:5px;
-  padding:4px 2px; color:var(--dim); font-size:13.5px;
+  align-self:flex-start; display:flex; align-items:center; gap:4px;
+  padding:4px 2px; color:var(--dim); font-size:13px; font-style:italic;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 .typing .tl { margin-right:4px; }
-.typing .td { width:6px; height:6px; border-radius:50%; background:var(--dim);
+.typing .td { width:5px; height:5px; border-radius:50%; background:var(--dim);
   animation:softpulse 1.2s ease-in-out infinite; }
 .typing .td:nth-child(3) { animation-delay:.2s; }
 .typing .td:nth-child(4) { animation-delay:.4s; }
@@ -1111,12 +1265,48 @@ body[data-state="speaking"] #hushBtn { display:flex; }
   overflow-x:auto; white-space:pre; max-width:100%; }
 .ichip { background:rgba(255,255,255,.09); border-radius:5px; padding:1px 5px;
   font:.92em ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace; }
-/* timestamps: grouped cluster dividers, never per-message */
+/* timestamps: grouped cluster dividers ("Jul 25 at 3:16 PM"), never
+   per-message; 13px, dim, centered, comfortable margins */
 .tsdiv {
-  align-self:center; text-align:center; font-size:11.5px; color:#5b6479;
-  padding:8px 0 0; letter-spacing:.04em;
+  align-self:center; text-align:center; font-size:13px; color:#5b6479;
+  padding:14px 0 2px; letter-spacing:.02em;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
+/* sender row: opens each message cluster (speaker change), Lovable-style.
+   Small round avatar + 13px/600 name; the user is a mint "Y" / "You",
+   the agent is the session-colored monogram + session name. */
+.sender {
+  display:flex; align-items:center; gap:8px; margin:6px 0 -4px;
+  font-size:13px; font-weight:600; color:#c3cbdb;
+  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.sender.user { align-self:flex-end; flex-direction:row-reverse; }
+.avatar {
+  flex:none; width:24px; height:24px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:700; color:#e9eef8; background:#39435a;
+}
+.avatar.you { background:linear-gradient(180deg, #5ce8b8 0%, #2fae9d 100%); color:#06231f; }
+.sender .sname { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:60vw; }
+/* structured agent text: headings and real list rows (hanging indents).
+   These sit inside the pre-wrap message column, so each block resets its
+   own white-space. */
+.mhead {
+  font-size:17px; font-weight:600; line-height:1.4; color:#f0f3f9;
+  margin:10px 0 2px; white-space:normal;
+}
+.mhead:first-child { margin-top:2px; }
+.lirow { display:flex; align-items:flex-start; gap:9px; margin:3px 0; white-space:normal; }
+.lirow .limark {
+  flex:none; min-width:18px; text-align:right; color:#9aa4b8;
+  font-variant-numeric:tabular-nums;
+}
+.lirow .lidot {
+  min-width:0; width:5px; height:5px; border-radius:50%;
+  background:#9aa4b8; margin:9px 4px 0 9px;
+}
+.lirow .litext { flex:1; min-width:0; white-space:pre-wrap; }
+.msg-a strong, .bub strong { font-weight:650; color:#f2f5fb; }
 /* delivery state under the last user bubble */
 .dstate {
   align-self:flex-end; font-size:11.5px; color:var(--dim);
@@ -1197,9 +1387,21 @@ body[data-state="speaking"] #hushBtn { display:flex; }
 @keyframes spin { to { transform:rotate(360deg); } }
 #switchMsg { font-size:16px; color:#dfe4ee; letter-spacing:.02em; }
 
+/* ==== battery: page hidden (body.bg), home up, or full-screen chat up =
+   every orb animation parked (visibility:hidden alone does not stop the
+   compositor from ticking the layers) ==== */
+body.bg .gl, body.bg .sheen, body.bg .halo,
+body.bg #orb, body.bg #orbscale, body.bg .ripple,
+body.home .gl, body.home .sheen, body.home .halo,
+body.home #orb, body.home #orbscale, body.home .ripple,
+body.chat-full .gl, body.chat-full .sheen, body.chat-full .halo,
+body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
+  animation-play-state:paused;
+}
+
 /* ==== reduced motion: state still legible via color and text ==== */
 @media (prefers-reduced-motion: reduce) {
-  #orb, #orb::after, .overlay .glyph, body[data-state="speaking"] #orb { animation:none; }
+  #orb, .gl, .glw, .sheen, .halo, #orbscale, .overlay .glyph { animation:none !important; }
   body[data-state="thinking"] .ripple,
   body[data-state="needs"] .ripple { animation:none; opacity:.35; transform:scale(1.25); }
   #orbscale { transition:none; transform:none; }
@@ -1258,7 +1460,17 @@ body[data-state="speaking"] #hushBtn { display:flex; }
 <main>
   <div id="orbzone" aria-hidden="true">
     <div class="ripple"></div><div class="ripple"></div><div class="ripple"></div>
-    <div id="orbscale"><div id="orb"></div></div>
+    <div id="orbscale">
+      <div class="halo"></div>
+      <div id="orb">
+        <div class="gl gl1"></div>
+        <div class="gl gl2"></div>
+        <div class="gl gl3"></div>
+        <div class="gl glw"></div>
+        <div class="sheen"></div>
+        <div class="grain"></div>
+      </div>
+    </div>
   </div>
   <div id="stateWord" role="status" aria-live="polite"></div>
   <div id="status" role="status" aria-live="polite">call ended</div>
@@ -1333,15 +1545,24 @@ body[data-state="speaking"] #hushBtn { display:flex; }
     <div id="chatLines"><p class="empty">The conversation with this session appears here.</p></div>
   </div>
   <div class="composer">
-    <input id="composeIn" type="text" placeholder="type instead of talking"
-           autocapitalize="sentences" autocomplete="off" autocorrect="on"
-           enterkeyhint="send" aria-label="Type a prompt to the session">
-    <button id="sendBtn" aria-label="Send typed prompt">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>
-      </svg>
-    </button>
+    <div class="cwrap">
+      <input id="composeIn" type="text" placeholder="type instead of talking"
+             autocapitalize="sentences" autocomplete="off" autocorrect="on"
+             enterkeyhint="send" aria-label="Type a prompt to the session">
+      <button id="micChip" aria-label="Switch back to voice input">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor" stroke="none"/>
+          <path d="M6 12a6 6 0 0 0 12 0"/><path d="M12 18v3"/>
+        </svg>
+      </button>
+      <button id="sendBtn" aria-label="Send typed prompt">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>
+        </svg>
+      </button>
+    </div>
   </div>
 </section>
 
@@ -1411,7 +1632,7 @@ const statusEl=$('status'), stateWord=$('stateWord'), pillName=$('pillName'),
       muteBtn=$('muteBtn'), muteLbl=$('muteLbl'),
       chatBtn=$('chatBtn'), chatLines=$('chatLines'), chatScroll=$('chatScroll'), jumpBtn=$('jumpBtn'),
       chatHead=$('chatHead'), chatTitle=$('chatTitle'), chatBackBtn=$('chatBackBtn'),
-      composeIn=$('composeIn'), sendBtn=$('sendBtn'),
+      composeIn=$('composeIn'), sendBtn=$('sendBtn'), orbScaleEl=$('orbscale'),
       pullHint=$('pullHint'), chipEl=$('chip'), decideEl=$('decide'),
       decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
       sessList=$('sessList'), sessCount=$('sessCount'),
@@ -1495,14 +1716,20 @@ function jpost(path, body){
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-/* mic-level meter drives the orb scale via --level (0..1) */
-let level=0, levelTarget=0;
-function bumpLevel(v){ levelTarget = Math.max(levelTarget, v); }
+/* mic-level meter drives the orb scale via --level (0..1). Every RMS the
+   page already computes (whisper listener, barge monitor) funnels through
+   bumpLevel, so the sphere pulses WITH the user's voice. When listening
+   but no fresh level has landed for 2s (native SR emits none between
+   results), .steady switches the pulse to a 1.2s heart-beat keyframe. */
+let level=0, levelTarget=0, lastLevelAt=0;
+function bumpLevel(v){ levelTarget = Math.max(levelTarget, v); lastLevelAt = Date.now(); }
 (function levelLoop(){
   level += (levelTarget - level) * .25;
   levelTarget *= .9;
   if(level < .004) level = 0;
   document.documentElement.style.setProperty('--level', level.toFixed(3));
+  orbScaleEl.classList.toggle('steady',
+    state === 'listening' && Date.now() - lastLevelAt > 2000);
   requestAnimationFrame(levelLoop);
 })();
 
@@ -1740,7 +1967,10 @@ function resumeAfterSpeech(){
    This is also the whole wake-lock fallback story on older iOS: recover
    well, no fake keep-awake. */
 document.addEventListener('visibilitychange', () => {
-  if(document.visibilityState !== 'visible') return;
+  /* v15 battery: body.bg parks every orb animation while the page hides */
+  const vis = document.visibilityState === 'visible';
+  document.body.classList.toggle('bg', !vis);
+  if(!vis) return;
   if(TTS && speechSynthesis.paused) speechSynthesis.resume();
   /* iOS suspends the AudioContext in the background: the Mac-voice pipeline
      and the chime need it running again */
@@ -1753,6 +1983,7 @@ document.addEventListener('visibilitychange', () => {
    visibility return. */
 window.addEventListener('pageshow', e => {
   if(!e.persisted) return;
+  document.body.classList.remove('bg');   // restored pages are visible
   if(TTS && speechSynthesis.paused) speechSynthesis.resume();
   try{ if(audioCtx && audioCtx.state !== 'running') audioCtx.resume(); }catch(e){}
   if(live){ acquireWakeLock(); beatOnce(); }
@@ -1844,6 +2075,7 @@ async function startBarge(){
       an.getFloatTimeDomainData(buf);
       let s = 0; for(const v of buf) s += v * v;
       const rms = Math.sqrt(s / buf.length);
+      bumpLevel(Math.min(1, rms * 9));   // the sphere pulses with the human
       if(rms > BARGE_RMS) hot++; else hot = 0;     // must be SUSTAINED voice
       if(hot >= BARGE_HOLD){
         stopBarge();
@@ -1862,9 +2094,76 @@ async function startBarge(){
    on pull-to-refresh). Falls back to local-only when /chat is missing. */
 let localTurns = [];
 let chatHasServer = false;
+/* v15 safe renderer, three layers, all content set via textContent or
+   createTextNode (escape-free by construction, never raw innerHTML):
+     renderInline  `code` -> .ichip chips, **bold** -> <strong>
+     renderBlocks  "## "/"# " -> 17px headings, "1. " -> numbered rows,
+                   "- "/"* " -> bulleted rows (hanging indents), the rest
+                   flows as pre-wrap text
+     renderRich    fenced ``` blocks -> mono code cards, everything else
+                   through renderBlocks */
+function renderInline(el, text){
+  const bits = String(text).split(/`([^`\n]+)`/);
+  for(let j = 0; j < bits.length; j++){
+    if(j % 2){
+      const c = document.createElement('code'); c.className = 'ichip';
+      c.textContent = bits[j]; el.appendChild(c);
+    }else if(bits[j]){
+      const bb = bits[j].split(/\*\*([^*\n]+)\*\*/);
+      for(let k = 0; k < bb.length; k++){
+        if(!bb[k]) continue;
+        if(k % 2){
+          const st = document.createElement('strong');
+          st.textContent = bb[k]; el.appendChild(st);
+        }else{
+          el.appendChild(document.createTextNode(bb[k]));
+        }
+      }
+    }
+  }
+}
+function renderBlocks(el, seg){
+  const lines = String(seg).split('\n');
+  let plain = [];
+  const flush = () => {
+    if(!plain.length) return;
+    const p = document.createElement('span');
+    renderInline(p, plain.join('\n'));
+    el.appendChild(p);
+    plain = [];
+  };
+  const listRow = (markText, body) => {
+    const row = document.createElement('div'); row.className = 'lirow';
+    const mk = document.createElement('span');
+    mk.className = 'limark' + (markText ? '' : ' lidot');
+    if(markText) mk.textContent = markText;
+    row.appendChild(mk);
+    const tx = document.createElement('span'); tx.className = 'litext';
+    renderInline(tx, body);
+    row.appendChild(tx);
+    el.appendChild(row);
+  };
+  for(let i = 0; i < lines.length; i++){
+    const ln = lines[i];
+    let m;
+    if((m = ln.match(/^\s*#{1,2}\s+(.*)$/))){
+      flush();
+      const h = document.createElement('div'); h.className = 'mhead';
+      renderInline(h, m[1]);
+      el.appendChild(h);
+    }else if((m = ln.match(/^\s*[-*]\s+(.*)$/))){
+      flush();
+      listRow('', m[1]);
+    }else if((m = ln.match(/^\s*(\d{1,3})\.\s+(.*)$/))){
+      flush();
+      listRow(m[1] + '.', m[2]);
+    }else{
+      plain.push(ln);
+    }
+  }
+  flush();
+}
 function renderRich(el, text){
-  /* tiny safe renderer: fenced blocks -> real <pre> (mono, x-scroll),
-     `inline` -> code chips. All content set via textContent, never HTML. */
   const chunks = String(text).split('```');
   for(let i = 0; i < chunks.length; i++){
     let seg = chunks[i];
@@ -1873,17 +2172,7 @@ function renderRich(el, text){
       pre.textContent = seg.replace(/^[a-zA-Z0-9_+-]*\n/, '').replace(/\n$/, '');
       el.appendChild(pre);
     }else if(seg){
-      const p = document.createElement('span');
-      const bits = seg.split(/`([^`\n]+)`/);
-      for(let j = 0; j < bits.length; j++){
-        if(j % 2){
-          const c = document.createElement('code'); c.className = 'ichip';
-          c.textContent = bits[j]; p.appendChild(c);
-        }else if(bits[j]){
-          p.appendChild(document.createTextNode(bits[j]));
-        }
-      }
-      el.appendChild(p);
+      renderBlocks(el, seg);
     }
   }
 }
@@ -1974,7 +2263,7 @@ function syncTyping(){
       row = document.createElement('div');
       row.id = 'typingRow'; row.className = 'typing';
       const tl = document.createElement('span');
-      tl.className = 'tl'; tl.textContent = 'Claude is working';
+      tl.className = 'tl'; tl.textContent = 'Working';
       row.appendChild(tl);
       for(let i = 0; i < 3; i++){
         const td = document.createElement('span'); td.className = 'td';
@@ -2018,16 +2307,37 @@ function syncDelivery(){
    never per-message; turns without a stamp simply never open a cluster */
 const CLUSTER_MS = 600000;
 function fmtStamp(ts){
-  const d = new Date(ts), now = new Date();
+  const d = new Date(ts);
   const hm = d.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
-  if(d.toDateString() === now.toDateString()) return hm;
-  return d.toLocaleDateString([], { weekday:'short' }) + ' ' + hm;
+  return d.toLocaleDateString([], { month:'short', day:'numeric' }) + ' at ' + hm;
 }
 function tsDivider(ts){
   const el = document.createElement('div');
   el.className = 'tsdiv';
   el.textContent = fmtStamp(ts);
   return el;
+}
+/* sender row: opens a message cluster. The user avatar is a mint "Y";
+   the agent avatar reuses the home cards' deterministic session color. */
+function senderRow(role){
+  const row = document.createElement('div');
+  row.className = 'sender' + (role === 'user' ? ' user' : '');
+  const av = document.createElement('span'); av.className = 'avatar';
+  const nm = document.createElement('span'); nm.className = 'sname';
+  if(role === 'user'){
+    av.classList.add('you');
+    av.textContent = 'Y';
+    nm.textContent = 'You';
+  }else{
+    const sess = (pillName.textContent || '').trim() || 'Claude';
+    let h = 0;
+    for(let i = 0; i < sess.length; i++) h = (h * 31 + sess.charCodeAt(i)) >>> 0;
+    av.style.background = 'hsl(' + (h % 360) + ' 42% 30%)';
+    av.textContent = sess.charAt(0).toUpperCase();
+    nm.textContent = sess;
+  }
+  row.append(av, nm);
+  return row;
 }
 function renderChat(){
   const sheetOpen = chatOpenState;
@@ -2043,10 +2353,17 @@ function renderChat(){
     jumpBtn.classList.add('hidden');
     return;
   }
-  let prevTs = 0;
+  let prevTs = 0, prevRole = '';
   localTurns.forEach(t => {
-    if(t.ts && (!prevTs || t.ts - prevTs >= CLUSTER_MS)) chatLines.appendChild(tsDivider(t.ts));
+    if(t.ts && (!prevTs || t.ts - prevTs >= CLUSTER_MS)){
+      chatLines.appendChild(tsDivider(t.ts));
+      prevRole = '';   // a new time cluster re-introduces the speaker
+    }
     if(t.ts) prevTs = t.ts;
+    if(t.role !== prevRole){
+      chatLines.appendChild(senderRow(t.role));
+      prevRole = t.role;
+    }
     chatLines.appendChild(bubble(t.role, t.text));
   });
   syncTyping();
@@ -2069,12 +2386,19 @@ function chatAdd(role, text){
   if(!text) return;
   const ts = Date.now();
   const prevTs = lastStampTs();
+  const prevRole = localTurns.length ? localTurns[localTurns.length - 1].role : '';
   localTurns.push({ role: role, text: text, ts: ts });
   const empty = chatLines.querySelector('.empty');
   if(empty) empty.remove();
   const sheetOpen = chatOpenState;
   const stick = !sheetOpen || chatNearBottom();
-  if(!prevTs || ts - prevTs >= CLUSTER_MS) chatLines.appendChild(tsDivider(ts));
+  let clustered = false;
+  if(!prevTs || ts - prevTs >= CLUSTER_MS){
+    chatLines.appendChild(tsDivider(ts));
+    clustered = true;
+  }
+  /* sender row once per cluster: speaker change or a fresh time cluster */
+  if(clustered || role !== prevRole) chatLines.appendChild(senderRow(role));
   chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive));
   syncTyping();
   renderedTurns = localTurns.length;
@@ -2628,7 +2952,7 @@ async function listenWhisper(){
     an.getFloatTimeDomainData(buf);
     let s = 0; for(const v of buf) s += v*v;
     const rms = Math.sqrt(s / buf.length);
-    levelTarget = Math.max(levelTarget, Math.min(1, rms * 10));
+    bumpLevel(Math.min(1, rms * 10));   // the sphere pulses with the voice
     if(rms > .02){
       spoke = true; quiet = 0;
       if(stitchTimer) holdStitchOnSpeech();   // resumed inside the window
@@ -2929,6 +3253,13 @@ sendBtn.addEventListener('click', sendTyped);
 sendBtn.addEventListener('mousedown', e => e.preventDefault());
 composeIn.addEventListener('keydown', e => {
   if(e.key === 'Enter'){ e.preventDefault(); sendTyped(); }
+});
+/* the mic chip returns to VOICE input: blur the composer (typingMute off,
+   the blur handler restores listening) and lift a manual mute so the mic
+   actually reopens */
+$('micChip').addEventListener('click', () => {
+  try{ composeIn.blur(); }catch(e){}
+  if(live && muted) muteBtn.click();
 });
 /* focusing the field mutes the mic (no accidental hot mic in a meeting,
    and no recognizer transcribing keyboard clicks); blur restores exactly
@@ -3369,6 +3700,7 @@ if(S){
 pollSessions();
 refreshChat();
 </script></body></html>
+
 """
 
 # Shown on 401 for "/": the installed PWA loses ?k= (a manifest start_url
