@@ -310,11 +310,63 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
-  voicebridge call page v15 (file: call_page_v15.html). Drop-in replacement
+  voicebridge call page v16 (file: call_page_v16.html). Drop-in replacement
   for PAGE in vb/call.py. Embed as a RAW string (r prefix) so regex
   backslashes survive. This file contains no triple double-quote sequence
   anywhere, so it is safe inside a Python raw triple-quoted string.
   100% ASCII.
+
+  CHANGES, v15 to v16, two scoped upgrades, each item and where it lives:
+
+    TASK 1, CHAT REDESIGN: a calm single-column DOCUMENT, the way the
+    Claude mobile app renders a remote session's conversation. The
+    left/right bubble ping-pong and the avatar circles are gone.
+    1. ONE CENTERED COLUMN: #chatLines is a 680px max column; every
+       message sits in reading order, left-aligned, never side-switched.
+       Each message is a .msgw wrapper; clusters breathe: 10px between
+       messages, 20px at a speaker change (.msgw.cstart adds 10px to the
+       10px column gap).
+    2. USER messages are a subtle rounded block (.ublk: #1a2130 fill, 1px
+       hairline border, 14px radius, 12px 14px padding, 15.5px body) that
+       spans the column minus a slight right inset. No mint fill, no
+       right-alignment.
+    3. AGENT replies stay OPEN text directly on the background (.msg-a),
+       same column; the v15 structured renderer is untouched (renderRich /
+       renderBlocks / renderInline: headings, lists, bold, code chips,
+       fenced code cards).
+    4. EYEBROWS replace the v15 avatar/sender rows: a tiny dim 11px
+       uppercase label (.ebrow / .eblbl) above the first message of a
+       cluster only, "You" over user blocks, the SESSION NAME over agent
+       text; a timestamp divider re-introduces the speaker. senderRow()
+       and the avatar CSS are retired; speakerLabel() feeds bubble().
+    5. COPY BUTTONS moved to the RIGHT of the eyebrow row (every message
+       keeps one; inside a cluster the label span is simply empty). They
+       no longer float over the text.
+    6. TIMESTAMP dividers keep the "Jul 25 at 3:16 PM" form but quieter:
+       12px, dimmer ink, more margin (.tsdiv).
+    7. DELIVERY ROW sits under the user block, right-aligned, 11.5px,
+       matching the block's right inset; syncDelivery() targets the new
+       .msgw.user wrapper. Show-more clamp, jump pill, working row,
+       pull-to-refresh, unread dot and the composer behave exactly as in
+       v15.
+
+    TASK 2, VOICE PREVIEW + UNPARK (settings sheet):
+    8. Tapping a voice card (Heart / Bella / Michael) gives instant
+       audible confirmation: previewVoice() POSTs /tts with the text
+       "Hi, I'm <Name>. This is how I sound." and the tapped voice id,
+       then plays the WAV through the existing Mac-voice WebAudio path
+       (unlockAudio runs synchronously inside the tap, so it works before
+       any call starts). Any preview already playing or still fetching is
+       cancelled first (cancelPreview). The selection commits ONLY when
+       the audio actually arrives; a failed /tts keeps the previous
+       selection and toasts "Natural voice unreachable right now".
+    9. UNPARK: any card tap resets macDead and macFails (re-selecting the
+       Natural source already did, kept), so a session that fell back to
+       the phone voice recovers without a reload.
+   10. One-line hint under the cards: "tap a voice to hear it"
+       (#voiceHint, hidden together with the cards while the source is
+       Phone). A playing preview also dies with stopSpeaking(), so it can
+       never talk over a reply or a barge-in.
 
   CHANGES, v14 to v15, two scoped upgrades, each item and where it lives:
 
@@ -835,6 +887,8 @@ body.home #setBtn { display:none; }
 .vcard .vn { font-size:15px; font-weight:600; color:#dfe4ee; }
 .vcard.sel .vn { color:#7fe6d5; }
 .vcard .vd { font-size:11px; font-weight:500; color:var(--dim); text-align:center; line-height:1.35; }
+/* v16: the tap-to-preview hint hides together with the cards */
+#voiceHint.off { display:none; }
 
 /* iOS A2HS standalone quirk: with a black-translucent status bar the page
    sits under the clock, and some older devices report a 0 top inset in
@@ -1205,16 +1259,15 @@ body[data-state="speaking"] #hushBtn { display:flex; }
   animation:softpulse 1.2s ease-in-out infinite; }
 .typing .td:nth-child(3) { animation-delay:.2s; }
 .typing .td:nth-child(4) { animation-delay:.4s; }
-/* copy button: floats top-right INSIDE the text block on user AND agent
-   messages (a button, not long-press: long-press means selection on iOS) */
+/* copy button: v16, lives at the RIGHT of the eyebrow row on every
+   message (a button, not long-press: long-press means selection on iOS) */
 .copybtn {
-  float:right; width:30px; height:30px; margin:-4px -8px 2px 8px;
-  border-radius:9px; display:flex; align-items:center; justify-content:center;
-  color:#8a94a8; background:rgba(10,13,20,.3);
+  flex:none; width:26px; height:26px; margin-left:auto;
+  border-radius:8px; display:flex; align-items:center; justify-content:center;
+  color:#5b6479; background:none;
 }
-.msg-a .copybtn { margin-right:0; background:rgba(255,255,255,.05); }
 .copybtn:active { transform:scale(.9); color:#e8ebf2; }
-.copybtn svg { width:15px; height:15px; }
+.copybtn svg { width:14px; height:14px; }
 /* unread dot: a reply arrived while chat was closed */
 #chatBtn.unread::after {
   content:''; position:absolute; top:9px; right:9px;
@@ -1231,29 +1284,46 @@ body[data-state="speaking"] #hushBtn { display:flex; }
   overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
 }
 #chatLines {
-  display:flex; flex-direction:column; gap:12px; padding:10px 0 8px;
-  width:100%; max-width:720px; margin:0 auto;
+  display:flex; flex-direction:column; gap:10px; padding:10px 0 8px;
+  width:100%; max-width:680px; margin:0 auto;
 }
-/* USER messages only get bubbles: right-aligned, mint tint, max 85%.
-   16px/1.5 on the system-ui chat stack. */
-.bub {
-  max-width:85%; padding:10px 14px; border-radius:18px;
-  font-size:16px; line-height:1.5; white-space:pre-wrap; word-break:break-word;
+/* v16: one calm column. Each message is a .msgw wrapper (eyebrow row +
+   content block); a cluster start (.cstart, speaker change) gets 20px of
+   air (10px column gap + 10px margin); inside a cluster it stays 10px. */
+.msgw { display:flex; flex-direction:column; width:100%; }
+.msgw.cstart { margin-top:10px; }
+.msgw:first-child, .tsdiv + .msgw { margin-top:0; }
+/* the eyebrow: a tiny dim uppercase speaker label, only at a cluster
+   start (empty otherwise), with the per-message copy button at its right */
+.ebrow {
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  min-height:24px; margin:0 0 2px;
+}
+.eblbl {
+  font-size:11px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;
+  color:#5b6479; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  user-select:text; -webkit-user-select:text;
 }
-.bub.user { align-self:flex-end; background:rgba(70,215,195,.15);
-  border:1px solid rgba(70,215,195,.22); border-bottom-right-radius:6px; color:#e7fffa; }
-.bub.live { border-style:dashed; }
-/* AGENT replies: OPEN full-width text on the background, max column 65ch */
+/* v16 USER messages: a subtle rounded block in the SAME left-aligned
+   column (no mint, no right-alignment), full column width minus a slight
+   right inset. 15.5px body on the system-ui chat stack. */
+.ublk {
+  background:#1a2130; border:1px solid rgba(255,255,255,.07); border-radius:14px;
+  padding:12px 14px; margin-right:18px;
+  font-size:15.5px; line-height:1.55; white-space:pre-wrap; word-break:break-word;
+  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color:#e4e9f2; user-select:text; -webkit-user-select:text;
+}
+.ublk.live { border-style:dashed; }
+/* AGENT replies: OPEN text directly on the background, same column */
 .msg-a {
-  align-self:flex-start; width:100%; max-width:65ch; padding:2px 0;
+  width:100%; padding:2px 0;
   font-size:16px; line-height:1.5; white-space:pre-wrap; word-break:break-word;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color:#e8ebf2; user-select:text; -webkit-user-select:text;
 }
-.bub .bwrap, .msg-a .bwrap { display:block; }
-.bub.clamp .bwrap, .msg-a.clamp .bwrap { max-height:19em; overflow:hidden;
+.ublk .bwrap, .msg-a .bwrap { display:block; }
+.ublk.clamp .bwrap, .msg-a.clamp .bwrap { max-height:19em; overflow:hidden;
   -webkit-mask-image:linear-gradient(#000 72%, transparent);
   mask-image:linear-gradient(#000 72%, transparent); }
 .showmore { display:block; margin-top:6px; background:none; border:0;
@@ -1266,28 +1336,12 @@ body[data-state="speaking"] #hushBtn { display:flex; }
 .ichip { background:rgba(255,255,255,.09); border-radius:5px; padding:1px 5px;
   font:.92em ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace; }
 /* timestamps: grouped cluster dividers ("Jul 25 at 3:16 PM"), never
-   per-message; 13px, dim, centered, comfortable margins */
+   per-message; v16: quieter, 12px, dimmer ink, more margin */
 .tsdiv {
-  align-self:center; text-align:center; font-size:13px; color:#5b6479;
-  padding:14px 0 2px; letter-spacing:.02em;
+  align-self:center; text-align:center; font-size:12px; color:#4d5568;
+  padding:22px 0 8px; letter-spacing:.03em;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
-/* sender row: opens each message cluster (speaker change), Lovable-style.
-   Small round avatar + 13px/600 name; the user is a mint "Y" / "You",
-   the agent is the session-colored monogram + session name. */
-.sender {
-  display:flex; align-items:center; gap:8px; margin:6px 0 -4px;
-  font-size:13px; font-weight:600; color:#c3cbdb;
-  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-}
-.sender.user { align-self:flex-end; flex-direction:row-reverse; }
-.avatar {
-  flex:none; width:24px; height:24px; border-radius:50%;
-  display:flex; align-items:center; justify-content:center;
-  font-size:11px; font-weight:700; color:#e9eef8; background:#39435a;
-}
-.avatar.you { background:linear-gradient(180deg, #5ce8b8 0%, #2fae9d 100%); color:#06231f; }
-.sender .sname { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:60vw; }
 /* structured agent text: headings and real list rows (hanging indents).
    These sit inside the pre-wrap message column, so each block resets its
    own white-space. */
@@ -1307,10 +1361,11 @@ body[data-state="speaking"] #hushBtn { display:flex; }
 }
 .lirow .litext { flex:1; min-width:0; white-space:pre-wrap; }
 .msg-a strong, .bub strong { font-weight:650; color:#f2f5fb; }
-/* delivery state under the last user bubble */
+/* delivery state: right-aligned under the last user block, matching
+   the block's right inset (v16) */
 .dstate {
   align-self:flex-end; font-size:11.5px; color:var(--dim);
-  padding:0 4px; margin-top:-6px; background:none; border:0;
+  padding:0 4px; margin:-4px 18px 0 0; background:none; border:0;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 .dstate.fail { color:#ff9a9e; }
@@ -1601,6 +1656,7 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
       <span class="vn">Michael</span><span class="vd">calm, male</span>
     </button>
   </div>
+  <p class="hint" id="voiceHint">tap a voice to hear it</p>
   <p class="hint">Natural voice is made on your Mac and played here, and the phone voice
      takes over automatically if the Mac is unreachable.</p>
   <p class="hint">A new voice takes effect on the next reply.</p>
@@ -1812,6 +1868,7 @@ function stopSpeaking(){
   speechCancelled = true;
   if(TTS) speechSynthesis.cancel();
   stopMacAudio();
+  cancelPreview();   /* v16: a playing voice preview dies with the speech */
   stopBarge();
 }
 /* iOS unlocks speechSynthesis only inside a user gesture: speak a silent
@@ -2203,13 +2260,17 @@ function copyText(t){
   }catch(e){}
   fail();
 }
-function bubble(role, text, liveNow){
-  /* ChatGPT convention: USER messages get right-aligned mint bubbles;
-     AGENT replies are open full-width text on the background */
-  const d = document.createElement('div');
-  d.className = (role === 'user' ? 'bub user' : 'msg-a') + (liveNow ? ' live' : '');
-  /* the copy button goes FIRST so its float pulls it to the top-right
-     and the text wraps around it instead of underneath */
+function bubble(role, text, liveNow, label){
+  /* v16 document layout: one .msgw wrapper per message in a single
+     left-aligned column. USER messages get the subtle rounded block
+     (.ublk); AGENT replies stay open text (.msg-a). The eyebrow row on
+     top carries the dim speaker label (only at a cluster start, empty
+     otherwise) and the per-message copy button at its right. */
+  const w = document.createElement('div');
+  w.className = 'msgw ' + (role === 'user' ? 'user' : 'agent') + (label ? ' cstart' : '');
+  const eb = document.createElement('div'); eb.className = 'ebrow';
+  const lb = document.createElement('span'); lb.className = 'eblbl';
+  if(label) lb.textContent = label;
   const cp = document.createElement('button');
   cp.className = 'copybtn';
   cp.setAttribute('aria-label', 'Copy this message');
@@ -2218,7 +2279,10 @@ function bubble(role, text, liveNow){
     '<rect x="9" y="9" width="11" height="11" rx="2.5"/>' +
     '<path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>';
   cp.addEventListener('click', ev => { ev.stopPropagation(); copyText(String(text)); });
-  d.appendChild(cp);
+  eb.append(lb, cp);
+  w.appendChild(eb);
+  const d = document.createElement('div');
+  d.className = (role === 'user' ? 'ublk' : 'msg-a') + (liveNow ? ' live' : '');
   const wrap = document.createElement('div'); wrap.className = 'bwrap';
   renderRich(wrap, text);
   d.appendChild(wrap);
@@ -2235,7 +2299,8 @@ function bubble(role, text, liveNow){
     });
     d.appendChild(more);
   }
-  return d;
+  w.appendChild(d);
+  return w;
 }
 /* v7 pill rule, bulletproof: the pill may exist ONLY when (sheet open) AND
    (user scrolled up more than ~150px from the bottom) AND (content was
@@ -2280,7 +2345,7 @@ function syncTyping(){
    key, so a retry can never double-type the prompt. */
 function syncDelivery(){
   let row = document.getElementById('deliveryRow');
-  const bubs = chatLines.querySelectorAll('.bub.user');
+  const bubs = chatLines.querySelectorAll('.msgw.user');
   const last = bubs.length ? bubs[bubs.length - 1] : null;
   if(!turnActive || !live || !last){ if(row) row.remove(); return; }
   if(!row){
@@ -2317,27 +2382,12 @@ function tsDivider(ts){
   el.textContent = fmtStamp(ts);
   return el;
 }
-/* sender row: opens a message cluster. The user avatar is a mint "Y";
-   the agent avatar reuses the home cards' deterministic session color. */
-function senderRow(role){
-  const row = document.createElement('div');
-  row.className = 'sender' + (role === 'user' ? ' user' : '');
-  const av = document.createElement('span'); av.className = 'avatar';
-  const nm = document.createElement('span'); nm.className = 'sname';
-  if(role === 'user'){
-    av.classList.add('you');
-    av.textContent = 'Y';
-    nm.textContent = 'You';
-  }else{
-    const sess = (pillName.textContent || '').trim() || 'Claude';
-    let h = 0;
-    for(let i = 0; i < sess.length; i++) h = (h * 31 + sess.charCodeAt(i)) >>> 0;
-    av.style.background = 'hsl(' + (h % 360) + ' 42% 30%)';
-    av.textContent = sess.charAt(0).toUpperCase();
-    nm.textContent = sess;
-  }
-  row.append(av, nm);
-  return row;
+/* v16 eyebrow label: "You" over user blocks, the SESSION NAME over agent
+   text; rendered only at a cluster start (speaker change or a fresh time
+   cluster). The v15 avatar/sender rows are retired. */
+function speakerLabel(role){
+  if(role === 'user') return 'You';
+  return (pillName.textContent || '').trim() || 'Claude';
 }
 function renderChat(){
   const sheetOpen = chatOpenState;
@@ -2360,11 +2410,9 @@ function renderChat(){
       prevRole = '';   // a new time cluster re-introduces the speaker
     }
     if(t.ts) prevTs = t.ts;
-    if(t.role !== prevRole){
-      chatLines.appendChild(senderRow(t.role));
-      prevRole = t.role;
-    }
-    chatLines.appendChild(bubble(t.role, t.text));
+    const lbl = t.role !== prevRole ? speakerLabel(t.role) : '';
+    prevRole = t.role;
+    chatLines.appendChild(bubble(t.role, t.text, false, lbl));
   });
   syncTyping();
   renderedTurns = localTurns.length;
@@ -2397,9 +2445,9 @@ function chatAdd(role, text){
     chatLines.appendChild(tsDivider(ts));
     clustered = true;
   }
-  /* sender row once per cluster: speaker change or a fresh time cluster */
-  if(clustered || role !== prevRole) chatLines.appendChild(senderRow(role));
-  chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive));
+  /* eyebrow label once per cluster: speaker change or a fresh time cluster */
+  const lbl = (clustered || role !== prevRole) ? speakerLabel(role) : '';
+  chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive, lbl));
   syncTyping();
   renderedTurns = localTurns.length;
   /* a reply that lands while chat is CLOSED leaves a dot on the chat
@@ -3128,6 +3176,7 @@ function renderVoiceCards(){
   }
   /* the picker only makes sense while the Natural source is active */
   $('voiceCards').classList.toggle('off', voicePref !== 'mac');
+  $('voiceHint').classList.toggle('off', voicePref !== 'mac');
 }
 function setVoiceName(id){
   if(VOICE_IDS.indexOf(id) < 0) return;
@@ -3137,9 +3186,69 @@ function setVoiceName(id){
   renderVoiceCards();
   if(changed) toast('voice changes on the next reply');
 }
+/* v16: instant voice preview. A card tap POSTs /tts with a short intro
+   in the TAPPED voice and plays it through the existing Mac-voice
+   WebAudio path (unlockAudio runs synchronously inside the tap, so this
+   works before any call starts). Any preview already playing or still
+   fetching is cancelled first. The selection commits ONLY when the audio
+   actually arrives; a failed /tts keeps the previous selection and says
+   so, never a silent switch. */
+const VOICE_LABELS = { af_heart:'Heart', af_bella:'Bella', am_michael:'Michael' };
+let previewSrc = null, previewCtl = null, previewGen = 0;
+function cancelPreview(){
+  previewGen++;
+  if(previewCtl){ try{ previewCtl.abort(); }catch(e){} previewCtl = null; }
+  if(previewSrc){ try{ previewSrc.onended = null; previewSrc.stop(); }catch(e){} previewSrc = null; }
+}
+function previewVoice(id){
+  cancelPreview();
+  const myGen = previewGen;
+  try{
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+  }catch(e){ toast('Natural voice unreachable right now'); return; }
+  const name = VOICE_LABELS[id] || 'this voice';
+  const ctl = new AbortController();
+  previewCtl = ctl;
+  const tm = setTimeout(() => { try{ ctl.abort(); }catch(e){} }, 5000);
+  fetch(urlFor('/tts'), {
+    method:'POST', headers:{ 'Content-Type':'application/json' },
+    body:JSON.stringify({ text: "Hi, I'm " + name + '. This is how I sound.',
+                          voice: id }),
+    signal: ctl.signal })
+  .then(r => { if(!r.ok) throw new Error('tts ' + r.status); return r.arrayBuffer(); })
+  .then(ab => new Promise((res, rej) => {
+    /* callback form: older iOS Safari has no promise decodeAudioData */
+    audioCtx.decodeAudioData(ab, res, rej);
+  }))
+  .then(buf => {
+    if(myGen !== previewGen) return;   /* a newer tap superseded this one */
+    setVoiceName(id);                  /* commit ONLY on a successful preview */
+    const s = audioCtx.createBufferSource();
+    s.buffer = buf;
+    s.connect(audioCtx.destination);
+    previewSrc = s;
+    s.onended = () => { if(previewSrc === s) previewSrc = null; };
+    s.start();
+  })
+  .catch(() => {
+    if(myGen !== previewGen) return;   /* cancelled by a newer tap: stay quiet */
+    toast('Natural voice unreachable right now');
+    renderVoiceCards();                /* selection stays where it was */
+  })
+  .finally(() => {
+    clearTimeout(tm);
+    if(previewCtl === ctl) previewCtl = null;
+  });
+}
 $('voiceCards').addEventListener('click', ev => {
   const card = ev.target.closest ? ev.target.closest('.vcard') : null;
-  if(card) setVoiceName(card.getAttribute('data-v'));
+  if(!card) return;
+  const id = card.getAttribute('data-v');
+  if(VOICE_IDS.indexOf(id) < 0) return;
+  unlockAudio();                   /* inside the tap: WebAudio must be unlocked */
+  macDead = false; macFails = 0;   /* v16 unpark: fresh chance for the Mac voice */
+  previewVoice(id);
 });
 function renderVoicePref(){
   const mac = voicePref === 'mac';
@@ -3700,6 +3809,7 @@ if(S){
 pollSessions();
 refreshChat();
 </script></body></html>
+
 
 """
 
