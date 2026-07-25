@@ -407,6 +407,37 @@ def main(argv) -> int:
                          "/usr/local/bin/cloudflared") if Path(p).exists()), "")
         port = _os.environ.get("VB_CALL_PORT", "8790")
         logf = core.STATE_DIR / "tunnel.log"
+        # REUSE our live tracked tunnel first: a fresh quick tunnel costs
+        # ~30s of waiting (the "QR takes forever" complaint), and reusing the
+        # SAME url is also the tighter security posture, one live link, not a
+        # new one per run. Only when it's dead do we reap strays and respawn.
+        try:
+            import re as _re0
+            tp_pid = int((core.STATE_DIR / "tunnel.pid").read_text().strip())
+            _os.kill(tp_pid, 0)
+            m0 = _re0.search(r"https://[a-z0-9-]+\.trycloudflare\.com",
+                             logf.read_text())
+            if m0 and _up(m0.group(0)):
+                url = m0.group(0)
+                full = f"{url}/?k={secret}"
+                try:
+                    from vb import talkd as _td0
+                    _l0 = (_td0._read_json(_td0.LAST) or {}).get("session_id")
+                    if _l0:
+                        full += f"&s={_l0}"
+                except Exception:
+                    pass
+                print(f"\n  PHONE URL: {full}\n  (reusing the live tunnel, "
+                      f"same link as before)\n")
+                img = core.qr_image(full)
+                if img and sys.platform == "darwin":
+                    subprocess.run(["open", img], capture_output=True)
+                if not core.print_qr(full):
+                    print("  (install `qrcode` for a scannable code)")
+                print("  scan the QR or open the URL, tap Start call")
+                return 0
+        except Exception:
+            pass
         if not cf:
             print("cloudflared missing: brew install cloudflared")
             return 1
@@ -568,6 +599,12 @@ def main(argv) -> int:
         except Exception:
             pass
         seg = core.render_statusline(h, update_cmd=update_cmd)
+        # Silent states must be VISIBLE or they read as "it broke": muted
+        # replies and a paused reply get an explicit marker with the key.
+        if seg and core.replies_muted():
+            seg += "  ·  🔇 muted (⌃⌥M to unmute)"
+        elif seg and core.speech_held():
+            seg += "  ·  ⏸ paused (F8 resumes)"
         if seg:
             print(seg)
 

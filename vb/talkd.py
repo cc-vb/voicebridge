@@ -757,6 +757,12 @@ def status() -> str:
     if VOICED.exists():
         for f in VOICED.iterdir():
             lines.append(f"voiced : {f.name[:8]} -> {f.read_text().strip()}")
+    # The states people get silently stuck in ("it stopped talking and I
+    # don't know why"): muted replies and a held (paused) reply.
+    if core.replies_muted():
+        lines.append("replies: MUTED (Ctrl+Option+M or `vb replies on` to unmute)")
+    if core.speech_held():
+        lines.append("reply  : PAUSED (Fn+F8 or `vb hold` to resume)")
     return "\n".join(lines)
 
 

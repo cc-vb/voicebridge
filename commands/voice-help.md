@@ -5,7 +5,8 @@ allowed-tools: Bash(vb help), Bash(/opt/homebrew/bin/vb help), Bash(vb talkd sta
 
 Run `/opt/homebrew/bin/vb talkd status` with the Bash tool to see whether
 voice is currently on, then show the user this reference verbatim, with a
-first line saying whether voice is ON for this session or OFF.
+first line saying whether voice is ON for this session or OFF, INCLUDING any
+MUTED or PAUSED line the status printed (people get silently stuck there).
 
 Do not paraphrase or shorten the tables. Do not run any other command.
 
@@ -27,12 +28,15 @@ Do not paraphrase or shorten the tables. Do not run any other command.
 
 | Way | What happens |
 |---|---|
-| Just start typing | Cuts the voice off and takes your new prompt |
-| Talk over the reply | Barge-in: stops speaking and takes your words |
+| Type a prompt and press Enter | Cuts the voice off and moves to your new prompt |
+| Talk over the reply | Barge-in: stops speaking and takes your words (agent mode / phone) |
 | **Cmd+Alt+Ctrl+X** | Silences the voice immediately (`vb hush`) |
 | **Cmd+Alt+Ctrl+Z** | Silences AND stops Claude mid-answer (`vb stop`) |
 | **Fn+F9 / Fn+F7** | Speak faster / slower (or Cmd+Alt+Ctrl+F / S) |
 | **Fn+F8** | Pause the reply, press again to resume (or Cmd+Alt+Ctrl+H) |
+| **Fn+F6** (or Ctrl+Option+R) | Re-speak the last reply |
+| **Ctrl+Option+B / N** | Back one sentence / skip ahead |
+| **Ctrl+Option+M** | Mute replies (mic stays on); press again to unmute and hear what you missed |
 
 Hold **Fn**: the top row sends media keys unless System Settings -> Keyboard
 -> "Use F1, F2, etc. keys as standard function keys" is on. The
@@ -63,7 +67,8 @@ Cmd+Alt+Ctrl chords work either way.
 | `vb voice <name>` | Change the voice (`vb voice` lists all) |
 | `vb speed 1.5` | Playback speed, 0.5x to 3.5x |
 | `vb hold` | Pause the reply; run again to resume (Fn+F8) |
-| `vb pause <secs>` | Silence that ends an utterance (default 2.5) |
+| `vb pause <secs>` | Silence that ends an utterance (default 1.0) |
+| `vb replies` | Mute/unmute spoken replies (Ctrl+Option+M) |
 | `vb statusline-install` | Append the voice state to your status line (`-uninstall` undoes it) |
 | `vb meter` | Live level meter for a second terminal tab |
 | `vb doctor` | Health check |

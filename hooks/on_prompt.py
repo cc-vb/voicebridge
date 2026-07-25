@@ -91,6 +91,16 @@ def _pool():
 
 def _teach_line() -> str:
     """One line of teaching for the gray hook area, or '' to stay quiet."""
+    # STATE first: if replies are muted or paused, that's the answer to "why
+    # is it silent?", nothing else is worth saying until it's cleared.
+    try:
+        if core.replies_muted():
+            return ("replies are MUTED (still listening) · Ctrl+Option+M "
+                    "to unmute")
+        if core.speech_held():
+            return "reply is PAUSED · Fn+F8 (or Ctrl+Alt+Cmd+H) resumes it"
+    except Exception:
+        pass
     # Context triggers preempt the tutor (rare, actionable, self-clearing).
     try:
         from vb import talkd as _td
