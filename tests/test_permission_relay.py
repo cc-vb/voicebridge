@@ -47,7 +47,9 @@ def test_handle_pending_paths():
     _fresh(tmp)
     keys = []
     orig_enter, orig_esc = inject.press_enter, inject.press_escape
-    inject.press_enter = lambda: keys.append("enter")
+    # press_enter now takes expect_app and returns True when delivered (the
+    # focus guard); the mock mirrors that contract.
+    inject.press_enter = lambda expect_app="": (keys.append("enter"), True)[1]
     inject.press_escape = lambda: keys.append("esc")
     try:
         core.set_pending_notice("S1", "Permission to edit main.py?")
