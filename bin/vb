@@ -415,6 +415,12 @@ def main(argv) -> int:
             import re as _re0
             tp_pid = int((core.STATE_DIR / "tunnel.pid").read_text().strip())
             _os.kill(tp_pid, 0)
+            # Trust cap: a quick tunnel's PUBLIC name can be dropped by the
+            # edge while the local process lives (phone sees NXDOMAIN, local
+            # checks all pass). Reuse only reasonably fresh tunnels.
+            import os.path as _op
+            if _t.time() - _op.getmtime(str(core.STATE_DIR / "tunnel.pid")) > 3 * 3600:
+                raise Exception("tunnel too old to trust")
             _log0 = logf.read_text()
             m0 = _re0.search(r"https://[a-z0-9-]+\.trycloudflare\.com", _log0)
             # Judge OUR tunnel locally, never via public DNS: a fresh
