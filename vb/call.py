@@ -189,6 +189,28 @@ def _handle_pending(text: str, pending: str) -> str:
     return f"Claude is waiting on you: {q}. Say yes to allow, or no to decline."
 
 
+def _inject_only(text: str) -> str:
+    """Inject a turn WITHOUT waiting: '' on success, else a speakable reason.
+    The stream (SSE) carries completion, so the non-blocking /ask path
+    returns the moment the prompt is truly in the session (critic finding:
+    the 90s blocking wait invented the retry-vs-ack races)."""
+    if DRYRUN:
+        return ""
+    tp = _target_transcript()
+    if not tp:
+        return "I can't find an open session on the Mac."
+    core.log(f"call you: {text}")
+    pending = core.get_pending_notice(_active_sid())
+    if pending:
+        return _handle_pending(text, pending)   # '' when yes was delivered
+    from .talkd import bound_app
+    if not inject.paste_text(text, send=True, expect_app=bound_app()):
+        return ("I couldn't type into the session, the terminal isn't the "
+                "focused window on your Mac. Bring it to the front, or check "
+                "the screen isn't locked, then try again.")
+    return ""
+
+
 def _ask_session(text: str, turn_id: str = "") -> str:
     """Inject a turn into the live session and wait for the reply."""
     if DRYRUN:
@@ -1568,12 +1590,13 @@ async function startTurn(text){
   chatAdd('user', text);
   workT0 = Date.now();
   setWorking();
-  /* baseline BEFORE the ask so a changed /poll snapshot means "reply landed" */
-  let baseline = '';
-  try{ baseline = String((await jget('/poll')).reply || '').trim(); }catch(e){}
+  /* baseline by UUID (text baselines mis-finish turns on trims); the /ask
+     ack also carries it, whichever arrives first wins */
+  baselineUuid = '';
+  try{ const bj = await jget('/poll'); if(bj && bj.uuid) baselineUuid = bj.uuid; }catch(e){}
   if(id !== turnId || !live) return;
   sendAsk(id, text);
-  pollUntilChanged(id, baseline);
+  pollUntilChanged(id);
 }
 const bootKey = Math.random().toString(36).slice(2, 10);
 function sendAsk(id, text, attempt){
@@ -1584,12 +1607,20 @@ function sendAsk(id, text, attempt){
      dropped /ask meant nothing was ever injected while the UI said working. */
   curAskKey = 'T' + bootKey + '-' + id;
   if(!attempt) askDelivered = false;
-  jpost('/ask', { text: text, id: curAskKey })
+  jpost('/ask', { text: text, id: curAskKey, stream: true })
   .then(r => { if(!r.ok) throw new Error('http ' + r.status); return r.json(); })
   .then(j => {
     if(id !== turnId || !live) return;
+    if(j.ok && j.delivered){
+      /* non-blocking protocol: the prompt IS in the session; completion
+         arrives on the stream. This response IS the delivery receipt. */
+      askDelivered = true; pendingSend = null;
+      if(j.uuid && !baselineUuid) baselineUuid = j.uuid;
+      setState('thinking', 'working, delivered');
+      return;
+    }
     const rep = String(j.reply || '').trim();
-    if(!rep || STILL_RE.test(rep)) return;         // long turn: /poll takes over
+    if(!rep || STILL_RE.test(rep)) return;
     if(WAITING_RE.test(rep)){ showDecision(rep); return; }   // permission moment
     finishTurn(id, rep);
   })
@@ -1602,27 +1633,31 @@ function sendAsk(id, text, attempt){
       return;
     }
     if(askDelivered){
-      /* the ack proves it landed; the reply will arrive on the stream */
       setState('thinking', 'working...');
       return;
     }
-    /* We could NOT confirm the injection: say so and reset, never fake-work */
-    turnId++; turnActive = false; stopWorkTicker(); hideDecision();
-    toast('connection hiccup, prompt not delivered');
-    speakAside('The connection dropped and I could not send that. Please say it again.');
+    /* Could not deliver: QUEUE it and keep trying ourselves, never make the
+       human be the retry loop. Same idempotency key = safe to re-send. */
+    if(!pendingSend){
+      pendingSend = { id: id, text: text };
+      toast('connection is down, retrying automatically');
+      speakAside('The connection is down. I will keep trying to send that.');
+      setState('thinking', 'retrying...');
+    }
   });
 }
-async function pollUntilChanged(id, baseline){
+async function pollUntilChanged(id){
   let n = 0;
   while(id === turnId && live){
     await sleep(sseOk ? 15000 : (n++ < 100 ? 3000 : 6000));   // stream is primary
     if(id !== turnId || !live) return;
     try{
       const j = await jget('/poll');
-      const rep = String(j.reply || '').trim();
+      const rep = String(j.reply || '').trim(), u = String(j.uuid || '');
       if(id !== turnId || !live) return;
-      if(rep && rep !== baseline){
-        if(j.uuid) lastUuid = j.uuid;
+      if(!baselineUuid && u){ baselineUuid = u; continue; }   // late baseline
+      if(u && rep && u !== baselineUuid && u !== lastUuid){
+        lastUuid = u;
         finishTurn(id, rep); return;
       }
     }catch(e){ /* offline blip: keep waiting, the elapsed label keeps counting */ }
@@ -1663,6 +1698,12 @@ setInterval(idleWatch, 5000);
    acks and permission moments the moment they happen. EventSource reconnects
    on its own; while it's healthy the polling above becomes a mere backstop. */
 let es = null, sseOk = false, askDelivered = false, curAskKey = '';
+let baselineUuid = '', pendingSend = null;
+setInterval(() => {
+  if(pendingSend && live && pendingSend.id === turnId && !askDelivered){
+    sendAsk(pendingSend.id, pendingSend.text, 3);   // one shot per beat
+  }
+}, 8000);
 function startEvents(){
   if(es) try{ es.close(); }catch(e){}
   try{ es = new EventSource('/events?k=' + encodeURIComponent(K)); }
@@ -1670,7 +1711,25 @@ function startEvents(){
   es.onopen = () => { sseOk = true; };
   es.onerror = () => { sseOk = false; };
   es.addEventListener('hello', e => {
-    try{ const d = JSON.parse(e.data); if(d.uuid && !lastUuid) lastUuid = d.uuid; }catch(x){}
+    try{
+      const d = JSON.parse(e.data);
+      if(!d.uuid) return;
+      if(!lastUuid){ lastUuid = d.uuid; return; }
+      if(d.uuid !== lastUuid){
+        /* a reply landed while the stream was down: catch up NOW */
+        jget('/poll').then(j => {
+          const rep = String(j.reply || '').trim();
+          if(j.uuid && j.uuid !== lastUuid && rep){
+            lastUuid = j.uuid;
+            if(turnActive){ finishTurn(turnId, rep); }
+            else if(live){ speakIncoming(rep); }
+          }
+        }).catch(() => {});
+      }
+    }catch(x){}
+  });
+  es.addEventListener('switched', e => {
+    try{ const d = JSON.parse(e.data); if(d.uuid) lastUuid = d.uuid; }catch(x){}
   });
   es.addEventListener('ack', e => {
     try{
@@ -1702,6 +1761,7 @@ function startEvents(){
 startEvents();
 function finishTurn(id, reply){
   if(id !== turnId) return;
+  pendingSend = null;
   turnId++;                       // one winner: kill the other waiters
   turnActive = false;
   stopWorkTicker();
@@ -2734,7 +2794,7 @@ class Handler(BaseHTTPRequestHandler):
                 tp = _target_transcript()
                 last_u = core.latest_assistant_uuid(tp) if tp else ""
                 emit("hello", {"uuid": last_u})
-                last_pend, last_size, ticks = "", -1, 0
+                last_pend, last_size, ticks, last_tp = "", -1, 0, tp
                 while True:
                     try:
                         ev = q.get(timeout=1.0)   # acks etc, or a 1s tick
@@ -2742,6 +2802,14 @@ class Handler(BaseHTTPRequestHandler):
                     except _queue.Empty:
                         pass
                     tp = _target_transcript()
+                    if tp != last_tp:
+                        # Session switched: re-baseline SILENTLY, or the new
+                        # session's months-old last reply plays as if fresh.
+                        last_tp = tp
+                        last_u = core.latest_assistant_uuid(tp) if tp else ""
+                        last_size = -1
+                        emit("switched", {"uuid": last_u})
+                        continue
                     # stat() gate: only re-parse the transcript when it GREW,
                     # a multi-MB parse per second per stream would burn CPU.
                     try:
@@ -2833,6 +2901,35 @@ class Handler(BaseHTTPRequestHandler):
                 turn_id = str(body.get("id") or "")
             except Exception:
                 self._reply(400, b"bad request", "text/plain")
+                return
+            want_stream = bool(body.get("stream"))
+            if want_stream and turn_id:
+                # Non-blocking protocol: inject (idempotently), ACK at once
+                # with the reply-uuid BASELINE; completion arrives only on
+                # the event stream. One channel, one truth.
+                if turn_id in _ASKED:
+                    self._reply(200, json.dumps(
+                        {"ok": True, "delivered": True,
+                         "uuid": _ASKED[turn_id].get("base", "")}).encode(),
+                        "application/json")
+                    return
+                tp0 = _target_transcript()
+                base = core.latest_assistant_uuid(tp0) if tp0 else ""
+                why = _inject_only(text) if text else "Sorry, I didn't catch that."
+                if why:
+                    self._reply(200, json.dumps(
+                        {"ok": False, "reply": why}).encode(),
+                        "application/json")
+                    return
+                _ASKED[turn_id] = {
+                    "tp": tp0,
+                    "prev": core.last_assistant_text(tp0) if tp0 else "",
+                    "base": base, "ts": time.time()}
+                _prune_asked()
+                _broadcast({"type": "ack", "id": turn_id})
+                self._reply(200, json.dumps(
+                    {"ok": True, "delivered": True, "uuid": base}).encode(),
+                    "application/json")
                 return
             # Idempotency: the page retries a failed POST with the SAME id
             # (tunnels drop requests). A retry of a turn that already injected
