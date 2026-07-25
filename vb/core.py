@@ -83,28 +83,72 @@ def call_live(max_age: float = 15.0) -> bool:
         return False
 
 
-def set_pending_notice(sid: str, message: str) -> None:
-    """Record 'Claude is waiting for a decision' (from the Notification hook)
-    so the phone relay can surface it and take a spoken yes/no."""
+def classify_notice(message: str) -> str:
+    """Which KIND of Notification this is. The phone treats these very
+    differently, and conflating them was the yes/no-into-the-prompt bug:
+
+      'permission' -> Claude is truly blocked on a tool/permission decision.
+                      A yes/no here is a KEYSTROKE (Enter/Escape), never text.
+      'idle'       -> "waiting for your input" / a turn just finished. NOT a
+                      decision: it must never show yes/no, and a tap only
+                      opens the chat. Injecting anything here is meaningless.
+    """
+    m = (message or "").lower()
+    if "permission" in m or "approve" in m or "allow" in m:
+        return "permission"
+    if "waiting for your input" in m or "waiting" in m or "idle" in m:
+        return "idle"
+    return "idle"   # unknown notices are informational, never a yes/no
+
+
+def set_pending_notice(sid: str, message: str, kind: str = "") -> None:
+    """Record a Notification so the phone relay can surface it. `kind` is
+    'permission' (a real yes/no decision) or 'idle' (completion / waiting for
+    input, which must NOT offer yes/no); inferred from the text when omitted."""
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         PENDING_NOTICE.write_text(json.dumps(
-            {"sid": sid, "message": message, "ts": time.time()}))
+            {"sid": sid, "message": message,
+             "kind": kind or classify_notice(message),
+             "ts": time.time()}))
     except Exception:
         pass
 
 
-def get_pending_notice(sid: str = "", max_age: float = 300.0) -> str:
-    """The pending decision's message, '' if none/stale/for another session."""
+def _pending_record(sid: str = "", max_age: float = 300.0) -> dict:
     try:
         d = json.loads(PENDING_NOTICE.read_text())
         if time.time() - float(d.get("ts", 0)) > max_age:
-            return ""
+            return {}
         if sid and d.get("sid") and d["sid"] != sid:
-            return ""
-        return (d.get("message") or "").strip()
+            return {}
+        return d
     except Exception:
+        return {}
+
+
+def get_pending_notice(sid: str = "", max_age: float = 300.0) -> str:
+    """The pending notice's message, '' if none/stale/for another session.
+
+    Only a 'permission' notice is a real decision; an 'idle' notice
+    (completion / waiting for input) is deliberately NOT returned here so the
+    permission relay never mistakes it for a yes/no that presses Enter."""
+    d = _pending_record(sid, max_age)
+    if d.get("kind", "permission") != "permission":
         return ""
+    return (d.get("message") or "").strip()
+
+
+def get_pending_kind(sid: str = "", max_age: float = 300.0) -> str:
+    """The kind of the current notice ('permission' | 'idle' | ''), regardless
+    of whether it is a yes/no decision. The phone uses this to choose between
+    the yes/no card and a plain 'open the chat' pill."""
+    return (_pending_record(sid, max_age).get("kind") or "")
+
+
+def get_pending_message(sid: str = "", max_age: float = 300.0) -> str:
+    """The notice text for ANY kind (idle included), for the phone's pill."""
+    return (_pending_record(sid, max_age).get("message") or "").strip()
 
 
 def clear_pending_notice() -> None:
@@ -633,6 +677,98 @@ def latest_assistant_uuid(transcript_path: str) -> str:
     """The uuid of the newest reply, for marking a session read on join."""
     replies = assistant_replies_after(transcript_path)
     return replies[-1][0] if replies else ""
+
+
+def pending_question(transcript_path: str) -> dict:
+    """An OPEN AskUserQuestion the phone should render as in-chat option cards.
+
+    Claude Code writes an AskUserQuestion as an assistant `tool_use` block and,
+    once answered, a matching `tool_result` lands in a later user record. So a
+    question is 'open' when the newest AskUserQuestion tool_use has no
+    tool_result for its id yet. Returns {id, questions:[...]} or {} if none.
+
+    Reads only the file tail: transcripts grow to many MB and the SSE loop
+    calls this every second."""
+    p = Path(transcript_path)
+    if not p.exists():
+        return {}
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 262144))
+            tail = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return {}
+    last_ask = None            # (id, questions) of the newest AskUserQuestion
+    answered = set()           # tool_use ids that already have a tool_result
+    for line in tail.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        content = rec.get("message", {}).get("content", "")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_use" and b.get("name") == "AskUserQuestion":
+                qs = (b.get("input") or {}).get("questions") or []
+                if qs:
+                    last_ask = (b.get("id") or "", qs)
+            elif b.get("type") == "tool_result" and b.get("tool_use_id"):
+                answered.add(b["tool_use_id"])
+    if not last_ask or last_ask[0] in answered:
+        return {}
+    return {"id": last_ask[0], "questions": last_ask[1]}
+
+
+def active_session_state(transcript_path: str) -> str:
+    """The REAL state of the session behind this transcript: 'working' when
+    Claude's turn is in flight (a user prompt or a tool call is the latest
+    record), 'idle' when the last thing is a finished assistant reply. This is
+    the authority the phone reconciles against so its orb can never sit stuck
+    on 'working' after a turn has actually ended.
+
+    Tail-only, mirroring sessions._state but without importing it (sessions
+    imports core, so the dependency must not run the other way)."""
+    p = Path(transcript_path)
+    if not p.exists():
+        return "idle"
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            tail = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return "idle"
+    recs = []
+    for line in tail.splitlines():
+        line = line.strip()
+        if line:
+            try:
+                recs.append(json.loads(line))
+            except Exception:
+                pass
+    for rec in reversed(recs):
+        t = rec.get("type")
+        if t == "assistant":
+            content = rec.get("message", {}).get("content", "")
+            if isinstance(content, list) and any(
+                    isinstance(b, dict) and b.get("type") == "tool_use"
+                    for b in content):
+                return "working"
+            return "idle"
+        if t == "user":
+            # A tool_result user record means a tool just returned and Claude
+            # is still going; a real user prompt also means the turn is live.
+            return "working"
+    return "idle"
 
 
 def _recently_spoken(cleaned: str) -> bool:

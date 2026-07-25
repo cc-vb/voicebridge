@@ -1083,6 +1083,10 @@ footer {
 #endBtn { width:64px; height:64px; background:var(--danger); border-color:transparent; color:#fff; }
 #endBtn svg { width:28px; height:28px; }
 #chatBtn.active { background:rgba(255,255,255,.18); }
+/* Replay: re-read the last reply. Dim + non-interactive until one exists;
+   pulses subtly while it is actually re-speaking. */
+#replayBtn[disabled] { opacity:.4; }
+#replayBtn.playing { background:var(--mint); border-color:transparent; color:#06231f; }
 
 /* ==== decision panel: the permission relay ==== */
 #decide {
@@ -1108,6 +1112,39 @@ footer {
 #decide .row button:active { transform:scale(.97); }
 #yesBtn { background:var(--mint); color:#06231f; }
 #noBtn { border:1.5px solid rgba(229,72,77,.6); color:#ff9a9e; }
+
+/* ==== in-chat question cards (AskUserQuestion): radio / checkbox options
+   rendered inline at the end of the transcript, never a modal ==== */
+.qcard {
+  margin:14px 2px 6px; padding:14px; border-radius:16px;
+  background:rgba(70,120,235,.09); border:1px solid rgba(90,140,240,.32);
+}
+.qeyebrow { font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+  color:#8fb0f2; margin:0 0 6px; }
+.qtext { font-size:15px; line-height:1.5; color:#e8ebf2; margin:0 0 12px; font-weight:550; }
+.qopt {
+  display:flex; gap:11px; align-items:flex-start; width:100%; text-align:left;
+  padding:11px 12px; margin:0 0 8px; border-radius:13px;
+  background:rgba(255,255,255,.04); border:1px solid var(--line);
+  transition:background .18s ease, border-color .18s ease, transform .08s ease;
+}
+.qopt:active { transform:scale(.98); }
+.qopt.sel { background:rgba(70,215,195,.14); border-color:rgba(90,225,205,.6); }
+.qopt .qmark { flex:none; width:20px; height:20px; margin-top:1px; border-radius:50%;
+  border:2px solid #5b6479; position:relative; transition:border-color .18s ease; }
+.qopt.multi .qmark { border-radius:6px; }
+.qopt.sel .qmark { border-color:var(--mint); }
+.qopt.sel .qmark::after { content:""; position:absolute; inset:3px; border-radius:inherit;
+  background:var(--mint); }
+.qopt.multi.sel .qmark::after { inset:2px; }
+.qbody { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.qlabel { font-size:14.5px; font-weight:600; color:#e8ebf2; }
+.qdesc { font-size:12.5px; line-height:1.45; color:var(--dim); }
+.qsend {
+  width:100%; min-height:50px; margin-top:4px; border-radius:14px;
+  background:var(--mint); color:#06231f; font-size:16px; font-weight:650; letter-spacing:.03em;
+}
+.qsend:active { transform:scale(.98); }
 
 /* ==== toast: background session news ==== */
 #toast {
@@ -1542,6 +1579,15 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
       </svg>
     </button>
     <span class="ctllbl" id="muteLbl">Mute</span>
+  </div>
+  <div class="ctlwrap">
+    <button class="ctl" id="replayBtn" aria-label="Replay the last reply" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4.5V9h4.5"/>
+      </svg>
+    </button>
+    <span class="ctllbl">Replay</span>
   </div>
   <div class="ctlwrap">
     <button class="ctl" id="endBtn" aria-label="End call">
@@ -2415,6 +2461,7 @@ function renderChat(){
     chatLines.appendChild(bubble(t.role, t.text, false, lbl));
   });
   syncTyping();
+  syncQuestion();   // the option cards live at the transcript's end
   renderedTurns = localTurns.length;
   /* respect the reader: a re-render (server transcript swap) must not yank
      someone who scrolled up back to the bottom mid-read */
@@ -2449,6 +2496,7 @@ function chatAdd(role, text){
   const lbl = (clustered || role !== prevRole) ? speakerLabel(role) : '';
   chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive, lbl));
   syncTyping();
+  syncQuestion();   // keep the option cards pinned last
   renderedTurns = localTurns.length;
   /* a reply that lands while chat is CLOSED leaves a dot on the chat
      button instead of a pill nobody can see */
@@ -2458,6 +2506,7 @@ function chatAdd(role, text){
 }
 function resetChat(){
   localTurns = []; chatHasServer = false;
+  clearQuestion();                      // the question belonged to the old session
   chatBtn.classList.remove('unread');   // the dot was about the old session
   renderChat();
 }
@@ -2482,6 +2531,12 @@ async function refreshChat(){
         if(tsMap[k] && tsMap[k].length) t.ts = tsMap[k].shift();
       });
       chatHasServer = true;
+      /* seed Replay with the session's most recent reply, so it works before
+         this call has produced a turn of its own */
+      for(let i = localTurns.length - 1; i >= 0; i--){
+        if(localTurns[i].role === 'assistant'){ lastReplyText = localTurns[i].text; break; }
+      }
+      updateReplay();
       renderChat();
       return true;
     }
@@ -2626,6 +2681,7 @@ async function pollUntilChanged(id){
         lastUuid = u;
         finishTurn(id, rep); return;
       }
+      if(!sseOk && j.state) reconcileState(j.state);   // orb never stuck
     }catch(e){ /* offline blip: keep waiting, the elapsed label keeps counting */ }
   }
 }
@@ -2636,6 +2692,7 @@ async function pollUntilChanged(id){
 let lastUuid = '';
 function speakIncoming(rep){
   stopListening();
+  lastReplyText = rep; updateReplay();   // the Replay control re-reads this
   chatAdd('assistant', rep); refreshChat();
   setState('speaking');
   startBarge();
@@ -2724,8 +2781,60 @@ function startEvents(){
       if(d.q) showDecision(d.q); else hideDecision();
     }catch(x){}
   });
+  /* authoritative session state: the orb reconciles against THIS so it can
+     never sit stuck on "working" after Claude has actually gone idle */
+  es.addEventListener('sstate', e => {
+    try{ const d = JSON.parse(e.data); reconcileState(d.state); }catch(x){}
+  });
+  /* an open AskUserQuestion becomes in-chat option cards (never a modal) */
+  es.addEventListener('question', e => {
+    try{ showQuestion(JSON.parse(e.data)); }catch(x){}
+  });
+  es.addEventListener('question_clear', () => { answeredQid = ''; clearQuestion(); });
 }
 startEvents();
+/* ---- state reconciliation: the server tells us the REAL session state
+   ('working' | 'idle'); the phone's local orb state is only a projection and
+   can drift (a missed SSE/poll leaves turnActive stuck true forever, which is
+   the "Claude is idle but the phone still says working" bug). When the server
+   says idle but we still show a working orb, settle: pull the latest reply so
+   a genuinely-finished turn completes, otherwise drop quietly to listening. */
+let serverState = '';
+let idleSince = 0;
+function reconcileState(st){
+  serverState = st || '';
+  if(!live) return;
+  if(st === 'working'){ idleSince = 0; return; }
+  if(st !== 'idle'){ return; }
+  // Debounce: a reply lands as 'idle' a beat before the phone speaks it, so
+  // don't yank a turn that is about to finish through the normal path.
+  if(!idleSince) idleSince = Date.now();
+  const stuck = (state === 'thinking' || turnActive);
+  if(!stuck) return;
+  jget('/poll').then(j => {
+    if(!live) return;
+    const rep = String(j.reply || '').trim(), u = String(j.uuid || '');
+    if(u && rep && u !== baselineUuid && u !== lastUuid){
+      lastUuid = u;
+      if(turnActive) finishTurn(turnId, rep);   // the missed completion
+      else speakIncoming(rep);
+      return;
+    }
+    // Server is idle, no newer reply, and we've shown working for >4s: the
+    // turn silently died (dropped inject / lost event). Settle without
+    // inventing speech, so the orb stops lying.
+    if(Date.now() - idleSince > 4000) settleToIdle();
+  }).catch(() => {
+    if(Date.now() - idleSince > 8000) settleToIdle();
+  });
+}
+function settleToIdle(){
+  if(!live) return;
+  cancelTurn();
+  if(muted){ setState('muted'); return; }
+  if(state === 'speaking' || decisionOpen) return;
+  setState('listening'); listen();
+}
 function finishTurn(id, reply){
   if(id !== turnId) return;
   pendingSend = null;
@@ -2733,6 +2842,8 @@ function finishTurn(id, reply){
   turnActive = false;
   stopWorkTicker();
   hideDecision();
+  lastReplyText = reply;          // the Replay control re-reads this
+  updateReplay();
   chatAdd('assistant', reply);
   refreshChat();                  // swap in the server's cleaned transcript
   jget('/poll').then(j => { if(j && j.uuid) lastUuid = j.uuid; }).catch(() => {});
@@ -2790,6 +2901,119 @@ function hideDecision(){
 $('yesBtn').addEventListener('click', () => { stopSpeaking(); hideDecision(); cancelTurn(); startTurn('yes'); });
 $('noBtn').addEventListener('click', () => { stopSpeaking(); hideDecision(); cancelTurn(); startTurn('no'); });
 
+/* ============================================================ in-chat questions */
+/* Claude asked a multiple-choice question (the AskUserQuestion tool). The user
+   wanted this IN THE CHAT, not a modal: render option cards at the end of the
+   transcript with radio (single) or checkbox (multi) selects and one Send. On
+   send we inject the chosen labels as an ordinary prompt through the same turn
+   engine, so the answer flows back to the session like any other message. */
+let activeQuestion = null;   // { id, questions:[...] }
+let questionSel = [];        // per-question array of selected option indices
+let answeredQid = '';        // suppress re-adding a card we JUST answered
+function showQuestion(q){
+  if(!q || !q.id || !Array.isArray(q.questions) || !q.questions.length) return;
+  if(q.id === answeredQid) return;   // answered; the tool_result just hasn't landed
+  if(activeQuestion && activeQuestion.id === q.id){ syncQuestion(); return; }
+  activeQuestion = q;
+  questionSel = q.questions.map(() => []);
+  syncQuestion();
+  if(!chatOpenState){
+    chatBtn.classList.add('unread');
+    showNotice('Claude is asking you something');
+  }
+  chime();
+}
+function clearQuestion(){
+  if(!activeQuestion) return;
+  activeQuestion = null; questionSel = [];
+  const c = document.getElementById('questionCard');
+  if(c) c.remove();
+}
+function toggleOpt(qi, oi, multi){
+  const sel = questionSel[qi] || (questionSel[qi] = []);
+  const at = sel.indexOf(oi);
+  if(multi){ at >= 0 ? sel.splice(at, 1) : sel.push(oi); }
+  else { questionSel[qi] = (at >= 0 ? [] : [oi]); }
+  syncQuestion();
+}
+function questionAnswer(){
+  /* one line per question: "<header>: <chosen labels>", labels joined so a
+     multi-select reads naturally. Falls back to the question text as a label. */
+  const parts = [];
+  activeQuestion.questions.forEach((q, qi) => {
+    const chosen = (questionSel[qi] || [])
+      .map(oi => (q.options[oi] || {}).label).filter(Boolean);
+    if(!chosen.length) return;
+    const head = (q.header || q.question || '').trim();
+    parts.push(head ? (head + ': ' + chosen.join(', ')) : chosen.join(', '));
+  });
+  return parts.join('\n');
+}
+function submitQuestion(){
+  if(!activeQuestion || !live) return;
+  const ans = questionAnswer();
+  if(!ans){ toast('pick an option first'); return; }
+  answeredQid = activeQuestion.id;   // don't let the poll backstop re-add it
+  clearQuestion();
+  stopSpeaking(); stopListening();
+  startTurn(ans);                 // the exact same turn engine as speech/typing
+}
+function buildQuestionCard(){
+  const card = document.createElement('div');
+  card.id = 'questionCard'; card.className = 'qcard';
+  const q0 = activeQuestion.questions;
+  q0.forEach((q, qi) => {
+    const multi = !!q.multiSelect;
+    if(q.header){
+      const eb = document.createElement('div'); eb.className = 'qeyebrow';
+      eb.textContent = q.header;
+      card.appendChild(eb);
+    }
+    const qt = document.createElement('div'); qt.className = 'qtext';
+    qt.textContent = q.question || '';
+    card.appendChild(qt);
+    (q.options || []).forEach((opt, oi) => {
+      const b = document.createElement('button');
+      b.className = 'qopt' + (multi ? ' multi' : '');
+      const sel = (questionSel[qi] || []).indexOf(oi) >= 0;
+      b.classList.toggle('sel', sel);
+      b.setAttribute('role', multi ? 'checkbox' : 'radio');
+      b.setAttribute('aria-checked', String(sel));
+      const mk = document.createElement('span'); mk.className = 'qmark';
+      b.appendChild(mk);
+      const body = document.createElement('span'); body.className = 'qbody';
+      const lb = document.createElement('span'); lb.className = 'qlabel';
+      lb.textContent = opt.label || '';
+      body.appendChild(lb);
+      if(opt.description){
+        const de = document.createElement('span'); de.className = 'qdesc';
+        de.textContent = opt.description;
+        body.appendChild(de);
+      }
+      b.appendChild(body);
+      b.addEventListener('click', ev => { ev.stopPropagation(); toggleOpt(qi, oi, multi); });
+      card.appendChild(b);
+    });
+  });
+  const send = document.createElement('button');
+  send.className = 'qsend'; send.textContent = 'Send answer';
+  send.addEventListener('click', ev => { ev.stopPropagation(); submitQuestion(); });
+  card.appendChild(send);
+  return card;
+}
+/* the card lives at the END of the transcript and must survive every
+   re-render (renderChat clears chatLines), so rebuild+re-append it here and
+   call syncQuestion from renderChat / chatAdd, exactly like syncTyping */
+function syncQuestion(){
+  const old = document.getElementById('questionCard');
+  if(old) old.remove();
+  if(!activeQuestion) return;
+  const empty = chatLines.querySelector('.empty');
+  if(empty) empty.remove();
+  chatLines.appendChild(buildQuestionCard());
+  if(chatOpenState && chatNearBottom()) chatScrollBottom();
+}
+
 /* /status poll: checked right away at call start (so a needs-you card tapped
    on home surfaces its question within a beat of connecting), then every ~4s
    while a turn is working and ~8s while idle on a live call. An empty pending
@@ -2799,14 +3023,22 @@ let liveGen = 0;
 async function statusLoop(myGen){
   while(live && myGen === liveGen){
     try{
-      const p = String((await jget('/status')).pending || '').trim();
+      const s = await jget('/status');
       if(!live || myGen !== liveGen) return;
+      const p = String(s.pending || '').trim();
       if(p){
         showDecision('Claude is waiting on you: ' + p + '. Yes to allow, or no to decline.');
       }else if(decisionOpen){
         hideDecision();
         if(state === 'needs') resumeAfterSpeech();
       }
+      // Idle/completion notice: NOT a yes/no, just a tap into the chat.
+      if(s.kind === 'idle' && s.notice){ showNotice(String(s.notice).trim()); }
+      // In-chat question cards (backstop when the SSE stream is down).
+      if(s.question && s.question.id){ showQuestion(s.question); }
+      else { answeredQid = ''; clearQuestion(); }
+      // Reconcile the orb against the real session state.
+      if(!sseOk && s.state) reconcileState(s.state);
     }catch(e){}
     await sleep(turnActive ? 4000 : 8000);
     if(!live || myGen !== liveGen) return;
@@ -3145,6 +3377,28 @@ muteBtn.addEventListener('click', () => {
     setState('listening'); listen();
   } /* muted flipped during working/speaking: the turn loop checks it after */
 });
+
+/* ---- Replay: re-read the LAST reply on demand. Mute silences what's coming;
+   Replay brings back what you just missed (a passing car, a lost moment). It
+   never re-sends anything to the session, it only re-speaks locally. ---- */
+let lastReplyText = '';
+const replayBtn = $('replayBtn');
+function updateReplay(){
+  replayBtn.disabled = !lastReplyText;
+}
+function replayLast(){
+  if(!lastReplyText || !live) return;
+  stopSpeaking(); stopListening();
+  replayBtn.classList.add('playing');
+  setState('speaking', 'replaying');
+  if(!decisionOpen) startBarge();     // talking over the replay interrupts it
+  say(lastReplyText, () => {
+    stopBarge();
+    replayBtn.classList.remove('playing');
+    resumeAfterSpeech();
+  });
+}
+replayBtn.addEventListener('click', replayLast);
 
 /* ============================================================ sheets */
 const scrim=$('scrim'), chatSheet=$('chatSheet'), sessSheet=$('sessSheet'),
@@ -3668,10 +3922,12 @@ async function pollSessions(){
   }
 })();
 
-/* toast: tapping goes to the session it is about (switch + call screen) */
-let toastTimer = null, toastSess = null;
+/* toast: tapping goes to the session it is about (switch + call screen), or
+   runs a custom action when one is set (e.g. an idle notice opens the chat) */
+let toastTimer = null, toastSess = null, toastAction = null;
 function toast(msg, sess){
   toastSess = sess || null;
+  toastAction = null;
   toastText.textContent = msg;
   toastEl.classList.add('show');
   if(toastTimer) clearTimeout(toastTimer);
@@ -3679,7 +3935,9 @@ function toast(msg, sess){
 }
 toastEl.addEventListener('click', () => {
   toastEl.classList.remove('show');
+  const act = toastAction; toastAction = null;
   const s = toastSess; toastSess = null;
+  if(act){ act(); return; }
   if(s){
     if(!isActiveSess(s)){ openClosedSheet(s); return; }   // belt and braces
     if(live) switchTo(s);
@@ -3688,6 +3946,19 @@ toastEl.addEventListener('click', () => {
   }
   if(!onHome) openSessSheet();
 });
+/* an idle / completion notice is NOT a decision: never a yes/no. Surface it
+   as a tappable pill that opens the chat (the "link into the session" the
+   user asked for), chime once, and get out of the way. It never injects. */
+let lastNoticeMsg = '', lastNoticeAt = 0;
+function showNotice(msg){
+  if(!msg) return;
+  if(decisionOpen) return;                 // a real decision outranks a notice
+  if(msg === lastNoticeMsg && Date.now() - lastNoticeAt < 30000) return;
+  lastNoticeMsg = msg; lastNoticeAt = Date.now();
+  toast(msg);
+  toastAction = () => { if(!chatOpenState) openChatSheet(); };
+  if(!chatOpenState) chatBtn.classList.add('unread');
+}
 
 /* ============================================================ switching */
 const switchOverlay=$('switchOverlay'), switchMsg=$('switchMsg');
@@ -3956,6 +4227,7 @@ class Handler(BaseHTTPRequestHandler):
                 last_u = core.latest_assistant_uuid(tp) if tp else ""
                 emit("hello", {"uuid": last_u})
                 last_pend, last_size, ticks, last_tp = "", -1, 0, tp
+                last_sstate, last_qid = "", ""
                 while True:
                     try:
                         ev = q.get(timeout=1.0)   # acks etc, or a 1s tick
@@ -3969,6 +4241,7 @@ class Handler(BaseHTTPRequestHandler):
                         last_tp = tp
                         last_u = core.latest_assistant_uuid(tp) if tp else ""
                         last_size = -1
+                        last_sstate, last_qid = "", ""
                         emit("switched", {"uuid": last_u})
                         continue
                     # stat() gate: only re-parse the transcript when it GREW,
@@ -3985,12 +4258,29 @@ class Handler(BaseHTTPRequestHandler):
                             cur = core.clean_for_speech(
                                 core.last_assistant_text(tp), max_chars=2500)
                             emit("reply", {"uuid": u, "reply": cur})
+                    # Only a real PERMISSION notice drives the yes/no card.
                     pend = core.get_pending_notice(_active_sid())
                     pend = (core.clean_for_speech(pend, max_chars=300)
                             if pend else "")
                     if pend != last_pend:
                         last_pend = pend
                         emit("pending", {"q": pend})
+                    # Authoritative session state so the phone's orb can never
+                    # sit stuck on "working" after the turn truly ended. Cheap:
+                    # tail-only read, and only re-emitted when it flips.
+                    sstate = core.active_session_state(tp) if tp else "idle"
+                    if sstate != last_sstate:
+                        last_sstate = sstate
+                        emit("sstate", {"state": sstate})
+                    # An OPEN AskUserQuestion becomes in-chat option cards.
+                    q = core.pending_question(tp) if tp else {}
+                    qid = q.get("id", "") if q else ""
+                    if qid != last_qid:
+                        last_qid = qid
+                        if qid:
+                            emit("question", q)
+                        else:
+                            emit("question_clear", {})
                     ticks += 1
                     if ticks % 10 == 0:
                         self.wfile.write(b": ping\n\n")
@@ -4016,10 +4306,18 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 self._reply(401, b"unauthorized", "text/plain")
                 return
-            pend = core.get_pending_notice(_active_sid())
-            self._reply(200, json.dumps(
-                {"pending": core.clean_for_speech(pend, max_chars=300)
-                 if pend else ""}).encode(), "application/json")
+            sid = _active_sid()
+            pend = core.get_pending_notice(sid)       # permission-only
+            tp = _target_transcript()
+            self._reply(200, json.dumps({
+                "pending": core.clean_for_speech(pend, max_chars=300)
+                if pend else "",
+                "kind": core.get_pending_kind(sid),
+                "notice": core.clean_for_speech(
+                    core.get_pending_message(sid), max_chars=300),
+                "state": core.active_session_state(tp) if tp else "idle",
+                "question": core.pending_question(tp) if tp else {},
+            }).encode(), "application/json")
         elif path == "/poll":
             # Latest reply of the active session, no injection: lets the page
             # check back after a long turn instead of dead-ending on timeout.
@@ -4031,9 +4329,11 @@ class Handler(BaseHTTPRequestHandler):
             # uuid lets the page track "is this reply NEW" robustly (text
             # diffing breaks on trims/caps) and powers the idle reply-watcher
             # that speaks desktop-initiated replies during a live call.
+            # `state` is the reconciliation authority for the phone's orb.
             self._reply(200, json.dumps(
                 {"reply": core.clean_for_speech(cur, max_chars=2500),
-                 "uuid": core.latest_assistant_uuid(tp) if tp else ""}
+                 "uuid": core.latest_assistant_uuid(tp) if tp else "",
+                 "state": core.active_session_state(tp) if tp else "idle"}
             ).encode(), "application/json")
         elif path == "/":
             if not self._authed():
