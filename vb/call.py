@@ -153,9 +153,15 @@ def _handle_pending(text: str, pending: str) -> str:
     highlighted default), spoken no -> Escape (dismiss). Anything else gets
     told what Claude is asking, typing prose into a permission dialog would
     go nowhere anyway."""
+    from .talkd import bound_app
     if YES_RE.match(text):
+        if not inject.press_enter(expect_app=bound_app()):
+            # Keystroke had nowhere to go: keep the notice (the dialog is
+            # still up!) and say exactly what's wrong instead of looping.
+            return ("I couldn't press allow, the terminal isn't the focused "
+                    "window on your Mac. Bring it to the front and say yes "
+                    "again.")
         core.clear_pending_notice()
-        inject.press_enter()
         return ""   # approved: fall through to waiting for the reply
     if NO_RE.match(text):
         core.clear_pending_notice()
@@ -1449,9 +1455,12 @@ function chatAdd(role, text){
   localTurns.push({ role: role, text: text });
   const empty = chatLines.querySelector('.empty');
   if(empty) empty.remove();
-  const stick = chatNearBottom();
+  const sheetOpen = chatSheet.classList.contains('open');
+  const stick = !sheetOpen || chatNearBottom();
   chatLines.appendChild(bubble(role, text, role !== 'user' && turnActive));
-  /* respect the reader: if they scrolled up, offer a pill instead of yanking */
+  /* respect the reader: if they scrolled up, offer a pill instead of yanking.
+     A CLOSED sheet has bogus scroll metrics, so the pill only ever appears
+     while the sheet is open (it falsely said "new messages" otherwise). */
   if(stick) chatScrollBottom();
   else jumpBtn.classList.remove('hidden');
 }
@@ -1654,6 +1663,7 @@ function handleUtterance(t){
    the normal turn engine (POST /ask with "yes" or "no"), so the reply that
    follows the decision is caught by the same polling. */
 let decisionOpen = false;
+let lastDecisionQ = '', lastDecisionAt = 0;
 function showDecision(q){
   decideQ.textContent = q;
   if(!decisionOpen){
@@ -1663,15 +1673,20 @@ function showDecision(q){
     stopListening();
     setState('needs', 'needs you');
     chime();
-    speakAside(q);
+    /* never re-read the SAME question in a loop (it re-surfaces while the
+       Mac-side dialog is still up); once a minute at most */
+    if(q !== lastDecisionQ || Date.now() - lastDecisionAt > 60000){
+      lastDecisionQ = q; lastDecisionAt = Date.now();
+      speakAside(q);
+    }
   }
 }
 function hideDecision(){
   decisionOpen = false;
   decideEl.classList.remove('open');
 }
-$('yesBtn').addEventListener('click', () => { hideDecision(); cancelTurn(); startTurn('yes'); });
-$('noBtn').addEventListener('click', () => { hideDecision(); cancelTurn(); startTurn('no'); });
+$('yesBtn').addEventListener('click', () => { stopSpeaking(); hideDecision(); cancelTurn(); startTurn('yes'); });
+$('noBtn').addEventListener('click', () => { stopSpeaking(); hideDecision(); cancelTurn(); startTurn('no'); });
 
 /* /status poll: checked right away at call start (so a needs-you card tapped
    on home surfaces its question within a beat of connecting), then every ~4s

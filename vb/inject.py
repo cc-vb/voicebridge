@@ -50,11 +50,20 @@ def press_escape() -> None:
     _osa('tell application "System Events" to key code 53')
 
 
-def press_enter() -> None:
+def press_enter(expect_app: str = "") -> bool:
+    """Press Return. With expect_app, refuse unless that app is frontmost,
+    a blind Return from the phone's Allow button once went to whatever
+    window happened to be focused, the dialog stayed up, and the "Claude
+    needs your input" nag looped forever. Returns whether it was sent."""
+    if expect_app:
+        front = frontmost_app()
+        if front.strip().casefold() != expect_app.casefold():
+            return False
     if not oslayer.IS_MAC:
         oslayer._win_sendkeys("{ENTER}") if oslayer.IS_WIN else oslayer._xdotool("key", "Return")
-        return
+        return True
     _osa('tell application "System Events" to key code 36')
+    return True
 
 
 def frontmost_app() -> str:
