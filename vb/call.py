@@ -816,6 +816,16 @@ body.home header, body.home main, body.home footer, body.home #decide { visibili
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 .hcard .r1 .ago { flex:none; font-size:12.5px; color:#5b6479; font-variant-numeric:tabular-nums; }
+/* per-session Replay pill on a home card, right of the timestamp */
+.hcard .r1 .hearmini {
+  flex:none; width:32px; height:32px; border-radius:50%; margin-left:2px;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.06); border:1px solid rgba(140,170,240,.32);
+  color:#9db9ff; transition:transform .1s ease, background .2s ease;
+}
+.hcard .r1 .hearmini:active { transform:scale(.9); }
+.hcard .r1 .hearmini.busy { opacity:.45; }
+.hcard .r1 .hearmini svg { width:16px; height:16px; }
 .hcard .r2 { display:flex; align-items:center; gap:8px; margin-top:7px; min-height:20px; }
 .hcard .r2 .lbl { font-size:12.5px; letter-spacing:.04em; color:var(--dim); }
 .hcard .r2 .lbl.working { color:var(--amber); }
@@ -1231,10 +1241,19 @@ body.standalone #chatHead {
 /* the dot mirrors the orb state color, same tween as the pill dot */
 #chatDot { flex:none; width:8px; height:8px; border-radius:50%;
   background:var(--o2); transition:background .9s ease; }
+#chatHeadMeta { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
 #chatTitle {
-  margin:0; flex:1; min-width:0; overflow:hidden;
+  margin:0; min-width:0; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap;
   font-size:16px; font-weight:600; letter-spacing:.01em; color:#dfe4ee;
+}
+/* live state, mirrored from the orb so the chat reader sees Listening /
+   Working / Speaking without leaving the transcript. Color tracks the orb
+   (var(--o2)) with the same slow tween as the header dot. */
+#chatState {
+  font-size:11.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--o2); transition:color .9s ease; min-height:14px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 #hushBtn {
   flex:none; width:38px; height:38px; border-radius:50%;
@@ -1243,10 +1262,27 @@ body.standalone #chatHead {
   color:#9db9ff;
 }
 /* stop-the-voice lives in the chat header because the orb (the other stop
-   surface) is hidden in chat mode; only shown while a reply speaks */
-body[data-state="speaking"] #hushBtn { display:flex; }
+   surface) is hidden in chat mode; shown while a reply speaks AND while a
+   reply is paused, so the resume (play) control is always reachable */
+body[data-state="speaking"] #hushBtn,
+body.hush-paused #hushBtn { display:flex; }
+#hushBtn.resume { color:#7fe0d2; border-color:rgba(90,225,205,.55);
+  background:rgba(70,215,195,.12); }
 #hushBtn:active { transform:scale(.92); }
 #hushBtn svg { width:18px; height:18px; }
+/* chat-header Replay: same 38px pill as hush, dim until there is a reply to
+   re-read, mint while it plays */
+#chatReplayBtn {
+  flex:none; width:38px; height:38px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.06); border:1px solid rgba(140,170,240,.35);
+  color:#9db9ff;
+}
+#chatReplayBtn[disabled] { opacity:.35; }
+#chatReplayBtn.playing { color:#7fe0d2; border-color:rgba(90,225,205,.55);
+  background:rgba(70,215,195,.12); }
+#chatReplayBtn:active { transform:scale(.92); }
+#chatReplayBtn svg { width:17px; height:17px; }
 /* composer: type instead of talking (meetings, quiet rooms). v15: one
    rounded card holds the borderless input, the mic-toggle chip (back to
    voice input) and the 36px mint send button. No plus button: there are
@@ -1273,10 +1309,28 @@ body[data-state="speaking"] #hushBtn { display:flex; }
   flex:none; width:36px; height:36px; border-radius:50%;
   display:flex; align-items:center; justify-content:center;
   background:rgba(255,255,255,.06); border:1px solid var(--line);
-  color:var(--dim);
+  color:var(--dim); transition:background .2s ease, color .2s ease, border-color .2s ease;
 }
 #micChip:active { transform:scale(.92); }
 #micChip svg { width:17px; height:17px; }
+/* the slash only shows when the mic is OFF (muted or call not live) */
+#micChip .micslash { display:none; }
+#micChip.off .micslash { display:block; }
+#micChip.off .micslashcase { stroke:#161c29; stroke-width:5.5; }
+#micChip.off .micslashline { stroke:currentColor; stroke-width:2; }
+/* waiting = live + unmuted but Claude is working/speaking: mic is armed but
+   it isn't your turn yet, so a calm blue, no pulse */
+#micChip.waiting { color:#9db9ff; border-color:rgba(140,170,240,.35); }
+/* listening RIGHT NOW: mint fill and a soft pulse so it's unmistakable */
+#micChip.listening {
+  color:#06231f; background:var(--mint); border-color:transparent;
+  animation:micpulse 1.5s ease-in-out infinite;
+}
+@keyframes micpulse {
+  0%,100% { box-shadow:0 0 0 0 rgba(70,215,195,.5); }
+  50% { box-shadow:0 0 0 6px rgba(70,215,195,0); }
+}
+@media (prefers-reduced-motion: reduce){ #micChip.listening { animation:none; } }
 #sendBtn {
   flex:none; width:36px; height:36px; border-radius:50%;
   background:var(--mint); color:#06231f;
@@ -1631,7 +1685,16 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
     </button>
     <span id="chatDot" aria-hidden="true"></span>
-    <h2 id="chatTitle">Chat</h2>
+    <div id="chatHeadMeta">
+      <h2 id="chatTitle">Chat</h2>
+      <span id="chatState" role="status" aria-live="polite"></span>
+    </div>
+    <button id="chatReplayBtn" aria-label="Replay the last reply" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4.5V9h4.5"/>
+      </svg>
+    </button>
     <button id="hushBtn" aria-label="Stop the voice, keep reading">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1650,11 +1713,12 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
       <input id="composeIn" type="text" placeholder="type instead of talking"
              autocapitalize="sentences" autocomplete="off" autocorrect="on"
              enterkeyhint="send" aria-label="Type a prompt to the session">
-      <button id="micChip" aria-label="Switch back to voice input">
+      <button id="micChip" aria-label="Turn the microphone on" aria-pressed="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor" stroke="none"/>
           <path d="M6 12a6 6 0 0 0 12 0"/><path d="M12 18v3"/>
+          <g class="micslash"><path class="micslashcase" d="M5 4l14 15"/><path class="micslashline" d="M5 4l14 15"/></g>
         </svg>
       </button>
       <button id="sendBtn" aria-label="Send typed prompt">
@@ -1734,6 +1798,7 @@ const statusEl=$('status'), stateWord=$('stateWord'), pillName=$('pillName'),
       muteBtn=$('muteBtn'), muteLbl=$('muteLbl'),
       chatBtn=$('chatBtn'), chatLines=$('chatLines'), chatScroll=$('chatScroll'), jumpBtn=$('jumpBtn'),
       chatHead=$('chatHead'), chatTitle=$('chatTitle'), chatBackBtn=$('chatBackBtn'),
+      chatStateEl=$('chatState'), micChip=$('micChip'),
       composeIn=$('composeIn'), sendBtn=$('sendBtn'), orbScaleEl=$('orbscale'),
       pullHint=$('pullHint'), chipEl=$('chip'), decideEl=$('decide'),
       decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
@@ -1802,6 +1867,13 @@ function setState(s, label){
   let detail = label !== undefined ? label : '';
   if(detail && detail.toLowerCase() === word.toLowerCase()) detail = '';
   statusEl.textContent = detail;
+  /* mirror the state into the chat header so a reader who isn't watching the
+     orb still sees Listening / Working / Speaking (word + any short detail) */
+  if(chatStateEl){
+    const w = word || (s === 'ended' ? 'Idle' : s);
+    chatStateEl.textContent = detail ? (w + ' · ' + detail) : w;
+  }
+  syncMicChip();   // the composer mic reflects listening/muted live
 }
 function urlFor(path){
   return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'k=' + encodeURIComponent(K);
@@ -1908,6 +1980,18 @@ function chunkText(text, max){
   }
   return out.map(x => x.trim()).filter(Boolean);
 }
+/* Speech position, so a hush can RESUME the same reply from where it was cut
+   off (not restart, not go silent). Both engines chunk the text; whichever is
+   speaking keeps _spkParts/_spkIdx pointed at the chunk currently playing, and
+   captureRemainder() hands back everything from there on. */
+let _spkParts = [], _spkIdx = 0;
+function captureRemainder(){
+  if(!_spkParts.length || _spkIdx >= _spkParts.length) return '';
+  return _spkParts.slice(_spkIdx).join(' ').trim();
+}
+function speechStart(parts){ _spkParts = parts || []; _spkIdx = 0; }
+function speechAt(i){ _spkIdx = i; }
+function speechDone(){ _spkParts = []; _spkIdx = 0; }
 /* Cancel EVERY output path: local synthesis AND the Mac-voice WebAudio
    pipeline (barge-in relies on this killing whichever one is speaking). */
 function stopSpeaking(){
@@ -1944,6 +2028,7 @@ function sayPhone(text, done){
   speechSynthesis.cancel();
   speechCancelled = false;
   const parts = chunkText(text, 170);
+  speechStart(parts);
   let i = 0;
   /* iOS PAUSES synthesis when the screen locks or the tab hides; besides the
      visibilitychange resume, this pump pokes it back every 1.5s so a stall
@@ -1954,7 +2039,8 @@ function sayPhone(text, done){
   }, 1500);
   (function next(){
     if(speechCancelled){ clearInterval(pump); return; }
-    if(i >= parts.length){ clearInterval(pump); done && done(); return; }
+    if(i >= parts.length){ clearInterval(pump); speechDone(); done && done(); return; }
+    speechAt(i);                 // this chunk is the resume point if hushed now
     const chunk = parts[i++];
     const u = new SpeechSynthesisUtterance(chunk);
     const v = pickVoice(); if(v) u.voice = v;
@@ -2022,10 +2108,12 @@ function sayMac(text, done){
   speechCancelled = false;
   const parts = chunkText(text, 300);   // server caps around 600; stay well under
   if(!parts.length){ done && done(); return; }
+  speechStart(parts);
   let idx = 0;
   let pending = fetchTts(parts[0]);
   (async function pump(){
     while(!speechCancelled && idx < parts.length){
+      speechAt(idx);                    // resume point if hushed mid-reply
       let buf = null;
       try{ buf = await pending; }catch(e){ buf = null; }
       if(speechCancelled) return;       // barged or ended while fetching
@@ -2046,12 +2134,13 @@ function sayMac(text, done){
       await playBuf(buf);
       idx++;
     }
-    if(!speechCancelled && done) done();
+    if(!speechCancelled){ speechDone(); done && done(); }
   })();
 }
 /* A short interjection (hear-last, pending question) that then returns to
    whatever the call was doing, without ending the working turn. */
 function speakAside(text){
+  clearHush();                 // an aside supersedes any paused reply
   stopListening(); stopSpeaking();
   setState('speaking');
   if(live && !decisionOpen) startBarge();   /* asides are interruptible too */
@@ -2603,6 +2692,7 @@ function stopWorkTicker(){ if(workTicker){ clearInterval(workTicker); workTicker
 async function startTurn(text){
   const id = ++turnId;
   turnActive = true;
+  clearHush();                 // a new turn ends any pending resume
   /* reset the delivery flags BEFORE the bubble renders so the delivery
      row starts at "sending", never a stale "delivered" */
   askDelivered = false; pendingSend = null;
@@ -2692,7 +2782,9 @@ async function pollUntilChanged(id){
 let lastUuid = '';
 function speakIncoming(rep){
   stopListening();
+  stopSpeaking();                         // never let two voices overlap on one reply
   lastReplyText = rep; updateReplay();   // the Replay control re-reads this
+  clearHush();                            // fresh reply retires the resume point
   chatAdd('assistant', rep); refreshChat();
   setState('speaking');
   startBarge();
@@ -2844,10 +2936,12 @@ function finishTurn(id, reply){
   hideDecision();
   lastReplyText = reply;          // the Replay control re-reads this
   updateReplay();
+  clearHush();                    // a new reply retires any old resume point
   chatAdd('assistant', reply);
   refreshChat();                  // swap in the server's cleaned transcript
   jget('/poll').then(j => { if(j && j.uuid) lastUuid = j.uuid; }).catch(() => {});
   pollSessions();                 // states likely changed with the turn
+  stopSpeaking();                 // cancel any in-flight audio: one voice, one reply
   setState('speaking');
   startBarge();                   // v5: talking over the reply interrupts it
   say(reply, () => {
@@ -3351,6 +3445,7 @@ async function startCall(){
 function endCall(){
   live = false; liveGen++;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
+  clearHush();
   /* the full-screen chat would sit above the call-ended overlay */
   closeChatSheet();
   setState('ended', 'call ended');
@@ -3362,13 +3457,20 @@ function endCall(){
 startBtn.addEventListener('click', startCall);
 $('endBtn').addEventListener('click', endCall);
 
-muteBtn.addEventListener('click', () => {
-  if(!live) return;
-  muted = !muted;
+/* One mute state, two controls: the footer Mute button and the composer mic
+   chip both flip `muted` through here and both reflect it, so the mic in the
+   chat is never a mystery gray blob. */
+function applyMuteUI(){
   muteBtn.classList.toggle('muted', muted);
   muteBtn.setAttribute('aria-pressed', String(muted));
   muteBtn.setAttribute('aria-label', muted ? 'Unmute microphone' : 'Mute microphone');
   muteLbl.textContent = muted ? 'Muted' : 'Mute';   // the label shows CURRENT state
+  syncMicChip();
+}
+function toggleMute(){
+  if(!live) return;
+  muted = !muted;
+  applyMuteUI();
   if(muted){
     stopListening();
     stopBarge();   // muted means muted: no barge monitor either
@@ -3376,29 +3478,38 @@ muteBtn.addEventListener('click', () => {
   }else if(state === 'muted' || state === 'listening'){
     setState('listening'); listen();
   } /* muted flipped during working/speaking: the turn loop checks it after */
-});
+}
+muteBtn.addEventListener('click', toggleMute);
 
 /* ---- Replay: re-read the LAST reply on demand. Mute silences what's coming;
    Replay brings back what you just missed (a passing car, a lost moment). It
    never re-sends anything to the session, it only re-speaks locally. ---- */
 let lastReplyText = '';
-const replayBtn = $('replayBtn');
+const replayBtn = $('replayBtn'), chatReplayBtn = $('chatReplayBtn');
 function updateReplay(){
-  replayBtn.disabled = !lastReplyText;
+  const off = !lastReplyText;
+  replayBtn.disabled = off;
+  chatReplayBtn.disabled = off;   // same control, mirrored in the chat header
+}
+function setReplayPlaying(on){
+  replayBtn.classList.toggle('playing', on);
+  chatReplayBtn.classList.toggle('playing', on);
 }
 function replayLast(){
   if(!lastReplyText || !live) return;
+  clearHush();                 // replay is a fresh full read from the top
   stopSpeaking(); stopListening();
-  replayBtn.classList.add('playing');
+  setReplayPlaying(true);
   setState('speaking', 'replaying');
   if(!decisionOpen) startBarge();     // talking over the replay interrupts it
   say(lastReplyText, () => {
     stopBarge();
-    replayBtn.classList.remove('playing');
+    setReplayPlaying(false);
     resumeAfterSpeech();
   });
 }
 replayBtn.addEventListener('click', replayLast);
+chatReplayBtn.addEventListener('click', replayLast);
 
 /* ============================================================ sheets */
 const scrim=$('scrim'), chatSheet=$('chatSheet'), sessSheet=$('sessSheet'),
@@ -3617,12 +3728,33 @@ sendBtn.addEventListener('mousedown', e => e.preventDefault());
 composeIn.addEventListener('keydown', e => {
   if(e.key === 'Enter'){ e.preventDefault(); sendTyped(); }
 });
-/* the mic chip returns to VOICE input: blur the composer (typingMute off,
-   the blur handler restores listening) and lift a manual mute so the mic
-   actually reopens */
-$('micChip').addEventListener('click', () => {
-  try{ composeIn.blur(); }catch(e){}
-  if(live && muted) muteBtn.click();
+/* the composer mic chip IS a mute/unmute toggle, mirrored from the footer
+   Mute so its state is never a mystery: gray + slash = off, mint + pulse =
+   listening now, dim = not your turn (Claude working/speaking). */
+function syncMicChip(){
+  const typing = typingMute || document.activeElement === composeIn;
+  const off = !live || muted || typing;       // slashed: not hearing you
+  const listening = live && !muted && !typing && state === 'listening';
+  micChip.classList.toggle('listening', listening);
+  micChip.classList.toggle('off', off);
+  micChip.classList.toggle('waiting', !off && !listening);   // armed, not your turn
+  micChip.setAttribute('aria-pressed', String(live && !muted && !typing));
+  micChip.setAttribute('aria-label',
+    off ? 'Turn the microphone on' :
+    (listening ? 'Turn the microphone off' : 'Microphone armed'));
+}
+micChip.addEventListener('click', () => {
+  if(!live){ toast('start the call first'); return; }
+  const typing = typingMute || document.activeElement === composeIn;
+  if(typing){
+    /* leaving the keyboard: blur restores listening if unmuted; make sure
+       the mic is actually on so tapping it always means "talk to me now" */
+    try{ composeIn.blur(); }catch(e){}
+    if(muted) toggleMute();
+    else { syncMicChip(); if(state !== 'speaking' && !turnActive && !decisionOpen){ setState('listening'); listen(); } }
+    return;
+  }
+  toggleMute();   // plain on/off, same as the footer Mute
 });
 /* focusing the field mutes the mic (no accidental hot mic in a meeting,
    and no recognizer transcribing keyboard clicks); blur restores exactly
@@ -3632,12 +3764,14 @@ composeIn.addEventListener('focus', () => {
   stopListening();
   stopBarge();
   if(live && !muted && state === 'listening') setState('muted', 'typing');
+  syncMicChip();
 });
 composeIn.addEventListener('blur', () => {
   typingMute = false;
   if(live && !muted && !turnActive && !decisionOpen && state !== 'speaking'){
     setState('listening'); listen();
   }
+  syncMicChip();
 });
 /* lift the sheet over the on-screen keyboard (iOS lays the keyboard over
    fixed elements; visualViewport is the only honest signal) */
@@ -3652,15 +3786,59 @@ composeIn.addEventListener('blur', () => {
   vv.addEventListener('resize', kb);
   vv.addEventListener('scroll', kb);
 })();
-/* ---- v7: tap the orb to stop the voice (read-along users finish before
-   the speech does; barge-in needs SPEAKING, which a meeting forbids) */
-function hushVoice(){
-  if(state !== 'speaking') return;
-  stopSpeaking();
-  resumeAfterSpeech();
+/* ---- pause / resume the spoken reply. Tapping the top-right control (or the
+   orb) while it speaks STOPS the voice and remembers where it was; tapping
+   again RESUMES the same reply from that point instead of restarting or going
+   silent. The button swaps between a "stop" and a "resume" glyph to match. ---- */
+const hushBtn = $('hushBtn');
+let resumeText = '', hushPaused = false;
+const HUSH_STOP_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+  ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none"/>' +
+  '<path d="M15 9.5l5 5"/><path d="M20 9.5l-5 5"/></svg>';
+const HUSH_PLAY_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+  ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none"/>' +
+  '<path d="M15.5 8.5a4.5 4.5 0 0 1 0 7"/></svg>';
+function syncHushBtn(){
+  const canResume = hushPaused && !!resumeText;
+  document.body.classList.toggle('hush-paused', canResume);
+  hushBtn.classList.toggle('resume', canResume);
+  hushBtn.innerHTML = canResume ? HUSH_PLAY_SVG : HUSH_STOP_SVG;
+  hushBtn.setAttribute('aria-label',
+    canResume ? 'Resume reading the reply' : 'Stop the voice, keep reading');
 }
-$('orbzone').addEventListener('click', hushVoice);
-$('hushBtn').addEventListener('click', hushVoice);
+function clearHush(){
+  resumeText = ''; hushPaused = false; syncHushBtn();
+}
+function pauseVoice(){
+  if(state !== 'speaking') return;
+  resumeText = captureRemainder();   // what was left when the voice stopped
+  stopSpeaking();
+  hushPaused = !!resumeText;
+  syncHushBtn();
+  resumeAfterSpeech();               // back to listening/muted; mic is separate
+}
+function resumeVoice(){
+  if(!resumeText || !live){ clearHush(); return; }
+  const t = resumeText;
+  clearHush();
+  stopListening();
+  setState('speaking', 'resuming');
+  if(!decisionOpen) startBarge();    // talking over the resume interrupts it
+  say(t, () => { stopBarge(); resumeAfterSpeech(); });
+}
+function toggleHush(){
+  if(state === 'speaking') pauseVoice();
+  else if(hushPaused && resumeText) resumeVoice();
+}
+syncHushBtn();
+/* the orb only ever PAUSES (never resume: a stray orb tap must not restart the
+   voice); the corner button is the two-way control the user asked for */
+$('orbzone').addEventListener('click', pauseVoice);
+hushBtn.addEventListener('click', toggleHush);
 scrim.addEventListener('click', () => { closeSessSheet(); closeClosedSheet(); closeSetSheet(); });
 $('pill').addEventListener('click', () => { sessOpen ? closeSessSheet() : openSessSheet(); });
 chatBtn.addEventListener('click', () => {
@@ -3694,8 +3872,12 @@ function fmtAgo(sec){
 }
 function homeCard(s){
   const closed = !isActiveSess(s);
-  const b = document.createElement('button');
+  /* a DIV, not a button: it now holds a nested Replay button, and a button
+     inside a button is invalid. role/tabindex/keydown keep it operable. */
+  const b = document.createElement('div');
   b.className = 'hcard' + (closed ? ' closed' : (s.pending ? ' needs' : ''));
+  b.setAttribute('role', 'button');
+  b.setAttribute('tabindex', '0');
   b.setAttribute('aria-label', closed
     ? ((s.name || 'session') + ', closed, read only')
     : ('Call ' + (s.name || 'session') + (s.pending ? ', needs you' : '')));
@@ -3713,6 +3895,16 @@ function homeCard(s){
   const ago = document.createElement('span'); ago.className = 'ago';
   ago.textContent = (s.ago === undefined || s.ago === null) ? '' : fmtAgo(s.ago) + ' ago';
   r1.append(n, ago);
+  /* per-session Replay: play THIS session's last reply without switching or
+     starting a call (the same speaker affordance the control room has) */
+  const hear = document.createElement('button');
+  hear.className = 'hearmini';
+  hear.setAttribute('aria-label', 'Replay the last reply from ' + (s.name || 'this session'));
+  hear.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4.5V9h4.5"/></svg>';
+  hear.addEventListener('click', ev => { ev.stopPropagation(); unlockAudio(); hearLast(s, hear); });
+  r1.append(hear);
 
   const r2 = document.createElement('div'); r2.className = 'r2';
   const dot = document.createElement('span');
@@ -3743,7 +3935,11 @@ function homeCard(s){
     b.appendChild(last);
   }
   /* closed cards NEVER route into a call: read-only sheet instead */
-  b.addEventListener('click', () => { closed ? openClosedSheet(s) : openSession(s); });
+  const open = () => { closed ? openClosedSheet(s) : openSession(s); };
+  b.addEventListener('click', open);
+  b.addEventListener('keydown', ev => {
+    if(ev.key === 'Enter' || ev.key === ' '){ ev.preventDefault(); open(); }
+  });
   return b;
 }
 function groupLabel(text){
@@ -3970,7 +4166,7 @@ async function switchTo(s){
   /* the "ending previous call" affordance: freeze the loops, show intent */
   switchMsg.textContent = 'ending previous call';
   switchOverlay.classList.remove('hidden');
-  cancelTurn(); stopSpeaking(); stopListening();
+  cancelTurn(); stopSpeaking(); stopListening(); clearHush();
   let ok = false;
   try{
     const r = await jpost('/switch', { id: s.id });
@@ -4016,6 +4212,7 @@ function goCall(name){
 function goHome(){
   onHome = true;
   cancelTurn(); stopListening(); stopSpeaking(); stopHeartbeat(); releaseWakeLock();
+  clearHush();
   hideDecision(); closeSessSheet(); closeClosedSheet(); closeSetSheet(); closeChatSheet();
   startOverlay.classList.add('hidden');
   setState('ended', 'call ended');
