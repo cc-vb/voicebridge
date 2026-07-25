@@ -762,10 +762,13 @@ def _retime_wav(wav: str, factor: float) -> str:
     return wav
 
 
-def _kokoro_wav(text: str, out: str = "") -> str:
-    """Synthesize via the local Kokoro server; '' if unavailable."""
+def _kokoro_wav(text: str, out: str = "", voice: str = "") -> str:
+    """Synthesize via the local Kokoro server; '' if unavailable.
+    `voice` overrides the configured one (the phone's per-user voice picker
+    sends it per request; the desktop keeps using the configured voice)."""
     wav = out or str(STATE_DIR / "speech.wav")
-    voice = get_voice()
+    if not voice or not _KOKORO_VOICE_RE.match(voice):
+        voice = get_voice()
     if not _KOKORO_VOICE_RE.match(voice or ""):
         voice = "af_heart"
     try:

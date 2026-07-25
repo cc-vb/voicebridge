@@ -3428,7 +3428,9 @@ class Handler(BaseHTTPRequestHandler):
             # the phone can play the SAME natural voice as the desktop
             # instead of the browser's robotic default. Body: {"text": ...}.
             try:
-                text = (json.loads(raw or b"{}").get("text") or "").strip()
+                b = json.loads(raw or b"{}")
+                text = (b.get("text") or "").strip()
+                voice = (b.get("voice") or "").strip()
             except Exception:
                 self._reply(400, b"bad request", "text/plain")
                 return
@@ -3439,7 +3441,7 @@ class Handler(BaseHTTPRequestHandler):
                 # output path would let concurrent chunks clobber each other.
                 fd, tmp = tempfile.mkstemp(suffix=".wav")
                 os.close(fd)
-                wav = core._kokoro_wav(text[:600], out=tmp)
+                wav = core._kokoro_wav(text[:600], out=tmp, voice=voice)
                 if wav != tmp:
                     # mkstemp already created the file, so a synthesis that
                     # fails (or writes elsewhere) leaves it behind: one empty
