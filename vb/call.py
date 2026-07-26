@@ -136,6 +136,14 @@ import threading as _threading
 _SUBS: set = set()
 _SUBS_LOCK = _threading.Lock()
 
+# Kokoro serves one synth at a time; the phone plays chunk N while prefetching
+# chunk N+1, so two /tts land at the same instant. Under load that collision
+# made one request slow enough to fail, dumping that chunk (then the whole
+# reply, via the 2-strike fallback) to the browser's ROBOTIC voice, the
+# "it's Kokoro but sounds robotic" bug. Serialize synth so the prefetch queues
+# (a ~2s wait, still ahead of playback) instead of colliding.
+_TTS_LOCK = _threading.Lock()
+
 
 def _broadcast(ev: dict) -> None:
     with _SUBS_LOCK:
@@ -4642,7 +4650,13 @@ class Handler(BaseHTTPRequestHandler):
                 # output path would let concurrent chunks clobber each other.
                 fd, tmp = tempfile.mkstemp(suffix=".wav")
                 os.close(fd)
-                wav = core._kokoro_wav(text[:600], out=tmp, voice=voice)
+                # Serialize + retry once: keep the WHOLE reply in the natural
+                # voice even when the Mac is busy, instead of dropping a
+                # colliding chunk to the robotic browser fallback.
+                with _TTS_LOCK:
+                    wav = core._kokoro_wav(text[:600], out=tmp, voice=voice)
+                    if not wav and core.kokoro_up():
+                        wav = core._kokoro_wav(text[:600], out=tmp, voice=voice)
                 if wav != tmp:
                     # mkstemp already created the file, so a synthesis that
                     # fails (or writes elsewhere) leaves it behind: one empty
