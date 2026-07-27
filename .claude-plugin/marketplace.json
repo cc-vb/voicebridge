@@ -10,7 +10,7 @@
       "name": "voicebridge",
       "source": "./",
       "description": "Hands-free voice conversations with your live Claude Code session: /voicebridge:voice-on to talk and hear replies, wake-word mode, barge-in, natural Kokoro voice, free phone call page. macOS.",
-      "version": "2.10.0",
+      "version": "2.10.1",
       "author": { "name": "voicebridge" }
     }
   ]

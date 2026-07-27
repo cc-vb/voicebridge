@@ -1004,17 +1004,17 @@ html, body { height:100%; overflow:hidden; overscroll-behavior:none; }
 body {
   position:fixed; inset:0; margin:0;
   display:flex; flex-direction:column;
-  background:#0a0d14; color:#e8ebf2;
+  background:#090c0d; color:#eceef0;
   font-family:ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   user-select:none; -webkit-user-select:none; touch-action:manipulation;
   transition:--o1 .9s ease, --o2 .9s ease, --o3 .9s ease, --glow .9s ease, --ring .9s ease,
     --ga .9s ease, --gb .9s ease, --gc .9s ease, --gw .9s ease;
-  --o1:#dfe7f8; --o2:#5f74b0; --o3:#1c2440;
+  --o1:#dfe7f8; --o2:#5f74b0; --o3:#132022;
   --glow:rgba(95,116,176,.34); --ring:rgba(120,140,200,.5);
   --ga:rgba(126,150,220,.55); --gb:rgba(70,215,195,.30);
   --gc:rgba(134,116,230,.34); --gw:rgba(232,170,124,.18);
   --danger:#e5484d; --amber:#e5a13d; --mint:#46d7c3;
-  --dim:#96a0b5; --surface:#141926; --line:#232b3d;
+  --dim:#9ba4a8; --surface:#12181c; --line:#202a2e; --ink3:#6a747a; --add:#5fc98a;
 }
 body[data-state="listening"] { --o1:#e4fff8; --o2:#37bfae; --o3:#093330; --glow:rgba(70,215,195,.42); --ring:rgba(90,225,205,.55);
   --ga:rgba(120,240,220,.60); --gb:rgba(47,174,157,.44); --gc:rgba(64,120,200,.32); --gw:rgba(232,170,124,.20); }
@@ -1692,26 +1692,26 @@ body.hush-paused #hushBtn { display:flex; }
 }
 .eblbl {
   font-size:11px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;
-  color:#5b6479; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--ink3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 /* v16 USER messages: a subtle rounded block in the SAME left-aligned
    column (no mint, no right-alignment), full column width minus a slight
    right inset. 15.5px body on the system-ui chat stack. */
 .ublk {
-  background:#1a2130; border:1px solid rgba(255,255,255,.07); border-radius:14px;
+  background:#141b1f; border:1px solid rgba(255,255,255,.06); border-radius:14px;
   padding:12px 14px; margin-right:18px;
   font-size:15.5px; line-height:1.55; white-space:pre-wrap; word-break:break-word;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  color:#e4e9f2; user-select:text; -webkit-user-select:text;
+  color:#eceef0; user-select:text; -webkit-user-select:text;
 }
 .ublk.live { border-style:dashed; }
 /* AGENT replies: OPEN text directly on the background, same column */
 .msg-a {
   width:100%; padding:2px 0;
-  font-size:16px; line-height:1.5; white-space:pre-wrap; word-break:break-word;
+  font-size:16px; line-height:1.62; white-space:pre-wrap; word-break:break-word;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  color:#e8ebf2; user-select:text; -webkit-user-select:text;
+  color:#eceef0; user-select:text; -webkit-user-select:text;
 }
 .ublk .bwrap, .msg-a .bwrap { display:block; }
 .ublk.clamp .bwrap, .msg-a.clamp .bwrap { max-height:19em; overflow:hidden;
@@ -1720,7 +1720,7 @@ body.hush-paused #hushBtn { display:flex; }
 .showmore { display:block; margin-top:6px; background:none; border:0;
   color:#46d7c3; font-size:13px; padding:2px 0; letter-spacing:.03em; }
 /* code: monospace cards with their own x-scroll, never widening the page */
-.cblk { background:#0a0e18; border:1px solid var(--line); border-radius:10px;
+.cblk { background:#0b0f12; border:1px solid var(--line); border-radius:10px;
   padding:10px 12px; margin:8px 0;
   font:13px/1.45 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
   overflow-x:auto; white-space:pre; max-width:100%; }
@@ -1729,7 +1729,7 @@ body.hush-paused #hushBtn { display:flex; }
 /* timestamps: grouped cluster dividers ("Jul 25 at 3:16 PM"), never
    per-message; v16: quieter, 12px, dimmer ink, more margin */
 .tsdiv {
-  align-self:center; text-align:center; font-size:12px; color:#4d5568;
+  align-self:center; text-align:center; font-size:12px; color:var(--ink3);
   padding:22px 0 8px; letter-spacing:.03em;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
@@ -1737,8 +1737,8 @@ body.hush-paused #hushBtn { display:flex; }
    These sit inside the pre-wrap message column, so each block resets its
    own white-space. */
 .mhead {
-  font-size:17px; font-weight:600; line-height:1.4; color:#f0f3f9;
-  margin:10px 0 2px; white-space:normal;
+  font-size:19px; font-weight:650; line-height:1.35; color:#f2f4f6;
+  margin:14px 0 3px; white-space:normal;
 }
 .mhead:first-child { margin-top:2px; }
 .lirow { display:flex; align-items:flex-start; gap:9px; margin:3px 0; white-space:normal; }
@@ -1785,13 +1785,13 @@ body.hush-paused #hushBtn { display:flex; }
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 .actchip:active { transform:scale(.985); background:rgba(255,255,255,.06); }
-.actchip .averb { flex:none; font-size:12.5px; color:#8b95aa; letter-spacing:.01em; }
+.actchip .averb { flex:none; font-size:12.5px; font-weight:600; color:#9ba4a8; letter-spacing:.01em; }
 .actchip .afile {
   flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   font-size:12.5px; color:#c2cadb;
   font-family:ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
 }
-.actchip .aadd { flex:none; font-size:12px; color:#46d7c3; font-variant-numeric:tabular-nums; }
+.actchip .aadd { flex:none; font-size:12px; color:var(--add); font-variant-numeric:tabular-nums; }
 .actchip .adel { flex:none; font-size:12px; color:#ff8a8e; font-variant-numeric:tabular-nums; }
 .actchip .achev { flex:none; width:14px; height:14px; color:#5b6479; margin-left:1px; }
 .actchip .achev svg { width:14px; height:14px; display:block; }
@@ -1834,7 +1834,7 @@ body.act-open #actScrim { opacity:1; pointer-events:auto; }
    itself y-scrolls inside the sheet for long diffs */
 .actcard {
   overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
-  background:#0a0e18; border:1px solid var(--line); border-radius:12px;
+  background:#0b0f12; border:1px solid var(--line); border-radius:12px;
   min-height:0; flex:1;
   font:13px/1.5 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
   user-select:text; -webkit-user-select:text;
@@ -1847,9 +1847,9 @@ body.act-open #actScrim { opacity:1; pointer-events:auto; }
 }
 .dline .dsign { flex:none; width:14px; text-align:center; color:#5b6479; }
 .dline .dtx { flex:1; padding:0 12px 0 4px; color:#c9d1de; }
-.dline.add { background:rgba(70,215,195,.10); }
-.dline.add .dtx { color:#a8eadf; }
-.dline.add .dsign { color:#46d7c3; }
+.dline.add { background:rgba(95,201,138,.12); }
+.dline.add .dtx { color:#a9e7c0; }
+.dline.add .dsign { color:var(--add); }
 .dline.del { background:rgba(229,72,77,.12); }
 .dline.del .dtx { color:#f3b2b4; }
 .dline.del .dsign { color:#ff8a8e; }
@@ -3062,7 +3062,7 @@ const actSheet = $('actSheet'), actScrim = $('actScrim'),
 let actOpen = false, actHist = false, actPopIgnore = false;
 function openActSheet(it){
   if(!it) return;
-  actTitle.textContent = (it.verb || DEFAULT_VERB[it.kind] || 'Done') + ' Completed';
+  actTitle.textContent = (it.verb || DEFAULT_VERB[it.kind] || 'Done');
   actSub.style.display = 'none'; actSub.textContent = '';
   actBody.style.display = ''; actBody.textContent = '';
   let path = '';
