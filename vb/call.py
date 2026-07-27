@@ -297,6 +297,11 @@ _SUBS_LOCK = _threading.Lock()
 # (a ~2s wait, still ahead of playback) instead of colliding.
 _TTS_LOCK = _threading.Lock()
 
+# One injection at a time, and only when the session is free: two prompts
+# pasted into a busy Claude collide and vanish (the "sent it 3 times, none
+# landed" bug, confirmed in the relay log). This serializes + waits-for-idle.
+_INJECT_LOCK = _threading.Lock()
+
 
 def _broadcast(ev: dict) -> None:
     with _SUBS_LOCK:
@@ -389,10 +394,19 @@ def _inject_only(text: str) -> str:
     if pending:
         return _handle_pending(text, pending)   # '' when yes was delivered
     from .talkd import bound_app
-    if not inject.paste_text(text, send=True, expect_app=bound_app()):
-        return ("I couldn't type into the session, the terminal isn't the "
-                "focused window on your Mac. Bring it to the front, or check "
-                "the screen isn't locked, then try again.")
+    with _INJECT_LOCK:
+        # Wait for the session to be FREE so the prompt lands as its own turn
+        # instead of being lost while Claude is mid-reply. Capped; if it never
+        # idles we still paste (Claude Code queues typed input), but the
+        # common case now delivers cleanly and never collides with a sibling.
+        t0 = time.time()
+        while (core.active_session_state(tp) == "working"
+               and time.time() - t0 < 45):
+            time.sleep(0.6)
+        if not inject.paste_text(text, send=True, expect_app=bound_app()):
+            return ("I couldn't type into the session, the terminal isn't the "
+                    "focused window on your Mac. Bring it to the front, or "
+                    "check the screen isn't locked, then try again.")
     return ""
 
 
@@ -5462,17 +5476,21 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 tp0 = _target_transcript()
                 base = core.latest_assistant_uuid(tp0) if tp0 else ""
-                why = _inject_only(text) if text else "Sorry, I didn't catch that."
-                if why:
-                    self._reply(200, json.dumps(
-                        {"ok": False, "reply": why}).encode(),
-                        "application/json")
-                    return
+                # Reserve BEFORE injecting: _inject_only may block waiting for
+                # the session to go idle, and a retry with the same id during
+                # that wait must dedup, not paste a second copy.
                 _ASKED[turn_id] = {
                     "tp": tp0,
                     "prev": core.last_assistant_text(tp0) if tp0 else "",
                     "base": base, "ts": time.time()}
                 _prune_asked()
+                why = _inject_only(text) if text else "Sorry, I didn't catch that."
+                if why:
+                    _ASKED.pop(turn_id, None)   # failed: allow a real retry
+                    self._reply(200, json.dumps(
+                        {"ok": False, "reply": why}).encode(),
+                        "application/json")
+                    return
                 _broadcast({"type": "ack", "id": turn_id})
                 self._reply(200, json.dumps(
                     {"ok": True, "delivered": True, "uuid": base}).encode(),
