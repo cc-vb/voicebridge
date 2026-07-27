@@ -489,6 +489,44 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
+  CHANGES, v17 to v18, ONE scoped upgrade: a compact PERMISSION-MODE chip on
+  the call screen that shows Claude Code's current mode and cycles it. Nothing
+  else changes (turn engine, stream, session isolation, connect-guard,
+  activity chips + detail sheet, orb replay, single voice picker,
+  deliver-from-any-app all untouched). Each piece and where it lives:
+
+    1. CHIP MARKUP (#modeChip, in <header> right under the session pill and
+       audio-route chip). It is a real <button> (pointer-events:auto over the
+       otherwise click-through header), 100% ASCII, with a set of pre-rendered
+       inline-SVG glyphs (.mcg-normal shield, .mcg-accept check, .mcg-plan
+       clipboard, .mcg-bypass alert, .mcg-unknown dots); CSS shows only the one
+       matching #modeChip[data-mode], so the label swap needs no innerHTML.
+
+    2. LABEL MAP (modeKeyFromRaw / MODE_LABELS): auto,default -> "Normal";
+       acceptEdits -> "Auto-accept"; plan -> "Plan"; bypassPermissions ->
+       "Bypass"; "" or unknown -> "Mode". A module var `claudeMode` holds the
+       raw value as of the last /status.
+
+    3. AUTHORITATIVE SYNC. statusLoop() already polls GET /status; it now reads
+       s.mode and calls syncModeFromStatus(), which stores claudeMode and
+       relabels the chip, EXCEPT inside a short post-tap hold window
+       (modeHoldUntil) so an optimistic label survives the next poll before the
+       truth re-syncs it.
+
+    4. TAP TO CYCLE. cycleMode() POSTs /mode, and OPTIMISTICALLY advances the
+       label through [Normal -> Auto-accept -> Plan -> Bypass -> Normal]
+       immediately so the tap feels responsive; the next /status re-syncs to
+       the real mode. Bypass gets a coral warning tint (it is the dangerous
+       one). Rapid taps are debounced (modeBusy). If POST /mode returns
+       ok:false (or fails), the optimistic label reverts and a reason is
+       toasted.
+
+    5. VISIBILITY. updateModeChipVis() shows the chip ONLY on a live call, and
+       hides it in Chat mode and on the home screen (CSS also hard-hides it
+       under body.chat-full / body.home). aria-label / title read "Cycle
+       Claude's permission mode". Safe-area, reduced-motion, and battery-pause
+       behaviour are inherited from the header it sits in.
+
   voicebridge call page v16 (file: call_page_v16.html). Drop-in replacement
   for PAGE in vb/call.py. Embed as a RAW string (r prefix) so regex
   backslashes survive. This file contains no triple double-quote sequence
@@ -1214,6 +1252,41 @@ header {
 #chip.on { display:inline-flex; }
 #chip svg { width:13px; height:13px; flex:none; opacity:.85; }
 @keyframes softpulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+
+/* v18: the Claude permission-mode chip. Tappable (pointer-events:auto over the
+   click-through header), matches the audio-route chip / segmented-control
+   tokens, safe-area aware (it rides inside <header>). Hidden until a live call,
+   and hard-hidden in Chat mode and on home. */
+#modeChip {
+  pointer-events:auto;
+  display:none; align-items:center; gap:6px;
+  min-height:34px; padding:6px 13px; border-radius:999px;
+  background:rgba(255,255,255,.055); border:1px solid var(--line);
+  font-size:12.5px; font-weight:600; letter-spacing:.02em; color:#c9d0de;
+  transition:background .2s ease, border-color .2s ease, color .2s ease, transform .1s ease;
+}
+#modeChip.on { display:inline-flex; }
+#modeChip:active { transform:scale(.94); }
+#modeChip:not(.on) { display:none; }
+body.chat-full #modeChip, body.home #modeChip { display:none !important; }
+#modeChip .mcglyph { display:inline-flex; align-items:center; justify-content:center;
+  width:14px; height:14px; flex:none; }
+#modeChip .mcg { display:none; }
+#modeChip .mcg svg { width:14px; height:14px; opacity:.9; }
+#modeChip[data-mode="normal"] .mcg-normal,
+#modeChip[data-mode="accept"] .mcg-accept,
+#modeChip[data-mode="plan"] .mcg-plan,
+#modeChip[data-mode="bypass"] .mcg-bypass,
+#modeChip[data-mode="unknown"] .mcg-unknown { display:inline-flex; }
+/* per-mode accent tints, drawn from the existing state palette */
+#modeChip[data-mode="accept"] { border-color:rgba(70,215,195,.4); color:#7fe6d5; }
+#modeChip[data-mode="plan"] { border-color:rgba(140,120,235,.4); color:#b3a6f2; }
+/* Bypass is the dangerous mode: coral warning tint (border + fill + text) so
+   it is unmistakable when active. */
+#modeChip[data-mode="bypass"] {
+  border-color:rgba(229,72,77,.6); color:#ffb4ab;
+  background:rgba(229,72,77,.16);
+}
 
 /* ==== middle: the orb (v12 rendering kept as-is) ==== */
 main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -1948,7 +2021,7 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
   body[data-state="needs"] .ripple { animation:none; opacity:.35; transform:scale(1.25); }
   #orbscale { transition:none; transform:none; }
   .sheet, #chatSheet, #decide, #toast, #home, .hcard,
-  #actSheet, #actScrim, .actchip { transition:none; }
+  #actSheet, #actScrim, .actchip, #modeChip { transition:none; }
   #switchOverlay .spin { animation:none; border-top-color:var(--line); }
   .sdot.working, .badge.needs, #decide .eyebrow .ddot { animation:none; }
   /* typing dots hold steady; state stays legible via color and text */
@@ -1998,6 +2071,28 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
     </svg>
     Sound on this phone
   </span>
+  <button id="modeChip" type="button" data-mode="unknown"
+          aria-label="Cycle Claude's permission mode" title="Cycle Claude's permission mode">
+    <span class="mcglyph" aria-hidden="true">
+      <span class="mcg mcg-normal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3l7 3v5c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6z"/></svg></span>
+      <span class="mcg mcg-accept"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 12.5l5 5 11-11"/></svg></span>
+      <span class="mcg mcg-plan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v2H9z"/>
+        <path d="M8.5 11h7"/><path d="M8.5 15h4.5"/></svg></span>
+      <span class="mcg mcg-bypass"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 4l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg></span>
+      <span class="mcg mcg-unknown"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+        <circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/>
+        <circle cx="18" cy="12" r="1.6"/></svg></span>
+    </span>
+    <span class="mclbl" id="modeChipLbl">Mode</span>
+  </button>
 </header>
 
 <main>
@@ -2227,7 +2322,8 @@ const statusEl=$('status'), stateWord=$('stateWord'), pillName=$('pillName'),
       sessList=$('sessList'), sessCount=$('sessCount'),
       homeList=$('homeList'), homeDot=$('homeDot'),
       closedName=$('closedName'), closedBody=$('closedBody'),
-      clipBtn=$('clipBtn'), pickFile=$('pickFile'), chipsEl=$('chips');
+      clipBtn=$('clipBtn'), pickFile=$('pickFile'), chipsEl=$('chips'),
+      modeChip=$('modeChip'), modeChipLbl=$('modeChipLbl');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const TTS = 'speechSynthesis' in window;
 
@@ -2348,6 +2444,7 @@ function setState(s, label){
     chatStateEl.textContent = detail ? (w + ' \u00b7 ' + detail) : w;
   }
   syncMicChip();   // the composer mic reflects listening/muted live
+  if(typeof updateModeChipVis === 'function') updateModeChipVis();
 }
 function urlFor(path){
   return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'k=' + encodeURIComponent(K);
@@ -3864,11 +3961,91 @@ async function statusLoop(myGen){
       else { answeredQid = ''; clearQuestion(); }
       // Reconcile the orb against the real session state.
       if(!sseOk && s.state) reconcileState(s.state);
+      // v18: authoritative permission-mode sync + chip visibility.
+      syncModeFromStatus(s.mode);
+      updateModeChipVis();
     }catch(e){}
     await sleep(turnActive ? 4000 : 8000);
     if(!live || myGen !== liveGen) return;
   }
 }
+
+/* ============================================================ v18 permission mode */
+/* A compact chip on the call screen shows Claude Code's current permission
+   mode and cycles it. GET /status carries `mode` (auto|default|acceptEdits|
+   plan|bypassPermissions|""), authoritative as of the last message; POST /mode
+   sends Shift+Tab to the bound terminal and returns {ok, was}. The real new
+   mode is only visible on the NEXT /status, so a tap advances the label
+   optimistically through [Normal -> Auto-accept -> Plan -> Bypass -> Normal]
+   and a short hold window lets that survive one poll before the truth
+   re-syncs it. Bypass carries a coral warning tint (it is the dangerous one). */
+let claudeMode = '';          // raw mode as of the last /status (authoritative)
+let modeChipKey = 'unknown';  // the key currently shown on the chip
+let modeBusy = false;         // a POST /mode is in flight (debounce rapid taps)
+let modeHoldUntil = 0;        // suppress /status re-label until this time (post-tap)
+const MODE_ORDER = ['normal', 'accept', 'plan', 'bypass'];   // optimistic cycle
+const MODE_LABELS = { normal:'Normal', accept:'Auto-accept', plan:'Plan',
+  bypass:'Bypass', unknown:'Mode' };
+function modeKeyFromRaw(raw){
+  switch(String(raw || '')){
+    case 'auto':
+    case 'default': return 'normal';
+    case 'acceptEdits': return 'accept';
+    case 'plan': return 'plan';
+    case 'bypassPermissions': return 'bypass';
+    default: return 'unknown';
+  }
+}
+function setModeChip(key){
+  modeChipKey = key;
+  const label = MODE_LABELS[key] || 'Mode';
+  modeChip.dataset.mode = key;
+  modeChipLbl.textContent = label;
+  modeChip.setAttribute('aria-label',
+    'Cycle Claude\'s permission mode (now ' + label + ')');
+  modeChip.setAttribute('title', 'Cycle Claude\'s permission mode (now ' + label + ')');
+}
+function updateModeChipVis(){
+  /* only on a live call; hidden in chat and on home (CSS hard-hides those too) */
+  const show = live && !chatOpenState && !onHome;
+  modeChip.classList.toggle('on', show);
+}
+function syncModeFromStatus(raw){
+  claudeMode = String(raw || '');
+  if(Date.now() < modeHoldUntil) return;   // let a fresh optimistic tap breathe
+  setModeChip(modeKeyFromRaw(claudeMode));
+}
+function shortModeReason(j){
+  const rs = j && (j.reason || j.error || j.msg);
+  return rs ? ('Mode: ' + String(rs).slice(0, 60)) : 'Could not change mode';
+}
+async function cycleMode(){
+  if(!live || modeBusy) return;
+  modeBusy = true;
+  const prevKey = modeChipKey;
+  const idx = MODE_ORDER.indexOf(modeChipKey);   // -1 (unknown) -> Normal
+  const nextKey = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
+  setModeChip(nextKey);                 // optimistic, immediate
+  modeHoldUntil = Date.now() + 4000;    // hold across the next poll(s)
+  haptic(8);
+  try{
+    const r = await jpost('/mode', {});
+    let j = {};
+    try{ j = await r.json(); }catch(e){}
+    if(!r.ok || (j && j.ok === false)){
+      setModeChip(prevKey);             // revert the optimistic label
+      modeHoldUntil = 0;
+      toast(shortModeReason(j));
+    }
+  }catch(e){
+    setModeChip(prevKey);
+    modeHoldUntil = 0;
+    toast('Could not change mode');
+  }finally{
+    setTimeout(() => { modeBusy = false; }, 400);   // debounce
+  }
+}
+modeChip.addEventListener('click', cycleMode);
 
 /* ============================================================ heartbeat */
 /* While the call is live the phone owns the audio: a beat every 5s keeps the
@@ -4423,6 +4600,7 @@ function applyChatMode(){
   chatBtn.classList.toggle('active', chatOpenState);
   chatBtn.setAttribute('aria-pressed', String(chatOpenState));
   chatBtn.setAttribute('aria-label', chatOpenState ? 'Hide chat' : 'Show chat');
+  if(typeof updateModeChipVis === 'function') updateModeChipVis();
 }
 function openChatSheet(){
   chatOpenState = true;

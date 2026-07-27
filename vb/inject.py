@@ -129,6 +129,57 @@ def frontmost_app() -> str:
         return ""
 
 
+def _claude_terminal_tty() -> str:
+    """The tty of a claude TUI that lives in a Terminal.app tab, for the
+    single-session common case. '' if not exactly one (caller falls back)."""
+    try:
+        ps = subprocess.run(["ps", "-axo", "tty=,comm="],
+                            capture_output=True, text=True, timeout=4).stdout
+        claude = set()
+        for ln in ps.splitlines():
+            p = ln.split()
+            if p and p[0] not in ("??", "?") and p[-1].endswith("claude"):
+                claude.add("/dev/" + p[0])
+        tabs = subprocess.run(
+            ["osascript", "-e",
+             'tell application "Terminal" to get tty of every tab of every window'],
+            capture_output=True, text=True, timeout=4).stdout
+        term = {t.strip() for t in tabs.replace("\n", ",").split(",")
+                if t.strip().startswith("/dev/")}
+        both = list(claude & term)
+        return both[0] if len(both) == 1 else ""
+    except Exception:
+        return ""
+
+
+def _terminal_inject(text: str, tty: str) -> bool:
+    """Type text (and submit) into the Terminal tab on `tty` WITHOUT bringing
+    Terminal to the front, so a phone prompt lands in the session while the
+    user stays on YouTube/Slack, no focus flicker at all. `do script ... in
+    <tab>` writes to that tab's tty as if typed; Claude Code reads it as input
+    and the trailing return submits it."""
+    esc = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    script = (
+        'tell application "Terminal"\n'
+        'repeat with w in windows\n'
+        'repeat with t in tabs of w\n'
+        f'if tty of t is "{tty}" then\n'
+        f'do script "{esc}" in t\n'
+        'return "ok"\n'
+        'end if\n'
+        'end repeat\n'
+        'end repeat\n'
+        'end tell\n'
+        'return "no"')
+    try:
+        r = subprocess.run(["osascript", "-e", script],
+                           capture_output=True, text=True, timeout=6)
+        return "ok" in r.stdout
+    except Exception as e:
+        core.log(f"terminal focus-free inject failed: {e}")
+        return False
+
+
 def paste_text(text: str, send: bool = False, expect_app: str = "") -> bool:
     """Paste text into the focused app; optionally press Return to send.
 
@@ -143,6 +194,15 @@ def paste_text(text: str, send: bool = False, expect_app: str = "") -> bool:
         return True
     front = frontmost_app()
     target = (expect_app or "").strip()
+    # FOCUS-FREE fast path: if the bound app is Terminal, write straight into
+    # the session's tab by tty, no activation, no flicker, and it can't hit
+    # the wrong window. Only when submitting (the phone always submits).
+    if send and target.casefold() == "terminal":
+        tty = _claude_terminal_tty()
+        if tty and _terminal_inject(text, tty):
+            core.log(f"focus-free inject -> Terminal {tty}")
+            return True
+        # else fall through to the activate-restore path below
     restore = ""
     if target and front and front.strip().casefold() != target.casefold():
         # Deliver to the BOUND terminal even though the user is in another app
