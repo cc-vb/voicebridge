@@ -2519,10 +2519,27 @@ function chime(){
        into the normal listening flow (the whisper path reuses this stream)
      - monitor + stream released the moment speaking ends
      - getUserMedia failure = no barge, exactly the v4 behavior */
-const BARGE_RMS = .04;      // above the whisper speech floor (.02): talk, not rustle
-const BARGE_HOLD = 7;       // 7 x 50ms = ~350ms of sustained voice
-const BARGE_SETTLE = 600;   // ms of speech ignored up front
+const BARGE_RMS = .055;     // stricter: echo/room noise must NOT cut the reply
+const BARGE_HOLD = 10;      // 10 x 50ms = ~500ms of sustained voice
+const BARGE_SETTLE = 800;   // ms of speech ignored up front (echo settle)
 let bargeIv = null, bargeSrc = null, bargeOwn = null, bargeArming = false;
+let bargeResumeText = '', bargeResumeTimer = null;
+function cancelBargeResume(){
+  if(bargeResumeTimer){ clearTimeout(bargeResumeTimer); bargeResumeTimer = null; }
+  bargeResumeText = '';
+}
+function resumeFalseBarge(){
+  bargeResumeTimer = null;
+  const t = bargeResumeText; bargeResumeText = '';
+  /* resume ONLY if nothing real happened: still idle-listening, no prompt in
+     flight, no buffered speech, not muted, call still live */
+  if(!t || !live || muted || turnActive || decisionOpen || stitchBuf) return;
+  if(state !== 'listening') return;
+  stopListening();
+  setState('speaking');
+  startBarge();
+  say(t, () => { stopBarge(); resumeAfterSpeech(); });
+}
 function ackTick(){
   /* tiny WebAudio blip: "heard you, go ahead" */
   try{
@@ -2578,10 +2595,15 @@ async function startBarge(){
       bumpLevel(Math.min(1, rms * 9));   // the sphere pulses with the human
       if(rms > BARGE_RMS) hot++; else hot = 0;     // must be SUSTAINED voice
       if(hot >= BARGE_HOLD){
+        /* remember where we cut so a FALSE barge (noise, our own echo) can
+           RESUME the reply if no real prompt actually lands */
+        bargeResumeText = _spkParts.slice(_spkIdx).join(' ');
         stopBarge();
-        stopSpeaking();          // cut the reply mid-sentence
+        stopSpeaking();          // pause the reply
         ackTick();               // audible "go ahead"
         setState('listening');
+        clearTimeout(bargeResumeTimer);
+        bargeResumeTimer = setTimeout(resumeFalseBarge, 2200);
         setTimeout(listen, 120); // straight into the normal listening flow
       }
     }, 50);
@@ -3437,7 +3459,9 @@ async function statusLoop(myGen){
         if(state === 'needs') resumeAfterSpeech();
       }
       // Idle/completion notice: NOT a yes/no, just a tap into the chat.
-      if(s.kind === 'idle' && s.notice){ showNotice(String(s.notice).trim()); }
+      // Idle/"waiting for your input" notices are pure noise DURING a call
+      // (you are actively talking); only surface them when not on a live call.
+      if(!live && s.kind === 'idle' && s.notice){ showNotice(String(s.notice).trim()); }
       // In-chat question cards (backstop when the SSE stream is down).
       if(s.question && s.question.id){ showQuestion(s.question); }
       else { answeredQid = ''; clearQuestion(); }
@@ -3523,6 +3547,7 @@ function stitchAppend(t){
     if(!stitchBuf && live && !muted && state === 'listening' && !recActive) listen();
     return;
   }
+  cancelBargeResume();   // a real prompt arrived: the barge was genuine
   stitchBuf += (stitchBuf ? ' ' : '') + t;
   const whole = stitchBuf.trim();
   if(CMD_RE.test(whole)){   // "end call" should not sit in a hold window
@@ -3584,6 +3609,7 @@ function listenSR(){
     if(myGen !== gen) return;
     bumpLevel(.6);
     haptic(12);                       // subtle buzz the moment it hears you
+    cancelBargeResume();              // real speech: do NOT resume the old reply
     if(stitchTimer) holdStitchOnSpeech();
   };
   rec.onerror = ev => {
