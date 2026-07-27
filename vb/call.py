@@ -489,6 +489,47 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
+  CHANGES, v18b to v19, ONE scoped change: the permission-mode control is now a
+  direct PICKER instead of a blind cycle. Nothing else touched (turn engine,
+  session isolation, activity chips + detail sheet, orb replay, single voice,
+  focus-free inject, connect-guard, chat view all intact). What changed and
+  where it lives:
+
+    1. BOTH chips still SHOW the current mode. #modeChip (call header) and
+       #chatModeChip (chat header) keep their .mchip appearance, glyphs, tints,
+       Bypass coral, and are still relabelled by the SAME setModeChip() /
+       syncModeFromStatus() from the SAME claudeMode. updateModeChipVis() is
+       unchanged (call-header chip on a live call not in chat/home; chat-header
+       chip on a live call while chat is open).
+
+    2. TAP OPENS A PICKER (retired cycleMode + MODE_ORDER). A tap on EITHER chip
+       now calls the SAME openModePicker(): one shared compact bottom sheet
+       (#modeSheet + its OWN #modeScrim, z-index 74/75 so it stacks above both
+       headers and the full-screen chat) listing the four modes as radio-style
+       options (role=menu / menuitemradio, aria-checked):
+         Normal (raw "auto")             - shield glyph
+         Auto-accept (raw "acceptEdits") - check glyph
+         Plan (raw "plan")               - clipboard glyph
+         Bypass (raw "bypassPermissions")- alert glyph, coral warning tint plus
+                                           a one-line caution "skips permission
+                                           prompts"
+       The option matching the current mode is marked selected (markModePicker).
+
+    3. DIRECT POST. chooseMode(raw) closes the picker, OPTIMISTICALLY relabels
+       BOTH chips to the chosen mode, sets a short hold window, and POSTs
+       /mode {"to": <raw>} (the shipped server contract: the server computes the
+       exact number of Shift+Tabs from the detected current mode). The next
+       GET /status re-syncs the label to truth. On ok:false (or a failed POST)
+       the optimistic label reverts and the reason is toasted. Rapid taps are
+       debounced (modeBusy).
+
+    4. DISMISSIBLE. The picker closes on an option tap, a scrim tap, and
+       hardware back (pushState on open / popstate on back, mirroring the
+       activity detail sheet: modeHist / modePopIgnore). It matches the dark
+       tokens (var(--surface)/var(--line)) and is safe-area aware.
+
+  ---------------------------------------------------------------------------
+
   CHANGES, v18 to v18b, two small surgical edits (nothing else touched:
   turn engine, session isolation, activity chips + detail sheet, orb replay,
   single voice, focus-free inject, connect-guard all intact):
@@ -1315,6 +1356,60 @@ body.chat-full #modeChip, body.home #modeChip { display:none !important; }
 #chatModeChip { flex:none; max-width:44vw; }
 #chatModeChip .mclbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
+/* v19: the shared permission-mode PICKER. A compact bottom sheet with its OWN
+   scrim (z-index 74/75) so it stacks above BOTH headers and the full-screen
+   chat; matches the surface/line tokens, safe-area aware, reduced-motion safe.
+   ONE picker + ONE handler serve both #modeChip and #chatModeChip. */
+#modeScrim { position:fixed; inset:0; background:rgba(4,6,10,.6); opacity:0;
+  pointer-events:none; transition:opacity .25s ease; z-index:74; }
+body.mode-open #modeScrim { opacity:1; pointer-events:auto; }
+#modeSheet {
+  position:fixed; left:0; right:0; bottom:0; z-index:75;
+  background:var(--surface); border-radius:20px 20px 0 0;
+  border-top:1px solid var(--line);
+  transform:translateY(105%); transition:transform .3s cubic-bezier(.3,.9,.3,1);
+  padding:10px 14px calc(env(safe-area-inset-bottom, 0px) + 16px);
+}
+#modeSheet.open { transform:translateY(0); }
+#modeSheet .grab { width:38px; height:4px; border-radius:2px; background:#39435a;
+  margin:2px auto 8px; }
+#modeSheet .mptitle {
+  font-size:13px; font-weight:600; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--dim); margin:2px 6px 10px;
+}
+.mopt {
+  display:flex; align-items:flex-start; gap:12px; width:100%;
+  padding:13px 12px; margin-bottom:6px; border-radius:14px;
+  background:rgba(255,255,255,.04); border:1px solid var(--line);
+  color:#c9d0de; text-align:left;
+  transition:background .18s ease, border-color .18s ease, transform .1s ease;
+}
+.mopt:last-child { margin-bottom:0; }
+.mopt:active { transform:scale(.985); }
+.mopt .mog { flex:none; width:20px; height:20px; display:inline-flex;
+  align-items:center; justify-content:center; margin-top:1px; }
+.mopt .mog svg { width:19px; height:19px; opacity:.92; }
+.mopt .motx { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.mopt .molbl { font-size:15px; font-weight:600; letter-spacing:.01em; }
+.mopt .mocaut { font-size:12px; color:var(--dim); line-height:1.35; }
+/* the tick, hidden unless this option is the current mode */
+.mopt .motick { flex:none; width:20px; height:20px; margin-top:1px;
+  display:inline-flex; align-items:center; justify-content:center;
+  opacity:0; transition:opacity .15s ease; color:#7fe6d5; }
+.mopt .motick svg { width:18px; height:18px; }
+.mopt.sel { background:rgba(255,255,255,.07); border-color:rgba(120,140,200,.45); }
+.mopt.sel .motick { opacity:1; }
+/* Bypass is the dangerous one: coral warning tint always, deepened when picked */
+.mopt[data-key="bypass"] { border-color:rgba(229,72,77,.4); color:#ffb4ab; }
+.mopt[data-key="bypass"] .mog svg { color:#ff8a8e; }
+.mopt[data-key="bypass"] .mocaut { color:#e79a97; }
+.mopt[data-key="bypass"].sel {
+  background:rgba(229,72,77,.16); border-color:rgba(229,72,77,.6); }
+.mopt[data-key="bypass"] .motick { color:#ff8a8e; }
+@media (prefers-reduced-motion: reduce){
+  #modeScrim, #modeSheet, .mopt, .mopt .motick { transition:none; }
+}
+
 /* ==== middle: the orb (v12 rendering kept as-is) ==== */
 main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
   gap:24px; min-height:0;
@@ -2088,7 +2183,7 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
   <!-- v18b: the audio-route status pill (#chip, "Sound on this phone") was
        removed at the owner's request. The heartbeat loop is untouched. -->
   <button id="modeChip" type="button" class="mchip" data-mode="unknown"
-          aria-label="Cycle Claude's permission mode" title="Cycle Claude's permission mode">
+          aria-haspopup="menu" aria-label="Choose Claude's permission mode" title="Choose Claude's permission mode">
     <span class="mcglyph" aria-hidden="true">
       <span class="mcg mcg-normal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2198,11 +2293,12 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
       <span id="chatState" role="status" aria-live="polite"></span>
     </div>
     <!-- v18b: the SAME permission-mode control as the call screen, surfaced in
-         the chat header (owner's top ask). Shares .mchip appearance and calls
-         the same cycleMode()/setModeChip() code as #modeChip; visible only on a
-         live call in chat view. -->
+         the chat header (owner's top ask). Shares .mchip appearance and, as of
+         v19, opens the SAME shared mode picker as #modeChip (openModePicker) and
+         is relabelled by the SAME setModeChip(); visible only on a live call in
+         chat view. -->
     <button id="chatModeChip" type="button" class="mchip" data-mode="unknown"
-            aria-label="Cycle Claude's permission mode" title="Cycle Claude's permission mode">
+            aria-haspopup="menu" aria-label="Choose Claude's permission mode" title="Choose Claude's permission mode">
       <span class="mcglyph" aria-hidden="true">
         <span class="mcg mcg-normal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2329,6 +2425,57 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
   <div class="actpath" id="actPath"></div>
   <div class="actsub" id="actSub" style="display:none"></div>
   <div class="actcard" id="actBody"></div>
+</section>
+
+<!-- v19: the shared permission-mode picker (ONE bottom sheet + its OWN scrim,
+     opened by EITHER #modeChip or #chatModeChip). Radio-style options; the
+     current mode is ticked. Dismiss via the scrim or hardware back. -->
+<div id="modeScrim"></div>
+<section id="modeSheet" role="menu" aria-label="Choose Claude's permission mode" aria-modal="true">
+  <div class="grab" aria-hidden="true"></div>
+  <div class="mptitle">Permission mode</div>
+  <button class="mopt" id="modeOptNormal" type="button" role="menuitemradio"
+          aria-checked="false" data-key="normal" data-raw="auto">
+    <span class="mog" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3l7 3v5c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6z"/></svg></span>
+    <span class="motx"><span class="molbl">Normal</span></span>
+    <span class="motick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12.5l5 5 11-11"/></svg></span>
+  </button>
+  <button class="mopt" id="modeOptAccept" type="button" role="menuitemradio"
+          aria-checked="false" data-key="accept" data-raw="acceptEdits">
+    <span class="mog" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12.5l5 5 11-11"/></svg></span>
+    <span class="motx"><span class="molbl">Auto-accept</span></span>
+    <span class="motick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12.5l5 5 11-11"/></svg></span>
+  </button>
+  <button class="mopt" id="modeOptPlan" type="button" role="menuitemradio"
+          aria-checked="false" data-key="plan" data-raw="plan">
+    <span class="mog" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v2H9z"/>
+      <path d="M8.5 11h7"/><path d="M8.5 15h4.5"/></svg></span>
+    <span class="motx"><span class="molbl">Plan</span></span>
+    <span class="motick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12.5l5 5 11-11"/></svg></span>
+  </button>
+  <button class="mopt" id="modeOptBypass" type="button" role="menuitemradio"
+          aria-checked="false" data-key="bypass" data-raw="bypassPermissions">
+    <span class="mog" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 4l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg></span>
+    <span class="motx"><span class="molbl">Bypass</span>
+      <span class="mocaut">Skips permission prompts</span></span>
+    <span class="motick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12.5l5 5 11-11"/></svg></span>
+  </button>
 </section>
 
 <div class="overlay hidden" id="startOverlay">
@@ -4013,22 +4160,26 @@ async function statusLoop(myGen){
   }
 }
 
-/* ============================================================ v18 permission mode */
-/* A compact chip on the call screen shows Claude Code's current permission
-   mode and cycles it. GET /status carries `mode` (auto|default|acceptEdits|
-   plan|bypassPermissions|""), authoritative as of the last message; POST /mode
-   sends Shift+Tab to the bound terminal and returns {ok, was}. The real new
-   mode is only visible on the NEXT /status, so a tap advances the label
-   optimistically through [Normal -> Auto-accept -> Plan -> Bypass -> Normal]
-   and a short hold window lets that survive one poll before the truth
-   re-syncs it. Bypass carries a coral warning tint (it is the dangerous one). */
+/* ============================================================ v19 permission mode */
+/* Both chips (call-header #modeChip, chat-header #chatModeChip) SHOW the
+   current mode; tapping EITHER opens ONE shared picker (a compact bottom sheet)
+   listing the four modes. Choosing an option POSTs /mode {"to": <raw>} (the
+   shipped server contract: the server computes the exact number of Shift+Tabs
+   to reach it from the detected current mode), closes the picker, optimistically
+   relabels BOTH chips, and lets the next GET /status re-sync to truth. GET
+   /status carries `mode` (auto|default|acceptEdits|plan|bypassPermissions|""),
+   authoritative as of the last message; a short hold window lets the optimistic
+   label survive one poll before the truth re-syncs it. ok:false reverts +
+   toasts. Bypass keeps its coral warning tint (it is the dangerous one). */
 let claudeMode = '';          // raw mode as of the last /status (authoritative)
-let modeChipKey = 'unknown';  // the key currently shown on the chip
+let modeChipKey = 'unknown';  // the key currently shown on both chips
 let modeBusy = false;         // a POST /mode is in flight (debounce rapid taps)
 let modeHoldUntil = 0;        // suppress /status re-label until this time (post-tap)
-const MODE_ORDER = ['normal', 'accept', 'plan', 'bypass'];   // optimistic cycle
 const MODE_LABELS = { normal:'Normal', accept:'Auto-accept', plan:'Plan',
   bypass:'Bypass', unknown:'Mode' };
+/* key -> the raw mode string the server understands in POST /mode {"to": raw} */
+const MODE_RAW = { normal:'auto', accept:'acceptEdits', plan:'plan',
+  bypass:'bypassPermissions' };
 function modeKeyFromRaw(raw){
   switch(String(raw || '')){
     case 'auto':
@@ -4039,12 +4190,12 @@ function modeKeyFromRaw(raw){
     default: return 'unknown';
   }
 }
-/* v18b: one relabel drives BOTH the call-screen chip and the chat-header chip,
-   so they always reflect the same claudeMode. */
+/* one relabel drives BOTH the call-screen chip and the chat-header chip, so
+   they always reflect the same claudeMode. */
 function setModeChip(key){
   modeChipKey = key;
   const label = MODE_LABELS[key] || 'Mode';
-  const desc = 'Cycle Claude\'s permission mode (now ' + label + ')';
+  const desc = 'Choose Claude\'s permission mode (now ' + label + ')';
   const pairs = [[modeChip, modeChipLbl], [chatModeChip, chatModeChipLbl]];
   for(const [btn, lbl] of pairs){
     if(!btn) continue;
@@ -4065,22 +4216,62 @@ function syncModeFromStatus(raw){
   claudeMode = String(raw || '');
   if(Date.now() < modeHoldUntil) return;   // let a fresh optimistic tap breathe
   setModeChip(modeKeyFromRaw(claudeMode));
+  if(modeOpen) markModePicker();           // keep the open picker's tick honest
 }
 function shortModeReason(j){
   const rs = j && (j.reason || j.error || j.msg);
   return rs ? ('Mode: ' + String(rs).slice(0, 60)) : 'Could not change mode';
 }
-async function cycleMode(){
+
+/* ---- the ONE shared picker: a compact bottom sheet with its OWN scrim, so it
+   stacks above BOTH headers and the full-screen chat. Dismissible by the scrim
+   and by hardware back (pushState on open / popstate on back, mirroring the
+   activity detail sheet: modeHist / modePopIgnore). ---- */
+const modeSheet=$('modeSheet'), modeScrim=$('modeScrim'),
+      modeOptEls=[$('modeOptNormal'), $('modeOptAccept'),
+                  $('modeOptPlan'), $('modeOptBypass')];
+let modeOpen=false, modeHist=false, modePopIgnore=false;
+function markModePicker(){
+  /* tick the option that matches the mode currently shown on the chips */
+  for(const el of modeOptEls){
+    if(!el) continue;
+    const sel = el.dataset.key === modeChipKey;
+    el.classList.toggle('sel', sel);
+    el.setAttribute('aria-checked', sel ? 'true' : 'false');
+  }
+}
+function openModePicker(){
+  if(!live || modeOpen) return;
+  markModePicker();
+  modeOpen = true;
+  modeSheet.classList.add('open');
+  document.body.classList.add('mode-open');
+  haptic(6);
+  if(!modeHist){ try{ history.pushState({ vbmode:1 }, ''); modeHist = true; }catch(e){} }
+}
+function closeModePicker(fromPop){
+  if(!modeOpen) return;
+  modeOpen = false;
+  modeSheet.classList.remove('open');
+  document.body.classList.remove('mode-open');
+  if(modeHist){
+    modeHist = false;
+    if(!fromPop){ modePopIgnore = true; try{ history.back(); }catch(e){ modePopIgnore = false; } }
+  }
+}
+/* choosing an option: close, optimistically relabel BOTH chips, POST the RAW
+   mode, and let the next /status re-sync. Revert + toast on ok:false. */
+async function chooseMode(raw){
+  const key = modeKeyFromRaw(raw);
+  closeModePicker();
   if(!live || modeBusy) return;
   modeBusy = true;
   const prevKey = modeChipKey;
-  const idx = MODE_ORDER.indexOf(modeChipKey);   // -1 (unknown) -> Normal
-  const nextKey = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
-  setModeChip(nextKey);                 // optimistic, immediate
+  setModeChip(key);                     // optimistic, immediate, BOTH chips
   modeHoldUntil = Date.now() + 4000;    // hold across the next poll(s)
   haptic(8);
   try{
-    const r = await jpost('/mode', {});
+    const r = await jpost('/mode', { to: raw });
     let j = {};
     try{ j = await r.json(); }catch(e){}
     if(!r.ok || (j && j.ok === false)){
@@ -4096,9 +4287,14 @@ async function cycleMode(){
     setTimeout(() => { modeBusy = false; }, 400);   // debounce
   }
 }
-modeChip.addEventListener('click', cycleMode);
-/* v18b: the chat-header chip cycles through the SAME code path. */
-if(chatModeChip) chatModeChip.addEventListener('click', cycleMode);
+/* both chips open the SAME picker; the blind cycle-on-tap is retired. */
+modeChip.addEventListener('click', openModePicker);
+if(chatModeChip) chatModeChip.addEventListener('click', openModePicker);
+for(const el of modeOptEls){
+  if(!el) continue;
+  el.addEventListener('click', () => chooseMode(el.dataset.raw));
+}
+modeScrim.addEventListener('click', () => closeModePicker());
 
 /* ============================================================ heartbeat */
 /* While the call is live the phone owns the audio: a beat every 5s keeps the
@@ -4680,6 +4876,10 @@ window.addEventListener('popstate', () => {
   /* v17: the activity detail sheet owns the topmost history entry when open.
      actPopIgnore swallows the synthetic back that closing it via the X /
      scrim fires, so that back never also collapses the chat. */
+  /* v19: the mode picker owns the topmost history entry when open, above the
+     activity sheet; modePopIgnore swallows its own synthetic back the same way. */
+  if(modePopIgnore){ modePopIgnore = false; return; }
+  if(modeOpen){ closeModePicker(true); return; }
   if(actPopIgnore){ actPopIgnore = false; return; }
   if(actOpen){ closeActSheet(true); return; }
   if(chatOpenState) closeChatSheet(true);
