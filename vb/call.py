@@ -489,6 +489,40 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
+  CHANGES, v20 to v21, ONE scoped upgrade: a LIVE "Claude is working"
+  activity indicator (nothing else touched: turn engine, session isolation,
+  activity chips + detail sheet on completed replies, orb replay, single
+  voice, mode picker, multi-line composer, focus-free inject, connect-guard):
+
+    LIVE ACTION ROW. The existing "Claude is working" typing row (syncTyping)
+    now shows the LATEST tool action in real time instead of only static dots.
+      - New SSE "activity" event (verb / label / kind / sig) is parsed in
+        startEvents() and fed to setLiveAction(), which sanitizes it
+        (clampStr, kind whitelisted to KIND_GLYPH else "tool", verb mapped to
+        a present-tense gerund via LIVE_GERUND / KIND_GERUND) and stores it in
+        the script-scope let liveAction.
+      - syncTyping() rebuilt: the row is [kind glyph .tg] + [verb .tl] +
+        [label .tf, mono, middle-of-nowhere ellipsis via CSS] + three dots.
+        applyLiveAction() paints it; the LABEL is set with textContent only,
+        so a hostile label ("<img onerror=...>") renders as literal text.
+        Glyphs reuse the activity vocabulary: terminal=run, pencil=edit,
+        plus-doc=write, eye=read, dot=tool.
+      - Shown only while working: turnActive OR server state working
+        (reconcileState now mirrors sstate into let liveWorking and repaints).
+        No activity yet in a turn -> calm "Working" + dots fallback.
+      - clearLiveAction() drops the live line; finishTurn()/cancelTurn() call
+        it and startTurn() resets liveAction, so a completed reply and its
+        activity chips render exactly as before with no double-render. sstate
+        idle clears it too.
+      - Update-in-place (nowrap + ellipsis = constant height, no layout jump);
+        stays pinned to the bottom when the reader is at the bottom
+        (chatNearBottom) and otherwise respects the jump-pill. Dot delays moved
+        to :nth-last-child so the glyph/verb/label never shift them; reduced
+        motion still freezes the dots.
+    Validation harness (r-string round-trip, node --check, id/ref audit,
+    mini-DOM smoke test) lives alongside this file, not in it.
+-->
+<!--
   CHANGES, v19 to v20, TWO scoped fixes (nothing else touched: turn engine,
   session isolation, activity chips + detail sheet, orb replay, single voice,
   focus-free inject, connect-guard, mode chips on call+chat, direct /mode {to}
@@ -1890,11 +1924,26 @@ body.hush-paused #hushBtn { display:flex; }
   padding:4px 2px; color:var(--dim); font-size:13px; font-style:italic;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
+.typing { max-width:100%; }
+.typing .tl, .typing .tg, .typing .td { flex:none; }
 .typing .tl { margin-right:4px; }
 .typing .td { width:5px; height:5px; border-radius:50%; background:var(--dim);
   animation:softpulse 1.2s ease-in-out infinite; }
-.typing .td:nth-child(3) { animation-delay:.2s; }
-.typing .td:nth-child(4) { animation-delay:.4s; }
+/* v21: dot delays keyed from the END so a leading glyph/verb/label never
+   shifts which dot is delayed (the dots are always the last three children) */
+.typing .td:nth-last-child(2) { animation-delay:.2s; }
+.typing .td:nth-last-child(1) { animation-delay:.4s; }
+/* v21 live action: a small kind glyph and the truncating file/command label */
+.typing .tg { display:inline-flex; align-items:center; justify-content:center;
+  width:15px; height:15px; color:var(--dim); }
+.typing .tg svg { width:14px; height:14px; display:block; }
+.typing .tg:empty { display:none; }
+.typing .tf {
+  flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-style:normal; font-size:12.5px; color:#c2cadb;
+  font-family:ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
+}
+.typing .tf:empty { display:none; }
 /* copy button: v16, lives at the RIGHT of the eyebrow row on every
    message (a button, not long-press: long-press means selection on iOS) */
 .copybtn {
@@ -3489,25 +3538,99 @@ chatScroll.addEventListener('scroll', () => {
 jumpBtn.addEventListener('click', chatScrollBottom);   // v6 bug: it had NO handler
 /* "Claude is working" row pinned to the end of the transcript while a
    turn is in flight; the orb is hidden in chat mode, so the chat itself
-   has to show progress. */
+   has to show progress. v21: it now streams the LATEST tool action live. */
+/* LIVEACT-BEGIN (extracted verbatim by the smoke test; keep self-contained) */
+/* the newest tool action in the current turn ({kind,verb,label,sig}) and the
+   server's own working flag (sstate). Both are script-scope so finishTurn,
+   cancelTurn, reconcileState and startTurn can drive the same row. */
+let liveAction = null, liveWorking = false;
+/* verbs arrive PAST tense on completed-reply chips (Ran/Edited/...); the LIVE
+   line reads better in the present, so map to a gerund. Falls back by kind. */
+const LIVE_GERUND = {
+  Ran:'Running', Edited:'Editing', Created:'Creating', Read:'Reading',
+  Delegated:'Delegating', Searched:'Searching', Fetched:'Fetching'
+};
+const KIND_GERUND = { run:'Running', edit:'Editing', write:'Creating', read:'Reading', tool:'Working' };
+/* one small inline glyph per kind, reusing the activity vocabulary: a
+   terminal for a command, a pencil for an edit, a plus-document for a new
+   file, an eye for a read, a filled dot for any other tool. currentColor so
+   it inherits the dim typing-row tint; aria-hidden (the verb+label speak). */
+const KIND_GLYPH = {
+  run:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+      ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M5 6l5 6-5 6"/><path d="M13 18h6"/></svg>',
+  edit:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+       ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+       '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  write:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+        ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>' +
+        '<path d="M14 3v5h5"/><path d="M12 12v5"/><path d="M9.5 14.5h5"/></svg>',
+  read:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+       ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+       '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/>' +
+       '<circle cx="12" cy="12" r="3"/></svg>',
+  tool:'<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">' +
+       '<circle cx="12" cy="12" r="3.6"/></svg>'
+};
+/* the SSE "activity" payload -> a sanitized liveAction; repaint if working */
+function setLiveAction(d){
+  if(!d || typeof d !== 'object') return;
+  let kind = String(d.kind || '');
+  if(!KIND_GLYPH[kind]) kind = 'tool';
+  const verbRaw = clampStr(d.verb, 40).trim();
+  const verb = LIVE_GERUND[verbRaw] || KIND_GERUND[kind] || 'Working';
+  liveAction = { kind: kind, verb: verb, label: clampStr(d.label, 80), sig: clampStr(d.sig, 120) };
+  if((turnActive || liveWorking) && live) syncTyping();
+}
+/* drop the live line; the completed reply + its activity chips take over */
+function clearLiveAction(){
+  liveAction = null; liveWorking = false; syncTyping();
+}
+/* paint the row from liveAction, or the calm "Working" + dots fallback.
+   The label is textContent ONLY, so markup in it renders as literal text. */
+function applyLiveAction(row){
+  const tg = row.querySelector('.tg');
+  const tl = row.querySelector('.tl');
+  const tf = row.querySelector('.tf');
+  if(liveAction){
+    tg.innerHTML = KIND_GLYPH[liveAction.kind] || KIND_GLYPH.tool;
+    tl.textContent = liveAction.verb;
+    tf.textContent = liveAction.label || '';
+  }else{
+    tg.innerHTML = '';
+    tl.textContent = 'Working';
+    tf.textContent = '';
+  }
+}
 function syncTyping(){
   let row = document.getElementById('typingRow');
-  if(turnActive && live){
+  const working = (turnActive || liveWorking) && live;
+  if(working){
     if(!row){
       row = document.createElement('div');
       row.id = 'typingRow'; row.className = 'typing';
+      const tg = document.createElement('span');
+      tg.className = 'tg'; tg.setAttribute('aria-hidden', 'true');
+      row.appendChild(tg);
       const tl = document.createElement('span');
-      tl.className = 'tl'; tl.textContent = 'Working';
+      tl.className = 'tl';
       row.appendChild(tl);
+      const tf = document.createElement('span');
+      tf.className = 'tf';
+      row.appendChild(tf);
       for(let i = 0; i < 3; i++){
         const td = document.createElement('span'); td.className = 'td';
         row.appendChild(td);
       }
     }
-    chatLines.appendChild(row);   // re-append keeps it LAST
+    applyLiveAction(row);           // update IN PLACE, no layout jump
+    chatLines.appendChild(row);     // re-append keeps it LAST
+    if(chatNearBottom()) chatScrollBottom();   // stay pinned if at bottom
   }else if(row) row.remove();
   syncDelivery();
 }
+/* LIVEACT-END */
 /* delivery state under the LAST user bubble: "sending" until the ask is
    acked, "delivered" once askDelivered, "failed, tap to retry" when the
    retry queue (pendingSend) holds it; tapping resends the SAME idempotent
@@ -3735,6 +3858,7 @@ async function startTurn(text){
   haptic(22);   // confirm the prompt was captured and is being sent
   const id = ++turnId;
   turnActive = true;
+  liveAction = null;           // v21: a fresh turn starts with no live action
   clearHush();                 // a new turn ends any pending resume
   /* reset the delivery flags BEFORE the bubble renders so the delivery
      row starts at "sending", never a stale "delivered" */
@@ -3922,6 +4046,10 @@ function startEvents(){
   es.addEventListener('sstate', e => {
     try{ const d = JSON.parse(e.data); reconcileState(d.state); }catch(x){}
   });
+  /* v21: the latest tool action during a turn -> the LIVE working row */
+  es.addEventListener('activity', e => {
+    try{ setLiveAction(JSON.parse(e.data)); }catch(x){}
+  });
   /* an open AskUserQuestion becomes in-chat option cards (never a modal) */
   es.addEventListener('question', e => {
     try{ showQuestion(JSON.parse(e.data)); }catch(x){}
@@ -3939,6 +4067,12 @@ let serverState = '';
 let idleSince = 0;
 function reconcileState(st){
   serverState = st || '';
+  /* v21: mirror the authoritative state into the live working row. Idle
+     drops the live line (turnActive may still hold the row through a wrap-up,
+     in which case it falls back to the calm "Working" dots). */
+  liveWorking = (serverState === 'working');
+  if(!liveWorking) liveAction = null;
+  syncTyping();
   if(!live) return;
   if(st === 'working'){ idleSince = 0; return; }
   if(st !== 'idle'){ return; }
@@ -3976,6 +4110,7 @@ function finishTurn(id, reply){
   pendingSend = null;
   turnId++;                       // one winner: kill the other waiters
   turnActive = false;
+  clearLiveAction();              // v21: drop the live line before the reply lands
   stopWorkTicker();
   hideDecision();
   lastReplyText = reply;          // the Replay control re-reads this
@@ -4000,7 +4135,7 @@ function cancelTurn(){
   turnActive = false;
   stopWorkTicker();
   hideDecision();
-  syncTyping();   // v7: drop the "Claude is working" row with the turn
+  clearLiveAction();   // v7/v21: drop the "Claude is working" row (and live line)
 }
 function handleUtterance(t){
   if(/^(stop listening|end call|hang up|goodbye)[.!]?$/i.test(t)){ endCall(); return; }
