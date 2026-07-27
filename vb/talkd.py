@@ -31,6 +31,11 @@ from .converse import _is_exit, _beep, START_TINK, STOP_POP, THINK
 
 STATE = core.STATE_DIR / "talk"
 VOICED = STATE / "voiced"
+# PHONE opt-in registry (mirror of VOICED, default-DENY): the phone relay may
+# ONLY list, switch to, and inject into sessions that appear here. A public
+# tunnel guarded by a shared key must not be able to reach a session the user
+# never chose to share. One file per enabled sid, content = transcript path.
+PHONE = STATE / "phone"
 LAST = STATE / "last_prompt.json"
 ACTIVE = STATE / "active.json"
 PID = STATE / "talkd.pid"
@@ -255,6 +260,45 @@ CALL_OWNER = core.STATE_DIR / "call_owner"   # session `vb phone` was run in
 OWNERS = STATE / "owners"    # <sid> -> pid of the Claude Code process running it
 
 
+def phone_enable(sid: str, path: str = "") -> None:
+    """Opt a session into phone control. Stores its transcript path so the
+    relay can resolve a target without trusting an arbitrary active.json."""
+    if not sid:
+        return
+    try:
+        PHONE.mkdir(parents=True, exist_ok=True)
+        (PHONE / sid).write_text(path or core.newest_transcript() or "")
+    except Exception:
+        pass
+
+
+def phone_disable(sid: str) -> None:
+    try:
+        (PHONE / sid).unlink()
+    except OSError:
+        pass
+
+
+def phone_enabled() -> set:
+    """The set of sids the phone is allowed to touch (default: empty = deny)."""
+    try:
+        return {f.name for f in PHONE.iterdir()}
+    except Exception:
+        return set()
+
+
+def phone_is_enabled(sid: str) -> bool:
+    return bool(sid) and (PHONE / sid).exists()
+
+
+def phone_path(sid: str) -> str:
+    """The stored transcript path for an enabled session, '' if none/stale."""
+    try:
+        return (PHONE / sid).read_text().strip()
+    except Exception:
+        return ""
+
+
 def owner_pid() -> int:
     """The pid of the Claude Code process this code is running under, or 0.
     Only meaningful from inside a hook (a descendant of that process)."""
@@ -403,6 +447,8 @@ def session_closed(sid: str = "", why: str = "session closed") -> str:
     """
     if not sid:
         sid = (_read_json(ACTIVE) or {}).get("session_id", "")
+    if sid:
+        phone_disable(sid)   # a closed session can never be phone-controllable
     marker = (VOICED / sid) if sid else None
     was_voiced = bool(marker and marker.exists())
     done = []

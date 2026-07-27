@@ -103,19 +103,27 @@ def _ago(secs: float) -> str:
     return f"{s // 3600} hour{'s' if s // 3600 != 1 else ''} ago"
 
 
-def roster(max_age_h: float = 12.0, limit: int = 12) -> list:
+def roster(max_age_h: float = 12.0, limit: int = 12,
+           phone_only: bool = False) -> list:
     """Active sessions, most-recent first. Each: label, sid, path, mtime,
-    ago, state, voiced."""
-    from .talkd import VOICED
+    ago, state, voiced.
+
+    phone_only=True is the DEFAULT-DENY view the phone relay must use: only
+    sessions explicitly opted into phone control (the PHONE registry) are
+    returned, so a public tunnel can never enumerate the whole machine."""
+    from .talkd import VOICED, phone_enabled
     voiced = set()
     try:
         voiced = {f.name for f in VOICED.iterdir()}
     except Exception:
         pass
+    enabled = phone_enabled() if phone_only else None
     now = time.time()
     rows = []
     try:
         for f in PROJECTS.glob("*/*.jsonl"):
+            if enabled is not None and f.stem not in enabled:
+                continue   # not phone-enabled: invisible to the phone
             try:
                 m = f.stat().st_mtime
             except OSError:
@@ -133,6 +141,7 @@ def roster(max_age_h: float = 12.0, limit: int = 12) -> list:
                 "ago": _ago(now - m),
                 "state": _state(recs),
                 "voiced": f.stem in voiced,
+                "enabled": enabled is None or f.stem in enabled,
             })
     except Exception as e:
         core.log(f"roster failed: {e}")

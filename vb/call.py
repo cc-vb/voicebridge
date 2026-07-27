@@ -206,10 +206,31 @@ def _save_upload(raw: bytes, name: str, ctype: str) -> dict:
 
 
 def _target_transcript() -> str:
+    """The transcript the phone may act on. DEFAULT-DENY: only a session
+    opted into phone control (the PHONE registry) is ever a target, so a
+    stale or foreign active.json can never cause a paste into a session the
+    user did not share. Returns '' when nothing is enabled."""
+    from . import talkd as _td
+    enabled = _td.phone_enabled()
+    if not enabled:
+        return ""
     active = _read_json(ACTIVE)
-    if active and os.path.exists(active.get("transcript_path", "")):
+    if (active and active.get("session_id") in enabled
+            and os.path.exists(active.get("transcript_path", ""))):
         return active["transcript_path"]
-    return core.newest_transcript()
+    # Otherwise the newest ENABLED session, never an arbitrary transcript.
+    best, best_m = "", 0.0
+    for sid in enabled:
+        p = _td.phone_path(sid)
+        if not p or not os.path.exists(p):
+            continue
+        try:
+            m = os.path.getmtime(p)
+        except OSError:
+            continue
+        if m > best_m:
+            best, best_m = p, m
+    return best
 
 
 def _extract_user_text(body: dict) -> str:
@@ -323,7 +344,11 @@ NO_RE = _re.compile(r"^\s*(no|nope|deny|don'?t( do it)?|reject|cancel|"
 
 
 def _active_sid() -> str:
-    return (_read_json(ACTIVE) or {}).get("session_id", "")
+    """The active session id, but only if it is phone-enabled (so pending/
+    notice lookups never leak a session the phone may not touch)."""
+    from . import talkd as _td
+    sid = (_read_json(ACTIVE) or {}).get("session_id", "")
+    return sid if _td.phone_is_enabled(sid) else ""
 
 
 def _handle_pending(text: str, pending: str) -> str:
@@ -4829,15 +4854,18 @@ class Handler(BaseHTTPRequestHandler):
             from . import sessions as _sess
             active = (_read_json(ACTIVE) or {}).get("session_id", "")
             now = time.time()
+            # phone_only=True: default-deny, only sessions opted into phone
+            # control are ever enumerated across the tunnel.
             rows = [{"id": r.get("sid", ""), "name": r.get("label", ""),
                      "state": r.get("state", ""),
                      "current": r.get("sid", "") == active,
                      "active": bool(r.get("active")),
+                     "enabled": True,
                      "pending": bool(core.get_pending_notice(
                          r.get("sid", "") or "-")),
                      "last": _sess.last_preview(r.get("path", "")),
                      "ago": int(max(0, now - r.get("mtime", now)))}
-                    for r in _sess.roster()]
+                    for r in _sess.roster(phone_only=True)]
             self._reply(200, json.dumps({"sessions": rows}).encode(),
                         "application/json")
         elif path == "/last":
@@ -5157,12 +5185,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(400, b"bad request", "text/plain")
                 return
             from . import sessions as _sess
+            from . import talkd as _td
+            enabled = _td.phone_enabled()
+            # Resolve the target, then REFUSE anything not phone-enabled: the
+            # public URL can only ever move the call among shared sessions.
+            target = ""
             if sid:
-                msg = _sess.switch_sid(sid)
+                target = sid
             elif q:
-                msg = _sess.switch(q)
-            else:
+                for r in _sess.roster(phone_only=True):
+                    lab = (r.get("label", "") or "").lower()
+                    if q.lower() in lab or lab in q.lower():
+                        target = r.get("sid", "")
+                        break
+            if not target:
                 msg = "Which session?"
+            elif target not in enabled:
+                msg = ("That session hasn't enabled phone control. Run "
+                       "slash voice-phone in it first.")
+            else:
+                msg = _sess.switch_sid(target)
             ok = msg.startswith("Voice moved")
             try:
                 EPOCH.write_text(str(time.time()))   # end any in-flight turn

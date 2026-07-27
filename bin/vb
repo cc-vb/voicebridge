@@ -388,6 +388,9 @@ def main(argv) -> int:
             _owner = (_td._read_json(_td.LAST) or {}).get("session_id", "")
             if _owner:
                 _td.CALL_OWNER.write_text(_owner)
+                # Default-DENY isolation: opt ONLY this session into phone
+                # control; the phone can never see or drive the others.
+                _td.phone_enable(_owner)
         except Exception:
             pass
         msg = _call.on()
