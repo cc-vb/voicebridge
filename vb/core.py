@@ -690,6 +690,49 @@ def _activity_from_blocks(content) -> list:
     return out
 
 
+def latest_activity(transcript_path: str) -> dict:
+    """The most recent tool_use action (verb + short label + kind) for the
+    phone's LIVE "working on X" line while a turn is in flight. `sig` (the
+    tool_use id) dedupes stream emits. {} if none in the tail."""
+    p = Path(transcript_path)
+    if not p.exists():
+        return {}
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 131072))
+            tail = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return {}
+    last, sig = None, ""
+    for line in tail.splitlines():
+        line = line.strip()
+        if not line or '"tool_use"' not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if rec.get("type") != "assistant":
+            continue
+        c = rec.get("message", {}).get("content", [])
+        if not isinstance(c, list):
+            continue
+        for b in c:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                it = _describe_tool(b.get("name", ""), b.get("input") or {})
+                if it:
+                    last = it
+                    sig = b.get("id", "") or rec.get("uuid", "")
+    if not last:
+        return {}
+    label = (last.get("file") or last.get("cmd") or last.get("label") or "")
+    label = " ".join(label.split())
+    return {"verb": last.get("verb", ""), "label": label[:80],
+            "kind": last.get("kind", ""), "sig": sig}
+
+
 def recent_turns(transcript_path: str, n: int = 30) -> list:
     """The last `n` conversation turns as [{'role','text'}, ...] (oldest
     first), for the phone's chat view. Skips tool-only records and the

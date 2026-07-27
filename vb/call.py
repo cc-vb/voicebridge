@@ -5723,7 +5723,7 @@ class Handler(BaseHTTPRequestHandler):
                 last_u = core.latest_assistant_uuid(tp) if tp else ""
                 emit("hello", {"uuid": last_u})
                 last_pend, last_size, ticks, last_tp = "", -1, 0, tp
-                last_sstate, last_qid = "", ""
+                last_sstate, last_qid, last_act = "", "", ""
                 while True:
                     try:
                         ev = q.get(timeout=1.0)   # acks etc, or a 1s tick
@@ -5737,7 +5737,7 @@ class Handler(BaseHTTPRequestHandler):
                         last_tp = tp
                         last_u = core.latest_assistant_uuid(tp) if tp else ""
                         last_size = -1
-                        last_sstate, last_qid = "", ""
+                        last_sstate, last_qid, last_act = "", "", ""
                         emit("switched", {"uuid": last_u})
                         continue
                     # stat() gate: only re-parse the transcript when it GREW,
@@ -5754,6 +5754,12 @@ class Handler(BaseHTTPRequestHandler):
                             cur = core.clean_for_speech(
                                 core.last_assistant_text(tp), max_chars=2500)
                             emit("reply", {"uuid": u, "reply": cur})
+                        # live progress: push the latest tool action so the
+                        # chat shows "Running ...", "Editing X" as it happens
+                        act = core.latest_activity(tp) if tp else {}
+                        if act and act.get("sig") and act["sig"] != last_act:
+                            last_act = act["sig"]
+                            emit("activity", act)
                     # Only a real PERMISSION notice drives the yes/no card.
                     pend = core.get_pending_notice(_active_sid())
                     pend = (core.clean_for_speech(pend, max_chars=300)
@@ -6014,16 +6020,24 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 to = ""
             before = core.current_permission_mode(tp)
-            # Shift+Tab cycle order (default/normal aliased to "auto"). Because
-            # the current mode IS detectable, a direct pick computes exactly
-            # how many Shift+Tabs reach the target instead of blind cycling.
-            ORDER = ["auto", "acceptEdits", "plan", "bypassPermissions"]
+            # REAL Shift+Tab cycle for this Claude Code build (deduced from
+            # measured jumps): auto -> plan -> acceptEdits -> auto, length 3.
+            # bypassPermissions is NOT in the cycle (it needs a launch flag),
+            # so it is not reachable from the phone. default/normal == auto.
+            ORDER = ["auto", "plan", "acceptEdits"]
 
             def _idx(m):
                 m = (m or "").strip()
                 if m in ("", "default", "normal"):
                     m = "auto"
-                return ORDER.index(m) if m in ORDER else 0
+                return ORDER.index(m) if m in ORDER else -1
+            if to and _idx(to) < 0:
+                # e.g. bypassPermissions: cannot be reached via Shift+Tab
+                self._reply(200, json.dumps(
+                    {"ok": False,
+                     "reply": "That mode can't be switched from the phone."}
+                ).encode(), "application/json")
+                return
             if to:
                 presses = (_idx(to) - _idx(before)) % len(ORDER)
             else:
