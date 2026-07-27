@@ -489,6 +489,31 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
+  CHANGES, v18 to v18b, two small surgical edits (nothing else touched:
+  turn engine, session isolation, activity chips + detail sheet, orb replay,
+  single voice, focus-free inject, connect-guard all intact):
+
+    1. REMOVED the audio-route status pill (#chip, "Sound on this phone").
+       Its markup, its CSS (#chip / #chip.on / #chip svg), its element
+       reference (chipEl), and the beatOnce()/stopHeartbeat() code that
+       toggled #chip.on are gone. The heartbeat POST loop itself is
+       unchanged, it just no longer drives any UI. The shared @keyframes
+       softpulse (used elsewhere) was kept.
+
+    2. SURFACED the permission-mode control in the CHAT view. A second chip
+       (#chatModeChip) now lives in the chat header (#chatHead), between the
+       session title and the replay/hush buttons. It shares the .mchip
+       appearance class (factored out of #modeChip: glyphs, per-mode tints,
+       Bypass coral warning) and it drives NO duplicate logic: setModeChip()
+       relabels BOTH chips from the same claudeMode, updateModeChipVis()
+       toggles each chip's visibility (call-screen chip on a live call not in
+       chat/home; chat chip on a live call while chat is open), and a click
+       on either chip calls the SAME cycleMode(). A GET /status mode value
+       labels both; a tap optimistically advances both and re-syncs on the
+       next poll, reverting + toasting on ok:false.
+
+  ---------------------------------------------------------------------------
+
   CHANGES, v17 to v18, ONE scoped upgrade: a compact PERMISSION-MODE chip on
   the call screen that shows Claude Code's current mode and cycles it. Nothing
   else changes (turn engine, stream, session isolation, connect-guard,
@@ -1241,23 +1266,19 @@ header {
 #pill .dot { width:8px; height:8px; border-radius:50%; background:var(--o2); flex:none;
   transition:background .9s ease; }
 #pill .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-/* the audio-route pill: pure status, never a button, never a handset glyph */
-#chip {
-  display:none; align-items:center; gap:6px;
-  padding:5px 12px; border-radius:999px;
-  background:rgba(255,255,255,.04); border:1px solid var(--line);
-  font-size:12px; letter-spacing:.02em; color:var(--dim);
-  pointer-events:none;
-}
-#chip.on { display:inline-flex; }
-#chip svg { width:13px; height:13px; flex:none; opacity:.85; }
+/* v18b: the audio-route status pill (#chip) was removed at the owner's
+   request. The heartbeat POST loop that fed it is untouched; only its
+   visual pill is gone. */
 @keyframes softpulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
 
 /* v18: the Claude permission-mode chip. Tappable (pointer-events:auto over the
    click-through header), matches the audio-route chip / segmented-control
    tokens, safe-area aware (it rides inside <header>). Hidden until a live call,
-   and hard-hidden in Chat mode and on home. */
-#modeChip {
+   and hard-hidden in Chat mode and on home.
+   v18b: the visual/glyph/tint tokens are factored onto a shared .mchip class so
+   the SAME appearance drives both the call-screen chip (#modeChip) and the new
+   chat-header chip (#chatModeChip); only screen-specific visibility differs. */
+.mchip {
   pointer-events:auto;
   display:none; align-items:center; gap:6px;
   min-height:34px; padding:6px 13px; border-radius:999px;
@@ -1265,28 +1286,34 @@ header {
   font-size:12.5px; font-weight:600; letter-spacing:.02em; color:#c9d0de;
   transition:background .2s ease, border-color .2s ease, color .2s ease, transform .1s ease;
 }
-#modeChip.on { display:inline-flex; }
-#modeChip:active { transform:scale(.94); }
-#modeChip:not(.on) { display:none; }
-body.chat-full #modeChip, body.home #modeChip { display:none !important; }
-#modeChip .mcglyph { display:inline-flex; align-items:center; justify-content:center;
+.mchip.on { display:inline-flex; }
+.mchip:active { transform:scale(.94); }
+.mchip .mcglyph { display:inline-flex; align-items:center; justify-content:center;
   width:14px; height:14px; flex:none; }
-#modeChip .mcg { display:none; }
-#modeChip .mcg svg { width:14px; height:14px; opacity:.9; }
-#modeChip[data-mode="normal"] .mcg-normal,
-#modeChip[data-mode="accept"] .mcg-accept,
-#modeChip[data-mode="plan"] .mcg-plan,
-#modeChip[data-mode="bypass"] .mcg-bypass,
-#modeChip[data-mode="unknown"] .mcg-unknown { display:inline-flex; }
+.mchip .mcg { display:none; }
+.mchip .mcg svg { width:14px; height:14px; opacity:.9; }
+.mchip[data-mode="normal"] .mcg-normal,
+.mchip[data-mode="accept"] .mcg-accept,
+.mchip[data-mode="plan"] .mcg-plan,
+.mchip[data-mode="bypass"] .mcg-bypass,
+.mchip[data-mode="unknown"] .mcg-unknown { display:inline-flex; }
 /* per-mode accent tints, drawn from the existing state palette */
-#modeChip[data-mode="accept"] { border-color:rgba(70,215,195,.4); color:#7fe6d5; }
-#modeChip[data-mode="plan"] { border-color:rgba(140,120,235,.4); color:#b3a6f2; }
+.mchip[data-mode="accept"] { border-color:rgba(70,215,195,.4); color:#7fe6d5; }
+.mchip[data-mode="plan"] { border-color:rgba(140,120,235,.4); color:#b3a6f2; }
 /* Bypass is the dangerous mode: coral warning tint (border + fill + text) so
    it is unmistakable when active. */
-#modeChip[data-mode="bypass"] {
+.mchip[data-mode="bypass"] {
   border-color:rgba(229,72,77,.6); color:#ffb4ab;
   background:rgba(229,72,77,.16);
 }
+/* call-screen chip: hidden until a live call, and hard-hidden in Chat mode and
+   on home (updateModeChipVis toggles .on for the live-call case). */
+#modeChip:not(.on) { display:none; }
+body.chat-full #modeChip, body.home #modeChip { display:none !important; }
+/* v18b: the chat-header chip sits between the title and the hush button; it is
+   flex:none so it never squeezes the session name, and compact for the row. */
+#chatModeChip { flex:none; max-width:44vw; }
+#chatModeChip .mclbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 /* ==== middle: the orb (v12 rendering kept as-is) ==== */
 main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -2021,7 +2048,7 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
   body[data-state="needs"] .ripple { animation:none; opacity:.35; transform:scale(1.25); }
   #orbscale { transition:none; transform:none; }
   .sheet, #chatSheet, #decide, #toast, #home, .hcard,
-  #actSheet, #actScrim, .actchip, #modeChip { transition:none; }
+  #actSheet, #actScrim, .actchip, .mchip { transition:none; }
   #switchOverlay .spin { animation:none; border-top-color:var(--line); }
   .sdot.working, .badge.needs, #decide .eyebrow .ddot { animation:none; }
   /* typing dots hold steady; state stays legible via color and text */
@@ -2058,20 +2085,9 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
     <span class="dot" aria-hidden="true"></span>
     <span class="name" id="pillName">live session</span>
   </button>
-  <span id="chip" role="status">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none"/>
-      <path d="M15 9a4.2 4.2 0 0 1 0 6"/><path d="M17.8 6.6a8 8 0 0 1 0 10.8"/>
-    </svg>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="7" y="2.5" width="10" height="19" rx="2.5"/>
-      <path d="M10.5 18.5h3"/>
-    </svg>
-    Sound on this phone
-  </span>
-  <button id="modeChip" type="button" data-mode="unknown"
+  <!-- v18b: the audio-route status pill (#chip, "Sound on this phone") was
+       removed at the owner's request. The heartbeat loop is untouched. -->
+  <button id="modeChip" type="button" class="mchip" data-mode="unknown"
           aria-label="Cycle Claude's permission mode" title="Cycle Claude's permission mode">
     <span class="mcglyph" aria-hidden="true">
       <span class="mcg mcg-normal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -2181,6 +2197,32 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
       <h2 id="chatTitle">Chat</h2>
       <span id="chatState" role="status" aria-live="polite"></span>
     </div>
+    <!-- v18b: the SAME permission-mode control as the call screen, surfaced in
+         the chat header (owner's top ask). Shares .mchip appearance and calls
+         the same cycleMode()/setModeChip() code as #modeChip; visible only on a
+         live call in chat view. -->
+    <button id="chatModeChip" type="button" class="mchip" data-mode="unknown"
+            aria-label="Cycle Claude's permission mode" title="Cycle Claude's permission mode">
+      <span class="mcglyph" aria-hidden="true">
+        <span class="mcg mcg-normal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l7 3v5c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6z"/></svg></span>
+        <span class="mcg mcg-accept"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 12.5l5 5 11-11"/></svg></span>
+        <span class="mcg mcg-plan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v2H9z"/>
+          <path d="M8.5 11h7"/><path d="M8.5 15h4.5"/></svg></span>
+        <span class="mcg mcg-bypass"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 4l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg></span>
+        <span class="mcg mcg-unknown"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+          <circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/>
+          <circle cx="18" cy="12" r="1.6"/></svg></span>
+      </span>
+      <span class="mclbl" id="chatModeChipLbl">Mode</span>
+    </button>
     <button id="chatReplayBtn" aria-label="Replay the last reply" disabled>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2317,13 +2359,14 @@ const statusEl=$('status'), stateWord=$('stateWord'), pillName=$('pillName'),
       chatHead=$('chatHead'), chatTitle=$('chatTitle'), chatBackBtn=$('chatBackBtn'),
       chatStateEl=$('chatState'), micChip=$('micChip'),
       composeIn=$('composeIn'), sendBtn=$('sendBtn'), orbScaleEl=$('orbscale'),
-      pullHint=$('pullHint'), chipEl=$('chip'), decideEl=$('decide'),
+      pullHint=$('pullHint'), decideEl=$('decide'),
       decideQ=$('decideQ'), toastEl=$('toast'), toastText=$('toastText'),
       sessList=$('sessList'), sessCount=$('sessCount'),
       homeList=$('homeList'), homeDot=$('homeDot'),
       closedName=$('closedName'), closedBody=$('closedBody'),
       clipBtn=$('clipBtn'), pickFile=$('pickFile'), chipsEl=$('chips'),
-      modeChip=$('modeChip'), modeChipLbl=$('modeChipLbl');
+      modeChip=$('modeChip'), modeChipLbl=$('modeChipLbl'),
+      chatModeChip=$('chatModeChip'), chatModeChipLbl=$('chatModeChipLbl');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const TTS = 'speechSynthesis' in window;
 
@@ -3996,19 +4039,27 @@ function modeKeyFromRaw(raw){
     default: return 'unknown';
   }
 }
+/* v18b: one relabel drives BOTH the call-screen chip and the chat-header chip,
+   so they always reflect the same claudeMode. */
 function setModeChip(key){
   modeChipKey = key;
   const label = MODE_LABELS[key] || 'Mode';
-  modeChip.dataset.mode = key;
-  modeChipLbl.textContent = label;
-  modeChip.setAttribute('aria-label',
-    'Cycle Claude\'s permission mode (now ' + label + ')');
-  modeChip.setAttribute('title', 'Cycle Claude\'s permission mode (now ' + label + ')');
+  const desc = 'Cycle Claude\'s permission mode (now ' + label + ')';
+  const pairs = [[modeChip, modeChipLbl], [chatModeChip, chatModeChipLbl]];
+  for(const [btn, lbl] of pairs){
+    if(!btn) continue;
+    btn.dataset.mode = key;
+    if(lbl) lbl.textContent = label;
+    btn.setAttribute('aria-label', desc);
+    btn.setAttribute('title', desc);
+  }
 }
 function updateModeChipVis(){
-  /* only on a live call; hidden in chat and on home (CSS hard-hides those too) */
-  const show = live && !chatOpenState && !onHome;
-  modeChip.classList.toggle('on', show);
+  /* call-screen chip: only on a live call, hidden in chat and on home (CSS
+     hard-hides those too). chat-header chip: only during a live call while the
+     chat view is open. */
+  modeChip.classList.toggle('on', live && !chatOpenState && !onHome);
+  if(chatModeChip) chatModeChip.classList.toggle('on', live && chatOpenState);
 }
 function syncModeFromStatus(raw){
   claudeMode = String(raw || '');
@@ -4046,17 +4097,19 @@ async function cycleMode(){
   }
 }
 modeChip.addEventListener('click', cycleMode);
+/* v18b: the chat-header chip cycles through the SAME code path. */
+if(chatModeChip) chatModeChip.addEventListener('click', cycleMode);
 
 /* ============================================================ heartbeat */
 /* While the call is live the phone owns the audio: a beat every 5s keeps the
-   Mac's speech suppressed server-side, and the chip tells the user so. */
+   Mac's speech suppressed server-side. v18b: the "Sound on this phone" status
+   pill was removed, so the beat no longer drives any UI, only the POST. */
 let hbTimer = null;
 async function beatOnce(){
-  if(!live){ chipEl.classList.remove('on'); return; }
+  if(!live) return;
   try{
-    const r = await fetch(urlFor('/heartbeat'), { method:'POST' });
-    chipEl.classList.toggle('on', r.ok && live);
-  }catch(e){ chipEl.classList.remove('on'); }
+    await fetch(urlFor('/heartbeat'), { method:'POST' });
+  }catch(e){}
 }
 function startHeartbeat(){
   stopHeartbeat();
@@ -4065,7 +4118,6 @@ function startHeartbeat(){
 }
 function stopHeartbeat(){
   if(hbTimer){ clearInterval(hbTimer); hbTimer = null; }
-  chipEl.classList.remove('on');
 }
 
 /* ============================================================ stitching */
