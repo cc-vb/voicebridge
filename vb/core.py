@@ -799,6 +799,36 @@ def pending_question(transcript_path: str) -> dict:
     return {"id": last_ask[0], "questions": last_ask[1]}
 
 
+def current_permission_mode(transcript_path: str) -> str:
+    """Claude Code's current permission mode, read from the transcript tail
+    (records carry a `permissionMode`: e.g. auto/default/acceptEdits/plan).
+    Reflects the mode as of the last message; a Shift+Tab toggle only lands
+    in the transcript on the next turn. '' if unknown."""
+    p = Path(transcript_path)
+    if not p.exists():
+        return ""
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 131072))
+            tail = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    mode = ""
+    for line in tail.splitlines():
+        line = line.strip()
+        if not line or '"permissionMode"' not in line:
+            continue
+        try:
+            m = json.loads(line).get("permissionMode")
+            if m:
+                mode = m
+        except Exception:
+            pass
+    return mode
+
+
 def active_session_state(transcript_path: str) -> str:
     """The REAL state of the session behind this transcript: 'working' when
     Claude's turn is in flight (a user prompt or a tool call is the latest

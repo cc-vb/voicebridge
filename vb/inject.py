@@ -70,6 +70,27 @@ def press_escape() -> None:
     _osa('tell application "System Events" to key code 53')
 
 
+def press_shift_tab(expect_app: str = "") -> bool:
+    """Send Shift+Tab, Claude Code's key to CYCLE the permission mode
+    (normal -> auto-accept edits -> plan -> ...). Delivered to the bound
+    terminal even from another app via activate-restore. Returns delivered."""
+    if not oslayer.IS_MAC:
+        return False
+    restore = ""
+    if expect_app:
+        front = frontmost_app()
+        if front.strip().casefold() != expect_app.casefold():
+            if not _activate_app(expect_app):
+                return False
+            restore = front
+            time.sleep(0.18)
+    _osa('tell application "System Events" to key code 48 using shift down')
+    if restore:
+        time.sleep(0.05)
+        _activate_app(restore)
+    return True
+
+
 def press_enter(expect_app: str = "") -> bool:
     """Press Return. With expect_app, refuse unless that app is frontmost,
     a blind Return from the phone's Allow button once went to whatever

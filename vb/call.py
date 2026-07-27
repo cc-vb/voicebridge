@@ -5382,6 +5382,7 @@ class Handler(BaseHTTPRequestHandler):
                 "notice": core.clean_for_speech(
                     core.get_pending_message(sid), max_chars=300),
                 "state": core.active_session_state(tp) if tp else "idle",
+                "mode": core.current_permission_mode(tp) if tp else "",
                 "question": core.pending_question(tp) if tp else {},
             }).encode(), "application/json")
         elif path == "/poll":
@@ -5568,6 +5569,21 @@ class Handler(BaseHTTPRequestHandler):
             # you're away from the laptop).
             core.mark_call_live()
             self._reply(200, b"{}", "application/json")
+            return
+
+        if path == "/mode":  # cycle Claude Code's permission mode (Shift+Tab)
+            tp = _target_transcript()
+            if not tp:
+                self._reply(200, json.dumps(
+                    {"ok": False, "reply": "No shared session to switch."}
+                ).encode(), "application/json")
+                return
+            from .talkd import bound_app
+            before = core.current_permission_mode(tp)
+            ok = inject.press_shift_tab(expect_app=bound_app())
+            self._reply(200 if ok else 409, json.dumps(
+                {"ok": bool(ok), "was": before}).encode(),
+                "application/json")
             return
 
         if path == "/switch":  # {"id": sid} or {"query": "jobhunt"}
