@@ -975,17 +975,22 @@ def _retime_wav(wav: str, factor: float) -> str:
     return wav
 
 
-def _kokoro_wav(text: str, out: str = "", voice: str = "") -> str:
+def _kokoro_wav(text: str, out: str = "", voice: str = "",
+                speed: float = 0.0) -> str:
     """Synthesize via the local Kokoro server; '' if unavailable.
     `voice` overrides the configured one (the phone's per-user voice picker
-    sends it per request; the desktop keeps using the configured voice)."""
+    sends it per request; the desktop keeps using the configured voice).
+    `speed` (a multiplier, e.g. 1.25) overrides the configured rate for THIS
+    request, so the phone's speed control never changes the desktop pace."""
     wav = out or str(STATE_DIR / "speech.wav")
     if not voice or not _KOKORO_VOICE_RE.match(voice):
         voice = get_voice()
     if not _KOKORO_VOICE_RE.match(voice or ""):
         voice = "af_heart"
     try:
-        want = max(MIN_SPEED, min(MAX_SPEED, float(get_rate()) / 175.0))
+        want = (float(speed) if speed
+                else float(get_rate()) / 175.0)
+        want = max(MIN_SPEED, min(MAX_SPEED, want))
     except ValueError:
         want = 1.0
     # Synthesize at a NATURAL Kokoro speed, then pitch-preserving atempo

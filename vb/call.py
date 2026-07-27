@@ -5505,6 +5505,10 @@ class Handler(BaseHTTPRequestHandler):
                 b = json.loads(raw or b"{}")
                 text = (b.get("text") or "").strip()
                 voice = (b.get("voice") or "").strip()
+                try:
+                    speed = float(b.get("speed") or 0)
+                except (TypeError, ValueError):
+                    speed = 0.0
             except Exception:
                 self._reply(400, b"bad request", "text/plain")
                 return
@@ -5519,9 +5523,9 @@ class Handler(BaseHTTPRequestHandler):
                 # voice even when the Mac is busy, instead of dropping a
                 # colliding chunk to the robotic browser fallback.
                 with _TTS_LOCK:
-                    wav = core._kokoro_wav(text[:600], out=tmp, voice=voice)
+                    wav = core._kokoro_wav(text[:600], out=tmp, voice=voice, speed=speed)
                     if not wav and core.kokoro_up():
-                        wav = core._kokoro_wav(text[:600], out=tmp, voice=voice)
+                        wav = core._kokoro_wav(text[:600], out=tmp, voice=voice, speed=speed)
                 if wav != tmp:
                     # mkstemp already created the file, so a synthesis that
                     # fails (or writes elsewhere) leaves it behind: one empty
