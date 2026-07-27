@@ -159,12 +159,17 @@ def _terminal_inject(text: str, tty: str) -> bool:
     <tab>` writes to that tab's tty as if typed; Claude Code reads it as input
     and the trailing return submits it."""
     esc = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    # Two steps: `do script` types the prompt (Claude Code takes bulk input as
+    # a PASTE and does NOT submit on the embedded return, the "typed but I had
+    # to press Enter" bug), then a lone return actually sends it.
     script = (
         'tell application "Terminal"\n'
         'repeat with w in windows\n'
         'repeat with t in tabs of w\n'
         f'if tty of t is "{tty}" then\n'
         f'do script "{esc}" in t\n'
+        'delay 0.35\n'
+        'do script "" in t\n'
         'return "ok"\n'
         'end if\n'
         'end repeat\n'

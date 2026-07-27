@@ -5801,7 +5801,7 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(200, b"{}", "application/json")
             return
 
-        if path == "/mode":  # cycle Claude Code's permission mode (Shift+Tab)
+        if path == "/mode":  # set Claude's permission mode (direct, or cycle)
             tp = _target_transcript()
             if not tp:
                 self._reply(200, json.dumps(
@@ -5809,11 +5809,33 @@ class Handler(BaseHTTPRequestHandler):
                 ).encode(), "application/json")
                 return
             from .talkd import bound_app
+            try:
+                to = (json.loads(raw or b"{}").get("to") or "").strip()
+            except Exception:
+                to = ""
             before = core.current_permission_mode(tp)
-            ok = inject.press_shift_tab(expect_app=bound_app())
+            # Shift+Tab cycle order (default/normal aliased to "auto"). Because
+            # the current mode IS detectable, a direct pick computes exactly
+            # how many Shift+Tabs reach the target instead of blind cycling.
+            ORDER = ["auto", "acceptEdits", "plan", "bypassPermissions"]
+
+            def _idx(m):
+                m = (m or "").strip()
+                if m in ("", "default", "normal"):
+                    m = "auto"
+                return ORDER.index(m) if m in ORDER else 0
+            if to:
+                presses = (_idx(to) - _idx(before)) % len(ORDER)
+            else:
+                presses = 1   # no target: plain single cycle
+            ok = True
+            for i in range(presses):
+                ok = inject.press_shift_tab(expect_app=bound_app()) and ok
+                if i + 1 < presses:
+                    time.sleep(0.18)
             self._reply(200 if ok else 409, json.dumps(
-                {"ok": bool(ok), "was": before}).encode(),
-                "application/json")
+                {"ok": bool(ok), "was": before, "to": to,
+                 "presses": presses}).encode(), "application/json")
             return
 
         if path == "/switch":  # {"id": sid} or {"query": "jobhunt"}
