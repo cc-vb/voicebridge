@@ -39,6 +39,26 @@ def _osa(script: str) -> None:
         core.log(f"osascript failed: {e}")
 
 
+def _activate_app(name: str) -> bool:
+    """Bring a specific app (by its process name, what frontmost_app returns)
+    to the front, so a keystroke/paste lands in IT and not in whatever the
+    user is looking at. Returns False if it couldn't be fronted."""
+    name = (name or "").strip()
+    if not name:
+        return False
+    esc = name.replace("\\", "\\\\").replace('"', '\\"')
+    try:
+        r = subprocess.run(
+            ["osascript", "-e",
+             f'tell application "System Events" to set frontmost of '
+             f'process "{esc}" to true'],
+            capture_output=True, text=True, timeout=4)
+        return r.returncode == 0
+    except Exception as e:
+        core.log(f"activate {name} failed: {e}")
+        return False
+
+
 def press_escape() -> None:
     """Send Escape to the focused app, Claude Code's own key for stopping
     the current generation. This is the REAL interrupt: not just muting the
@@ -55,14 +75,23 @@ def press_enter(expect_app: str = "") -> bool:
     a blind Return from the phone's Allow button once went to whatever
     window happened to be focused, the dialog stayed up, and the "Claude
     needs your input" nag looped forever. Returns whether it was sent."""
+    restore = ""
     if expect_app:
         front = frontmost_app()
         if front.strip().casefold() != expect_app.casefold():
-            return False
+            # Bring the terminal forward for the keystroke, then restore, so a
+            # permission "yes" lands on the dialog even from another app.
+            if not _activate_app(expect_app):
+                return False
+            restore = front
+            time.sleep(0.18)
     if not oslayer.IS_MAC:
         oslayer._win_sendkeys("{ENTER}") if oslayer.IS_WIN else oslayer._xdotool("key", "Return")
         return True
     _osa('tell application "System Events" to key code 36')
+    if restore:
+        time.sleep(0.05)
+        _activate_app(restore)
     return True
 
 
@@ -92,10 +121,21 @@ def paste_text(text: str, send: bool = False, expect_app: str = "") -> bool:
         oslayer.paste_text(text, send)
         return True
     front = frontmost_app()
-    if expect_app and front and front.strip().casefold() != expect_app.casefold():
-        core.log(f"paste refused: {front} is frontmost, not {expect_app}")
-        return False
-    core.log(f"paste -> frontmost app: {front or 'unknown'}")
+    target = (expect_app or "").strip()
+    restore = ""
+    if target and front and front.strip().casefold() != target.casefold():
+        # Deliver to the BOUND terminal even though the user is in another app
+        # (YouTube, Slack, ...). Bring the terminal to the front, paste, then
+        # restore whatever they were looking at, so the prompt always lands in
+        # the session and never in the wrong window, and they never have to
+        # open the terminal themselves.
+        if not _activate_app(target):
+            core.log(f"paste: couldn't front {target} (was {front}); refusing")
+            return False
+        restore = front
+        time.sleep(0.18)   # let the activation settle before the paste
+    core.log(f"paste -> {target or front or 'frontmost'}"
+             + (f" (restoring {restore})" if restore else ""))
     saved = _pbpaste()
     _pbcopy(text)
     time.sleep(0.05)
@@ -106,4 +146,7 @@ def paste_text(text: str, send: bool = False, expect_app: str = "") -> bool:
     # Restore the old clipboard after the paste has landed.
     time.sleep(0.2)
     _pbcopy(saved)
+    if restore:
+        time.sleep(0.05)
+        _activate_app(restore)   # hand focus back to the user's app
     return True

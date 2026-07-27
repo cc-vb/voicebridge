@@ -2170,14 +2170,8 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
     <button class="vcard" data-v="af_heart" role="radio" aria-checked="true">
       <span class="vn">Heart</span><span class="vd">warm, the default</span>
     </button>
-    <button class="vcard" data-v="af_bella" role="radio" aria-checked="false">
-      <span class="vn">Bella</span><span class="vd">bright, conversational</span>
-    </button>
-    <button class="vcard" data-v="am_michael" role="radio" aria-checked="false">
-      <span class="vn">Michael</span><span class="vd">calm, male</span>
-    </button>
   </div>
-  <p class="hint" id="voiceHint">tap a voice to hear it</p>
+  <p class="hint" id="voiceHint">Heart, the natural voice.</p>
   <p class="hint">Natural voice is made on your Mac and played here, and the phone voice
      takes over automatically if the Mac is unreachable.</p>
   <p class="hint">A new voice takes effect on the next reply.</p>
@@ -2315,7 +2309,7 @@ try{
 /* WHICH Kokoro voice speaks. Three curated ids, picked in settings,
    persisted, sent as {"voice": id} in every /tts body. A switch applies
    from the next reply (no mid-reply engine restart). */
-const VOICE_IDS = ['af_heart', 'af_bella', 'am_michael'];
+const VOICE_IDS = ['af_heart'];   // mobile keeps one good voice
 let voiceName = 'af_heart';
 try{
   var _vn = localStorage.getItem('vbvoice_name');
@@ -4307,7 +4301,7 @@ function setVoiceName(id){
    fetching is cancelled first. The selection commits ONLY when the audio
    actually arrives; a failed /tts keeps the previous selection and says
    so, never a silent switch. */
-const VOICE_LABELS = { af_heart:'Heart', af_bella:'Bella', am_michael:'Michael' };
+const VOICE_LABELS = { af_heart:'Heart' };
 let previewSrc = null, previewCtl = null, previewGen = 0;
 function cancelPreview(){
   previewGen++;
