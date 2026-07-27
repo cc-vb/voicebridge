@@ -2077,6 +2077,15 @@ function micLive(on){
   if(!media) return;
   try{ media.getTracks().forEach(t => { t.enabled = !!on; }); }catch(e){}
 }
+function releaseMic(){
+  /* Fully hand the device back. webkitSpeechRecognition must OWN the mic each
+     turn; a held getUserMedia stream (even a DISABLED track) starves it after
+     the first reply's barge monitor, the "first prompt works, then the call
+     goes deaf" regression from the one-grant hold. On a stable origin the
+     grant persists, so re-acquiring for the next barge does not re-prompt. */
+  try{ if(media) media.getTracks().forEach(t => t.stop()); }catch(e){}
+  media = null; micPromise = null;
+}
 async function micReady(){
   /* Resolves once we hold the stream. Callers that only need the mic to
      EXIST (barge monitor, recorder) go through here. */
@@ -2536,7 +2545,7 @@ function stopBarge(){
      here would hand the device back and re-arm the permission prompt. On the
      recognizer path we only silence it, which is all "stop monitoring" ever
      meant. */
-  if(bargeOwn){ if(SR && !srDead) micLive(false); bargeOwn = null; }
+  if(bargeOwn){ if(SR && !srDead) releaseMic(); else micLive(false); bargeOwn = null; }
 }
 async function startBarge(){
   /* v7: typingMute keeps the whole mic off, the barge monitor included */
@@ -3736,7 +3745,7 @@ async function startCall(){
   try{
     if(!(SR && !srDead) || !(await micGranted()) || media){
       await micReady();
-      if(SR && !srDead) micLive(false);   // hand the recognizer a quiet device
+      if(SR && !srDead) releaseMic();   // free the device so the recognizer owns it
     }
   }catch(e){ micDenied(); return; }
   startHeartbeat();
