@@ -2177,13 +2177,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
    results), .steady switches the pulse to a 1.2s heart-beat keyframe. */
 let level=0, levelTarget=0, lastLevelAt=0;
 function bumpLevel(v){ levelTarget = Math.max(levelTarget, v); lastLevelAt = Date.now(); }
+function haptic(ms){ try{ if(navigator.vibrate) navigator.vibrate(ms); }catch(e){} }
 (function levelLoop(){
   level += (levelTarget - level) * .25;
   levelTarget *= .9;
   if(level < .004) level = 0;
   document.documentElement.style.setProperty('--level', level.toFixed(3));
-  orbScaleEl.classList.toggle('steady',
-    state === 'listening' && Date.now() - lastLevelAt > 2000);
+  /* No idle heartbeat: the orb is STILL while listening and only swells when
+     the mic actually hears you (bumpLevel), never a per-second pulse. */
+  orbScaleEl.classList.remove('steady');
   requestAnimationFrame(levelLoop);
 })();
 
@@ -2987,6 +2989,7 @@ function setWorking(){
 function stopWorkTicker(){ if(workTicker){ clearInterval(workTicker); workTicker = null; } }
 
 async function startTurn(text){
+  haptic(22);   // confirm the prompt was captured and is being sent
   const id = ++turnId;
   turnActive = true;
   clearHush();                 // a new turn ends any pending resume
@@ -3077,6 +3080,7 @@ async function pollUntilChanged(id){
    flight, ANY new reply in the session (e.g. typed on the desktop) speaks
    HERE. The Mac is silenced during a call, so without this nobody says it. */
 let lastUuid = '';
+let connectGuardUntil = 0;  // grace at connect: re-baseline, don't speak old replies
 function speakIncoming(rep){
   stopListening();
   stopSpeaking();                         // never let two voices overlap on one reply
@@ -3102,7 +3106,7 @@ async function idleWatch(){
   if(u === lastUuid || !rep) return;
   if(!live || turnActive) return;
   lastUuid = u;
-  speakIncoming(rep);
+  if(Date.now() > connectGuardUntil) speakIncoming(rep);
 }
 setInterval(idleWatch, 5000);
 
@@ -3134,7 +3138,7 @@ function startEvents(){
           if(j.uuid && j.uuid !== lastUuid && rep){
             lastUuid = j.uuid;
             if(turnActive){ finishTurn(turnId, rep); }
-            else if(live){ speakIncoming(rep); }
+            else if(live && Date.now() > connectGuardUntil){ speakIncoming(rep); }
           }
         }).catch(() => {});
       }
@@ -3160,7 +3164,7 @@ function startEvents(){
       if(!u || !rep || u === lastUuid) return;
       lastUuid = u;
       if(turnActive){ finishTurn(turnId, rep); }
-      else if(live){ speakIncoming(rep); }
+      else if(live && Date.now() > connectGuardUntil){ speakIncoming(rep); }
     }catch(x){}
   });
   es.addEventListener('pending', e => {
@@ -3570,6 +3574,7 @@ function listenSR(){
   rec.onspeechstart = () => {
     if(myGen !== gen) return;
     bumpLevel(.6);
+    haptic(12);                       // subtle buzz the moment it hears you
     if(stitchTimer) holdStitchOnSpeech();
   };
   rec.onerror = ev => {
@@ -3740,7 +3745,8 @@ async function startCall(){
   pollSessions();
   /* This first utterance also unlocks SpeechSynthesis under autoplay rules. */
   setState('speaking', 'connecting');
-  say('Connected.', () => { if(live) listen(); });
+  connectGuardUntil = Date.now() + 3000;
+  say("Hey, I'm Claude. I'm listening.", () => { if(live) listen(); });
 }
 function endCall(){
   live = false; liveGen++;
