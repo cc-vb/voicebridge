@@ -489,6 +489,38 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
+  CHANGES, v19 to v20, TWO scoped fixes (nothing else touched: turn engine,
+  session isolation, activity chips + detail sheet, orb replay, single voice,
+  focus-free inject, connect-guard, mode chips on call+chat, direct /mode {to}
+  posting all intact):
+
+    FIX 1, MULTI-LINE COMPOSER. #composeIn was a single-line <input type=text>,
+    so a long prompt scrolled off, the caret could not be moved back through it,
+    and you could not see what you typed. It is now a textarea reusing the SAME
+    composeIn id, so every existing ref/handler keeps working. It starts at rows=1,
+    AUTO-GROWS with content up to ~5 lines then scrolls internally
+    (autoGrowCompose() on input, re-run after each clear), wraps text, and the
+    caret is fully navigable. It keeps the 16px font (blocks the iOS zoom), the
+    "type instead of talking" placeholder, the focus-mutes-the-mic behavior, the
+    visualViewport keyboard lift, and send-on-tap. The .cwrap now aligns its
+    controls to the BOTTOM (align-items:flex-end) so the clip/mic/send buttons
+    stay put as the box grows. ENTER now SENDS (submit) and Shift+Enter inserts a
+    newline (the chat convention), and IME composition Enter is left alone; this
+    replaces the old input keydown handler.
+
+    FIX 2, NO BYPASS IN THE PICKER. bypassPermissions is not reachable via
+    Shift+Tab on this build, so the Bypass option is REMOVED from the mode picker
+    entirely: its #modeOptBypass row, its entry in modeOptEls, and the
+    Bypass-specific coral .mopt[data-key="bypass"] option styling in the sheet are
+    all gone. The picker now lists exactly the three real modes: Normal (auto),
+    Auto-accept (acceptEdits), Plan (plan). The CHIP may still DISPLAY "Bypass"
+    if /status ever reports bypassPermissions (the MODE_LABELS / MODE_RAW /
+    modeKeyFromRaw mapping and the .mchip[data-mode="bypass"] coral chip styling
+    are all kept for display), but it is no longer a selectable option. A mode the
+    server rejects with ok:false is still handled by the existing revert+toast.
+
+  ---------------------------------------------------------------------------
+
   CHANGES, v18b to v19, ONE scoped change: the permission-mode control is now a
   direct PICKER instead of a blind cycle. Nothing else touched (turn engine,
   session isolation, activity chips + detail sheet, orb replay, single voice,
@@ -1399,13 +1431,9 @@ body.mode-open #modeScrim { opacity:1; pointer-events:auto; }
 .mopt .motick svg { width:18px; height:18px; }
 .mopt.sel { background:rgba(255,255,255,.07); border-color:rgba(120,140,200,.45); }
 .mopt.sel .motick { opacity:1; }
-/* Bypass is the dangerous one: coral warning tint always, deepened when picked */
-.mopt[data-key="bypass"] { border-color:rgba(229,72,77,.4); color:#ffb4ab; }
-.mopt[data-key="bypass"] .mog svg { color:#ff8a8e; }
-.mopt[data-key="bypass"] .mocaut { color:#e79a97; }
-.mopt[data-key="bypass"].sel {
-  background:rgba(229,72,77,.16); border-color:rgba(229,72,77,.6); }
-.mopt[data-key="bypass"] .motick { color:#ff8a8e; }
+/* v20: Bypass is no longer a selectable option (not reachable via Shift+Tab on
+   this build), so its coral .mopt[data-key="bypass"] styling is removed. The
+   coral CHIP styling (.mchip[data-mode="bypass"]) is kept for display only. */
 @media (prefers-reduced-motion: reduce){
   #modeScrim, #modeSheet, .mopt, .mopt .motick { transition:none; }
 }
@@ -1757,21 +1785,29 @@ body.hush-paused #hushBtn { display:flex; }
    rounded card holds the borderless input, the mic-toggle chip (back to
    voice input) and the 36px mint send button. v16 adds the paperclip. */
 .composer { flex:none; padding:8px 14px 0; }
+/* v20: align controls to the BOTTOM so the clip/mic/send buttons stay put as
+   the multi-line textarea grows upward. */
 .cwrap {
-  display:flex; align-items:center; gap:6px;
+  display:flex; align-items:flex-end; gap:6px;
   background:#161c29; border:1px solid #232b3d; border-radius:16px;
   padding:6px 6px 6px 14px;
   transition:border-color .2s ease;
 }
 .cwrap:focus-within { border-color:#31405c; }
+/* v20: composer is a multi-line textarea. It starts one row tall, auto-grows
+   with content (JS sets the pixel height on input) up to ~5 lines, then scrolls
+   internally. resize is disabled (the auto-grow owns the height); text wraps. */
 #composeIn {
   flex:1; min-width:0; min-height:36px;
+  /* ~5 lines at 16px/1.5 (120px) plus the 12px vertical padding */
+  max-height:132px; overflow-y:hidden; resize:none;
   background:none; border:0; outline:none;
-  color:#e8ebf2; padding:6px 0;
+  color:#e8ebf2; padding:6px 0; margin:0;
   /* 16px stops the iOS zoom-on-focus */
   font-size:16px; line-height:1.5;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   user-select:text; -webkit-user-select:text;
+  white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word;
 }
 #composeIn::placeholder { color:#5b6479; }
 #micChip {
@@ -2348,9 +2384,9 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
     <input id="pickFile" type="file" multiple
            accept="image/*,application/pdf,text/*,application/json">
     <div class="cwrap">
-      <input id="composeIn" type="text" placeholder="type instead of talking"
+      <textarea id="composeIn" rows="1" placeholder="type instead of talking"
              autocapitalize="sentences" autocomplete="off" autocorrect="on"
-             enterkeyhint="send" aria-label="Type a prompt to the session">
+             enterkeyhint="send" aria-label="Type a prompt to the session"></textarea>
       <button id="clipBtn" aria-label="Attach a photo or file">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -2465,17 +2501,9 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
       stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
       <path d="M4 12.5l5 5 11-11"/></svg></span>
   </button>
-  <button class="mopt" id="modeOptBypass" type="button" role="menuitemradio"
-          aria-checked="false" data-key="bypass" data-raw="bypassPermissions">
-    <span class="mog" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 4l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg></span>
-    <span class="motx"><span class="molbl">Bypass</span>
-      <span class="mocaut">Skips permission prompts</span></span>
-    <span class="motick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M4 12.5l5 5 11-11"/></svg></span>
-  </button>
+  <!-- v20: the Bypass option was removed (bypassPermissions is not reachable via
+       Shift+Tab on this build). The chip may still DISPLAY Bypass if /status
+       reports it, but it is not selectable here. -->
 </section>
 
 <div class="overlay hidden" id="startOverlay">
@@ -4227,9 +4255,12 @@ function shortModeReason(j){
    stacks above BOTH headers and the full-screen chat. Dismissible by the scrim
    and by hardware back (pushState on open / popstate on back, mirroring the
    activity detail sheet: modeHist / modePopIgnore). ---- */
+/* v20: Bypass removed from the picker; three selectable options remain. The
+   MODE_LABELS/MODE_RAW/modeKeyFromRaw bypass mapping above is kept for chip
+   DISPLAY only (a /status that reports bypassPermissions still labels the chip). */
 const modeSheet=$('modeSheet'), modeScrim=$('modeScrim'),
       modeOptEls=[$('modeOptNormal'), $('modeOptAccept'),
-                  $('modeOptPlan'), $('modeOptBypass')];
+                  $('modeOptPlan')];
 let modeOpen=false, modeHist=false, modePopIgnore=false;
 function markModePicker(){
   /* tick the option that matches the mode currently shown on the chips */
@@ -4996,6 +5027,7 @@ async function sendTyped(){
     const text = t ? (t + ' (attached: ' + paths + ')')
                    : ('Take a look at this: ' + paths);
     composeIn.value = '';
+    autoGrowCompose();   // v20: collapse the textarea back to one row
     clearAttachments();
     stopSpeaking();
     stopListening();
@@ -5003,6 +5035,7 @@ async function sendTyped(){
     return;
   }
   composeIn.value = '';
+  autoGrowCompose();   // v20: collapse the textarea back to one row
   stopSpeaking();     // typing over a talking reply = silent barge-in
   stopListening();
   startTurn(t);       // the EXACT same turn engine as speech
@@ -5012,8 +5045,28 @@ sendBtn.addEventListener('click', sendTyped);
    the keyboard collapses, the sheet shifts, and the tap can miss; this
    also keeps the keyboard up for a quick follow-up */
 sendBtn.addEventListener('mousedown', e => e.preventDefault());
+/* v20: the composer auto-grows with content up to ~5 lines, then scrolls
+   internally. Reset the height to auto first so it can also SHRINK when text is
+   deleted; the CSS max-height (132px) caps the growth and switches on the
+   internal scrollbar. */
+function autoGrowCompose(){
+  composeIn.style.height = 'auto';
+  const max = 132;
+  const h = Math.min(composeIn.scrollHeight, max);
+  composeIn.style.height = h + 'px';
+  composeIn.style.overflowY = (composeIn.scrollHeight > max) ? 'auto' : 'hidden';
+}
+composeIn.addEventListener('input', autoGrowCompose);
+autoGrowCompose();
+/* v20: multi-line now, so Enter SENDS and Shift+Enter inserts a newline (the
+   chat convention). IME composition Enter (e.isComposing / keyCode 229) is left
+   alone so committing a candidate does not fire a send. This replaces the old
+   single-line input keydown handler. */
 composeIn.addEventListener('keydown', e => {
-  if(e.key === 'Enter'){ e.preventDefault(); sendTyped(); }
+  if(e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229){
+    e.preventDefault();
+    sendTyped();
+  }
 });
 /* the composer mic chip IS a mute/unmute toggle, mirrored from the footer
    Mute so its state is never a mystery: gray + slash = off, mint + pulse =
