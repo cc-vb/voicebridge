@@ -626,6 +626,70 @@ def assistant_replies_after(transcript_path: str, after_uuid: str = ""):
     return replies[-1:]
 
 
+def _leaf(path: str) -> str:
+    return path.rstrip("/").split("/")[-1] if path else ""
+
+
+def _difflines(old: str, new: str) -> tuple:
+    """Added / removed line counts between two strings (Claude's +N -M)."""
+    import difflib
+    add = rem = 0
+    for ln in difflib.ndiff(old.splitlines(), new.splitlines()):
+        if ln.startswith("+ "):
+            add += 1
+        elif ln.startswith("- "):
+            rem += 1
+    return add, rem
+
+
+def _describe_tool(name: str, inp: dict) -> dict:
+    """One tool_use block -> a compact activity item for the phone chat:
+    a chip (verb + file/cmd + diff stat) plus enough detail for the sheet.
+    Returns {} for machinery the reader does not care about."""
+    inp = inp or {}
+    if name == "Edit":
+        old, new = inp.get("old_string", ""), inp.get("new_string", "")
+        a, d = _difflines(old, new)
+        return {"kind": "edit", "verb": "Edited",
+                "file": _leaf(inp.get("file_path", "")),
+                "path": inp.get("file_path", ""), "add": a, "del": d,
+                "old": old[:4000], "new": new[:4000]}
+    if name == "Write":
+        c = inp.get("content", "")
+        return {"kind": "write", "verb": "Created",
+                "file": _leaf(inp.get("file_path", "")),
+                "path": inp.get("file_path", ""),
+                "add": len(c.splitlines()) or (1 if c else 0), "del": 0,
+                "new": c[:4000]}
+    if name == "Read":
+        return {"kind": "read", "verb": "Read",
+                "file": _leaf(inp.get("file_path", "")),
+                "path": inp.get("file_path", "")}
+    if name == "Bash":
+        return {"kind": "run", "verb": "Ran", "cmd": inp.get("command", "")[:2000],
+                "desc": inp.get("description", "")}
+    if name == "Agent":
+        return {"kind": "tool", "verb": "Delegated",
+                "label": inp.get("description", "subagent")}
+    if name in ("WebSearch", "WebFetch"):
+        return {"kind": "tool",
+                "verb": "Searched" if name == "WebSearch" else "Fetched",
+                "label": (inp.get("query") or inp.get("url", ""))[:120]}
+    # Task/Skill/ToolSearch/AskUserQuestion/etc.: plumbing, not shown.
+    return {}
+
+
+def _activity_from_blocks(content) -> list:
+    out = []
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                it = _describe_tool(b.get("name", ""), b.get("input") or {})
+                if it:
+                    out.append(it)
+    return out
+
+
 def recent_turns(transcript_path: str, n: int = 30) -> list:
     """The last `n` conversation turns as [{'role','text'}, ...] (oldest
     first), for the phone's chat view. Skips tool-only records and the
@@ -640,6 +704,7 @@ def recent_turns(transcript_path: str, n: int = 30) -> list:
     except Exception:
         return []
     turns = []
+    pending_act = []   # tool activity since the last spoken chunk / prompt
     for line in lines:
         line = line.strip()
         if not line:
@@ -652,6 +717,8 @@ def recent_turns(transcript_path: str, n: int = 30) -> list:
         if kind not in ("user", "assistant"):
             continue
         content = rec.get("message", {}).get("content", "")
+        if kind == "assistant":
+            pending_act.extend(_activity_from_blocks(content))
         if kind == "user":
             if isinstance(content, list):
                 content = " ".join(b.get("text", "") for b in content
@@ -663,13 +730,18 @@ def recent_turns(transcript_path: str, n: int = 30) -> list:
             # they already fall out empty above.)
             if not text or text.startswith(("<", "Caveat:", "[Request")):
                 continue
+            pending_act = []   # a new prompt starts a fresh activity group
         else:
             text = _blocks_to_text(content).strip()
             if not text:
-                continue
+                continue   # tool-only record: its activity is already banked
         if len(text) > 2000:
             text = text[:2000] + " ..."
-        turns.append({"role": kind, "text": text})
+        turn = {"role": kind, "text": text}
+        if kind == "assistant" and pending_act:
+            turn["activity"] = pending_act[-12:]   # cap the chip list
+            pending_act = []
+        turns.append(turn)
     return turns[-n:]
 
 
