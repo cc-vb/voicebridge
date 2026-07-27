@@ -481,6 +481,58 @@ PAGE = r"""<!DOCTYPE html>
   anywhere, so it is safe inside a Python raw triple-quoted string.
   100% ASCII.
 
+  CHANGES, v16 to v17, ONE scoped upgrade: the CHAT view now renders each
+  assistant reply's tool ACTIVITY the way Claude Code's remote-session view
+  does. Everything below (turn engine, stream protocol, session isolation,
+  connect-guard, mic-release, barge-in, notice suppression, mute, voice
+  picker, home, deep links, attachments, orb) is untouched except the two
+  hooks these features required. Each item and where it lives:
+
+    1. NEW DATA, PRESERVED: GET /chat assistant turns may carry an
+       `activity` array. refreshChat() now copies it onto each localTurns
+       item (sanitizeActivity(): whitelists kind/verb, clamps strings, so a
+       hostile server payload cannot smuggle a function or an oversized
+       blob). renderChat() forwards t.activity into bubble(); chatAdd()
+       (live turns, no server activity yet) passes null. The next
+       refreshChat after a turn completes re-renders the reply WITH its
+       activity, matching the existing "server transcript swap" flow.
+
+    2. INLINE CHIPS (bubble(): the assistant branch). Under each reply,
+       renderActivity() appends a .actlist of one .actchip button per item,
+       dim and tappable, one per row:
+         edit/write -> dim verb + filename in mono (truncMiddle keeps the
+           extension) + "+add" green and "-del" red (del 0 omitted) + a
+           right chevron;
+         run -> "Ran" + the command on one mono line + chevron;
+         read -> "Read" + filename (still tappable, opens the path);
+         tool -> verb + label, truncated.
+       A reply with no activity appends nothing (no empty chrome). EVERY
+       label goes in via textContent / createTextNode, so a filename or
+       command containing <img onerror=...> renders as literal text.
+
+    3. DETAIL BOTTOM SHEET (#actSheet + #actScrim, their OWN scrim so they
+       stack ABOVE the full-screen chat at z-index 72/73). Tapping a chip
+       calls openActSheet(item): title = verb + " Completed", then the
+       full path, then the body:
+         edit -> a real client-side LINE DIFF (lineDiff(): an LCS over the
+           lines of old vs new) in a dark mono card with a line-number
+           gutter, removed lines tinted red, added green, never wrapping,
+           x-scroll, the whole card y-scrolls inside the sheet;
+         write -> the new content in the same card (all added);
+         run -> the command in the card, desc as a subtitle when present;
+         read -> the full path.
+       Close via the X, a scrim tap, or hardware back (pushState on open,
+       popstate closes the act sheet first, then the chat, matching the
+       existing chat history plumbing). Also textContent-safe throughout.
+
+    4. ORB REPLAY. orbTap() replaces the orb's pauseVoice-only handler:
+       speaking -> pause; paused with a remainder -> resume; and once the
+       reply has fully finished (not speaking, not paused, turn idle) and a
+       lastReplyText exists -> replayLast() from the top. It never fires
+       while a turn is active or a decision is open, so it does not fight
+       barge-in; replayLast()'s own startBarge() keeps the replay
+       interruptible, unchanged.
+
   CHANGES, v15 to v16, two scoped upgrades, each item and where it lives:
 
     TASK 1, CHAT REDESIGN: a calm single-column DOCUMENT, the way the
@@ -1720,6 +1772,88 @@ body.hush-paused #hushBtn { display:flex; }
   font-size:13px; font-weight:700; color:#e9eef8; align-self:center; }
 #chatLines .empty { color:var(--dim); font-size:14px; align-self:center; padding:18px 8px; text-align:center; line-height:1.55; }
 
+/* v17: assistant tool ACTIVITY, rendered as compact inline chips under the
+   reply (one per row), dim and tappable, like Claude Code's session view.
+   Every text field inside is set via textContent. */
+.actlist { display:flex; flex-direction:column; gap:4px; margin:8px 0 2px; }
+.actchip {
+  display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+  padding:7px 10px; border-radius:11px;
+  background:rgba(255,255,255,.035); border:1px solid var(--line);
+  color:#96a0b5; min-height:34px;
+  transition:background .18s ease, border-color .18s ease, transform .08s ease;
+  font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.actchip:active { transform:scale(.985); background:rgba(255,255,255,.06); }
+.actchip .averb { flex:none; font-size:12.5px; color:#8b95aa; letter-spacing:.01em; }
+.actchip .afile {
+  flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:12.5px; color:#c2cadb;
+  font-family:ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
+}
+.actchip .aadd { flex:none; font-size:12px; color:#46d7c3; font-variant-numeric:tabular-nums; }
+.actchip .adel { flex:none; font-size:12px; color:#ff8a8e; font-variant-numeric:tabular-nums; }
+.actchip .achev { flex:none; width:14px; height:14px; color:#5b6479; margin-left:1px; }
+.actchip .achev svg { width:14px; height:14px; display:block; }
+
+/* v17: the activity DETAIL sheet gets its OWN scrim so it stacks ABOVE the
+   full-screen chat (z-index 62); decide/toast in chat mode are 66. */
+#actScrim { position:fixed; inset:0; background:rgba(4,6,10,.6); opacity:0;
+  pointer-events:none; transition:opacity .25s ease; z-index:72; }
+body.act-open #actScrim { opacity:1; pointer-events:auto; }
+#actSheet {
+  position:fixed; left:0; right:0; bottom:0; z-index:73;
+  background:var(--surface); border-radius:20px 20px 0 0;
+  border-top:1px solid var(--line);
+  transform:translateY(105%); transition:transform .3s cubic-bezier(.3,.9,.3,1);
+  padding:10px 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  max-height:88vh; max-height:88dvh; display:flex; flex-direction:column;
+}
+#actSheet.open { transform:translateY(0); }
+#actSheet .grab { width:38px; height:4px; border-radius:2px; background:#39435a;
+  margin:2px auto 10px; flex:none; }
+.acthead { flex:none; display:flex; align-items:flex-start; gap:10px; margin:0 0 4px; }
+.acthead .atitle {
+  flex:1; min-width:0; font-size:13px; font-weight:600; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--dim); padding-top:6px;
+}
+#actClose {
+  flex:none; width:34px; height:34px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.06); border:1px solid var(--line); color:#c2cadb;
+}
+#actClose:active { transform:scale(.92); }
+#actClose svg { width:16px; height:16px; }
+.actpath {
+  flex:none; font-size:12.5px; color:#c2cadb; margin:2px 2px 10px;
+  word-break:break-all; user-select:text; -webkit-user-select:text;
+  font-family:ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
+}
+.actsub { flex:none; font-size:12.5px; color:var(--dim); margin:-4px 2px 10px; line-height:1.45; }
+/* the mono card: line-number gutter, x-scroll, never wrapping; the card
+   itself y-scrolls inside the sheet for long diffs */
+.actcard {
+  overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
+  background:#0a0e18; border:1px solid var(--line); border-radius:12px;
+  min-height:0; flex:1;
+  font:13px/1.5 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
+  user-select:text; -webkit-user-select:text;
+}
+.dline { display:flex; white-space:pre; min-width:100%; width:max-content; }
+.dline .dno {
+  flex:none; width:44px; padding:0 8px 0 0; text-align:right; color:#4d5568;
+  background:rgba(255,255,255,.02); position:sticky; left:0;
+  border-right:1px solid rgba(255,255,255,.04); user-select:none; -webkit-user-select:none;
+}
+.dline .dsign { flex:none; width:14px; text-align:center; color:#5b6479; }
+.dline .dtx { flex:1; padding:0 12px 0 4px; color:#c9d1de; }
+.dline.add { background:rgba(70,215,195,.10); }
+.dline.add .dtx { color:#a8eadf; }
+.dline.add .dsign { color:#46d7c3; }
+.dline.del { background:rgba(229,72,77,.12); }
+.dline.del .dtx { color:#f3b2b4; }
+.dline.del .dsign { color:#ff8a8e; }
+
 /* control room cards */
 .card {
   display:flex; align-items:center; gap:6px; border-radius:16px;
@@ -1799,7 +1933,8 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
   body[data-state="thinking"] .ripple,
   body[data-state="needs"] .ripple { animation:none; opacity:.35; transform:scale(1.25); }
   #orbscale { transition:none; transform:none; }
-  .sheet, #chatSheet, #decide, #toast, #home, .hcard { transition:none; }
+  .sheet, #chatSheet, #decide, #toast, #home, .hcard,
+  #actSheet, #actScrim, .actchip { transition:none; }
   #switchOverlay .spin { animation:none; border-top-color:var(--line); }
   .sdot.working, .badge.needs, #decide .eyebrow .ddot { animation:none; }
   /* typing dots hold steady; state stays legible via color and text */
@@ -2034,6 +2169,23 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
   <p class="hint">A new voice takes effect on the next reply.</p>
 </section>
 
+<!-- v17: activity detail sheet + its own scrim (stacks above the chat) -->
+<div id="actScrim"></div>
+<section id="actSheet" role="dialog" aria-label="Tool activity detail" aria-modal="true">
+  <div class="grab" aria-hidden="true"></div>
+  <div class="acthead">
+    <div class="atitle" id="actTitle"></div>
+    <button id="actClose" aria-label="Close detail">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div class="actpath" id="actPath"></div>
+  <div class="actsub" id="actSub" style="display:none"></div>
+  <div class="actcard" id="actBody"></div>
+</section>
+
 <div class="overlay hidden" id="startOverlay">
   <div class="glyph" aria-hidden="true"></div>
   <h1 id="startTitle">voicebridge</h1>
@@ -2185,7 +2337,7 @@ function setState(s, label){
      orb still sees Listening / Working / Speaking (word + any short detail) */
   if(chatStateEl){
     const w = word || (s === 'ended' ? 'Idle' : s);
-    chatStateEl.textContent = detail ? (w + ' · ' + detail) : w;
+    chatStateEl.textContent = detail ? (w + ' \u00b7 ' + detail) : w;
   }
   syncMicChip();   // the composer mic reflects listening/muted live
 }
@@ -2750,7 +2902,207 @@ function copyText(t){
   }catch(e){}
   fail();
 }
-function bubble(role, text, liveNow, label){
+/* ============================================================ v17 activity */
+/* The chat now renders each assistant reply's tool ACTIVITY the way Claude
+   Code's remote-session view does: dim inline chips under the reply, each
+   opening a detail bottom sheet with a real diff / command / path. Every
+   filename, command and diff line is set through textContent (escape-free
+   by construction), so a name or command carrying <img onerror=...> renders
+   as literal text and never as markup. */
+const ELL = '\u2026';   /* horizontal ellipsis, ASCII-safe source */
+const ACT_KINDS = { edit:1, write:1, read:1, run:1, tool:1 };
+const DEFAULT_VERB = { edit:'Edited', write:'Created', read:'Read', run:'Ran', tool:'Used' };
+function clampStr(v, max){ return v == null ? '' : String(v).slice(0, max); }
+/* a hostile /chat payload cannot smuggle a function, an object, or a huge
+   blob past this: kinds are whitelisted, every field is coerced to a clamped
+   string or a small number */
+function sanitizeActivity(raw){
+  if(!Array.isArray(raw)) return null;
+  const out = [];
+  for(const it of raw){
+    if(!it || typeof it !== 'object') continue;
+    const kind = String(it.kind || '');
+    if(!ACT_KINDS[kind]) continue;
+    const num = v => { const n = Math.trunc(Number(v)); return isFinite(n) && n > 0 ? n : 0; };
+    out.push({
+      kind: kind,
+      verb: clampStr(it.verb, 40) || DEFAULT_VERB[kind],
+      file: clampStr(it.file, 300),
+      path: clampStr(it.path, 1000),
+      cmd:  clampStr(it.cmd, 2000),
+      desc: clampStr(it.desc, 300),
+      label: clampStr(it.label, 300),
+      add:  num(it.add),
+      del:  num(it.del),
+      old:  clampStr(it.old, 4000),
+      new:  clampStr(it.new, 4000)
+    });
+    if(out.length >= 40) break;   /* a reply cannot flood the column */
+  }
+  return out.length ? out : null;
+}
+/* truncate a filename in the MIDDLE, keeping the extension */
+function truncMiddle(s, max){
+  s = String(s == null ? '' : s); max = max || 40;
+  if(s.length <= max) return s;
+  let ext = '';
+  const dot = s.lastIndexOf('.');
+  if(dot > 0 && s.length - dot <= 8) ext = s.slice(dot);
+  const keep = max - 1 - ext.length;               /* room for the ellipsis */
+  if(keep < 6) return s.slice(0, Math.max(1, max - 1)) + ELL;
+  const head = Math.ceil(keep * 0.6), tail = keep - head;
+  const midEnd = s.length - ext.length;
+  return s.slice(0, head) + ELL + s.slice(midEnd - tail, midEnd) + ext;
+}
+const CHEVRON_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"' +
+  ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M9 5l7 7-7 7"/></svg>';
+function actChipLabel(it){
+  /* an accessible one-line description, textContent-only */
+  if(it.kind === 'run') return it.verb + ' ' + (it.cmd || '');
+  if(it.kind === 'tool') return it.verb + ' ' + (it.label || '');
+  const fn = it.file || it.path || '';
+  let s = it.verb + ' ' + fn;
+  if(it.add) s += ' +' + it.add;
+  if(it.del) s += ' -' + it.del;
+  return s;
+}
+function activityChip(it){
+  const b = document.createElement('button');
+  b.className = 'actchip';
+  b.setAttribute('aria-label', actChipLabel(it));
+  const verb = document.createElement('span');
+  verb.className = 'averb'; verb.textContent = it.verb;
+  b.appendChild(verb);
+  const main = document.createElement('span');
+  main.className = 'afile';
+  if(it.kind === 'run'){
+    main.textContent = (it.cmd || '').split('\n')[0];
+    main.title = it.cmd || '';
+  }else if(it.kind === 'tool'){
+    main.textContent = it.label || '';
+    main.title = it.label || '';
+  }else{
+    const fn = it.file || it.path || '';
+    main.textContent = truncMiddle(fn, 40);
+    main.title = it.path || fn;
+  }
+  b.appendChild(main);
+  if((it.kind === 'edit' || it.kind === 'write') && it.add){
+    const a = document.createElement('span'); a.className = 'aadd';
+    a.textContent = '+' + it.add; b.appendChild(a);
+  }
+  if((it.kind === 'edit' || it.kind === 'write') && it.del){
+    const d = document.createElement('span'); d.className = 'adel';
+    d.textContent = '-' + it.del; b.appendChild(d);
+  }
+  /* read needs no chevron per the reference, but still opens on tap */
+  if(it.kind !== 'read'){
+    const ch = document.createElement('span'); ch.className = 'achev';
+    ch.innerHTML = CHEVRON_SVG; b.appendChild(ch);
+  }
+  b.addEventListener('click', ev => { ev.stopPropagation(); openActSheet(it); });
+  return b;
+}
+function renderActivity(list){
+  const box = document.createElement('div'); box.className = 'actlist';
+  for(const it of list) box.appendChild(activityChip(it));
+  return box;
+}
+/* line diff via a classic LCS over the lines of old vs new; emits context,
+   removed and added rows with old/new line numbers */
+function lineDiff(oldStr, newStr){
+  const a = String(oldStr == null ? '' : oldStr).split('\n');
+  const b = String(newStr == null ? '' : newStr).split('\n');
+  const n = a.length, m = b.length;
+  const dp = [];
+  for(let i = 0; i <= n; i++) dp.push(new Array(m + 1).fill(0));
+  for(let i = n - 1; i >= 0; i--){
+    for(let j = m - 1; j >= 0; j--){
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1
+                               : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out = []; let i = 0, j = 0;
+  while(i < n && j < m){
+    if(a[i] === b[j]){ out.push({ sign:' ', oldNo:i + 1, newNo:j + 1, text:a[i] }); i++; j++; }
+    else if(dp[i + 1][j] >= dp[i][j + 1]){ out.push({ sign:'-', oldNo:i + 1, newNo:0, text:a[i] }); i++; }
+    else { out.push({ sign:'+', oldNo:0, newNo:j + 1, text:b[j] }); j++; }
+  }
+  while(i < n){ out.push({ sign:'-', oldNo:i + 1, newNo:0, text:a[i] }); i++; }
+  while(j < m){ out.push({ sign:'+', oldNo:0, newNo:j + 1, text:b[j] }); j++; }
+  return out;
+}
+function plainLines(str){
+  return String(str == null ? '' : str).split('\n')
+    .map((t, i) => ({ sign:' ', oldNo:0, newNo:i + 1, text:t }));
+}
+function fillDiffCard(el, lines){
+  el.textContent = '';
+  for(const ln of lines){
+    const row = document.createElement('div');
+    row.className = 'dline' + (ln.sign === '+' ? ' add' : ln.sign === '-' ? ' del' : '');
+    const no = document.createElement('span'); no.className = 'dno';
+    no.textContent = ln.sign === '-' ? String(ln.oldNo)
+                   : (ln.newNo ? String(ln.newNo) : (ln.oldNo ? String(ln.oldNo) : ''));
+    const sg = document.createElement('span'); sg.className = 'dsign';
+    sg.textContent = ln.sign === ' ' ? '' : ln.sign;
+    const tx = document.createElement('span'); tx.className = 'dtx';
+    tx.textContent = ln.text;
+    row.append(no, sg, tx);
+    el.appendChild(row);
+  }
+}
+/* the activity detail sheet: its own scrim, stacks above the chat; closed
+   by the X, a scrim tap, or hardware back (pushState / popstate) */
+const actSheet = $('actSheet'), actScrim = $('actScrim'),
+      actTitle = $('actTitle'), actPath = $('actPath'),
+      actSub = $('actSub'), actBody = $('actBody');
+let actOpen = false, actHist = false, actPopIgnore = false;
+function openActSheet(it){
+  if(!it) return;
+  actTitle.textContent = (it.verb || DEFAULT_VERB[it.kind] || 'Done') + ' Completed';
+  actSub.style.display = 'none'; actSub.textContent = '';
+  actBody.style.display = ''; actBody.textContent = '';
+  let path = '';
+  if(it.kind === 'edit'){
+    path = it.path || it.file || '';
+    fillDiffCard(actBody, lineDiff(it.old, it.new));
+  }else if(it.kind === 'write'){
+    path = it.path || it.file || '';
+    fillDiffCard(actBody, lineDiff('', it.new));
+  }else if(it.kind === 'run'){
+    if(it.desc){ actSub.textContent = it.desc; actSub.style.display = ''; }
+    fillDiffCard(actBody, plainLines(it.cmd));
+  }else if(it.kind === 'read'){
+    path = it.path || it.file || '';
+    actBody.style.display = 'none';
+  }else{   /* tool */
+    if(it.label){ actSub.textContent = it.label; actSub.style.display = ''; }
+    actBody.style.display = 'none';
+  }
+  actPath.textContent = path;
+  actPath.style.display = path ? '' : 'none';
+  actBody.scrollTop = 0; actBody.scrollLeft = 0;
+  actOpen = true;
+  actSheet.classList.add('open');
+  document.body.classList.add('act-open');
+  if(!actHist){ try{ history.pushState({ vbact:1 }, ''); actHist = true; }catch(e){} }
+}
+function closeActSheet(fromPop){
+  if(!actOpen) return;
+  actOpen = false;
+  actSheet.classList.remove('open');
+  document.body.classList.remove('act-open');
+  if(actHist){
+    actHist = false;
+    if(!fromPop){ actPopIgnore = true; try{ history.back(); }catch(e){ actPopIgnore = false; } }
+  }
+}
+$('actClose').addEventListener('click', () => closeActSheet());
+actScrim.addEventListener('click', () => closeActSheet());
+function bubble(role, text, liveNow, label, activity){
   /* v16 document layout: one .msgw wrapper per message in a single
      left-aligned column. USER messages get the subtle rounded block
      (.ublk); AGENT replies stay open text (.msg-a). The eyebrow row on
@@ -2790,6 +3142,10 @@ function bubble(role, text, liveNow, label){
     d.appendChild(more);
   }
   w.appendChild(d);
+  /* v17: under an assistant reply, its tool activity as inline chips */
+  if(role !== 'user' && Array.isArray(activity) && activity.length){
+    w.appendChild(renderActivity(activity));
+  }
   return w;
 }
 /* v7 pill rule, bulletproof: the pill may exist ONLY when (sheet open) AND
@@ -2902,7 +3258,7 @@ function renderChat(){
     if(t.ts) prevTs = t.ts;
     const lbl = t.role !== prevRole ? speakerLabel(t.role) : '';
     prevRole = t.role;
-    chatLines.appendChild(bubble(t.role, t.text, false, lbl));
+    chatLines.appendChild(bubble(t.role, t.text, false, lbl, t.activity));
   });
   syncTyping();
   syncQuestion();   // the option cards live at the transcript's end
@@ -2967,9 +3323,17 @@ async function refreshChat(){
         (tsMap[k] = tsMap[k] || []).push(t.ts);
       });
       localTurns = j.turns
-        .map(t => ({ role: t.role === 'user' ? 'user' : 'assistant',
-                     text: String(t.text || '').trim() }))
-        .filter(t => t.text);
+        .map(t => {
+          const role = t.role === 'user' ? 'user' : 'assistant';
+          const o = { role: role, text: String(t.text || '').trim() };
+          /* v17: carry the assistant turn's tool activity, sanitized */
+          if(role === 'assistant'){
+            const act = sanitizeActivity(t.activity);
+            if(act) o.activity = act;
+          }
+          return o;
+        })
+        .filter(t => t.text || (t.activity && t.activity.length));
       localTurns.forEach(t => {
         const k = t.role + '\n' + t.text;
         if(tsMap[k] && tsMap[k].length) t.ts = tsMap[k].shift();
@@ -4075,6 +4439,11 @@ function closeChatSheet(fromPop){
   }
 }
 window.addEventListener('popstate', () => {
+  /* v17: the activity detail sheet owns the topmost history entry when open.
+     actPopIgnore swallows the synthetic back that closing it via the X /
+     scrim fires, so that back never also collapses the chat. */
+  if(actPopIgnore){ actPopIgnore = false; return; }
+  if(actOpen){ closeActSheet(true); return; }
   if(chatOpenState) closeChatSheet(true);
   else chatHist = false;
 });
@@ -4315,9 +4684,18 @@ function toggleHush(){
   else if(hushPaused && resumeText) resumeVoice();
 }
 syncHushBtn();
-/* the orb only ever PAUSES (never resume: a stray orb tap must not restart the
-   voice); the corner button is the two-way control the user asked for */
-$('orbzone').addEventListener('click', pauseVoice);
+/* v17: the orb is now the full one-tap voice control, matching the ask:
+   SPEAKING -> pause; PAUSED (a remainder is held) -> resume; and once the
+   reply has fully FINISHED (not speaking, not paused, no turn in flight) and
+   a lastReplyText exists -> replay it from the top. It never fires while a
+   turn is working or a decision is open, so it does not fight barge-in;
+   replayLast() arms its own barge monitor, so the replay stays interruptible. */
+function orbTap(){
+  if(state === 'speaking'){ pauseVoice(); return; }
+  if(hushPaused && resumeText){ resumeVoice(); return; }
+  if(live && !turnActive && !decisionOpen && lastReplyText){ replayLast(); }
+}
+$('orbzone').addEventListener('click', orbTap);
 hushBtn.addEventListener('click', toggleHush);
 scrim.addEventListener('click', () => { closeSessSheet(); closeClosedSheet(); closeSetSheet(); });
 $('pill').addEventListener('click', () => { sessOpen ? closeSessSheet() : openSessSheet(); });
