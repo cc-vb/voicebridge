@@ -804,6 +804,11 @@ _KOKORO_VOICE_RE = re.compile(r"^[a-z]{2}_[a-z]+$")
 MIN_SPEED = 0.5
 MAX_SPEED = 3.5
 KOKORO_MAX_SPEED = 2.0
+# Kokoro's own `speed` param above ~1.2x flattens prosody and sounds robotic
+# (the phone default of 262 wpm = 1.5x was synthesized natively at 1.5x, the
+# "still robotic" report). So synthesize at most this fast NATIVELY and let
+# ffmpeg atempo, which preserves pitch/formants, carry the rest of the way.
+KOKORO_NATURAL_SPEED = 1.15
 
 
 def get_engine() -> str:
@@ -911,8 +916,9 @@ def _kokoro_wav(text: str, out: str = "", voice: str = "") -> str:
         want = max(MIN_SPEED, min(MAX_SPEED, float(get_rate()) / 175.0))
     except ValueError:
         want = 1.0
-    # Synthesize at Kokoro's fastest, then re-time the rest of the way.
-    speed = min(want, KOKORO_MAX_SPEED)
+    # Synthesize at a NATURAL Kokoro speed, then pitch-preserving atempo
+    # carries the rest, so fast rates stay smooth instead of robotic.
+    speed = min(want, KOKORO_NATURAL_SPEED)
     retime = want / speed
     payload = json.dumps({"text": text, "voice": voice, "speed": speed})
     try:
