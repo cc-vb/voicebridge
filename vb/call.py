@@ -268,6 +268,11 @@ import threading as _threading
 _SUBS: set = set()
 _SUBS_LOCK = _threading.Lock()
 
+# Keepalive cadence for /events, in ~1s loop ticks. A comment frame stops a
+# proxy or tunnel idling the stream out. Named rather than inline so a test
+# can shorten it: asserting the real 10s costs 10s of suite time per run.
+SSE_PING_TICKS = 10
+
 
 def _broadcast(ev: dict) -> None:
     with _SUBS_LOCK:
@@ -341,6 +346,96 @@ def _handle_pending(text: str, pending: str) -> str:
     return f"Claude is waiting on you: {q}. Say yes to allow, or no to decline."
 
 
+# Readiness is asked once a second by EVERY open event stream, and the mac
+# probe is an osascript spawn, so an uncached answer would multiply by the
+# number of connected phones. One shared answer with a short TTL keeps the
+# cost flat; 2s is well under how fast a human switches windows and notices.
+_READY_TTL = 2.0
+_READY_LOCK = _threading.Lock()
+_READY_AT = 0.0
+_READY_VAL = {}
+
+READY_OK = "ok"
+READY_NO_SESSION = "no_session"
+READY_LOCKED = "locked"
+READY_NOT_FRONTMOST = "not_frontmost"
+READY_UNKNOWN_FRONT = "unknown_front"
+
+# What each blocker should say on a phone. Spoken aloud as well as shown, so
+# they are sentences, not codes, and they name the thing you have to go fix.
+READY_SAY = {
+    READY_NO_SESSION: "I can't find an open session on the Mac.",
+    READY_LOCKED: "Your Mac's screen is locked, so I can't type into the "
+                  "session. Unlock it and try again.",
+    READY_NOT_FRONTMOST: "{front} is the front window on your Mac, not "
+                         "{bound}. Bring {bound} forward and try again.",
+    READY_UNKNOWN_FRONT: "I can't see which window is in front on your Mac, "
+                         "so I won't type anywhere. Check that the terminal "
+                         "still has Accessibility permission.",
+}
+
+
+def readiness() -> dict:
+    """Whether a turn could reach the session RIGHT NOW, and if not, why.
+
+    Injection is a clipboard paste into the frontmost Mac app, so the phone
+    can be perfectly connected to a healthy relay and still have nowhere to
+    put your words. That used to be discovered at paste time, one turn too
+    late: you spoke a whole sentence into a spinner and only then heard an
+    apology. This answers BEFORE you speak, and names the blocker, so the
+    phone can say "Slack is the front window, not Ghostty" instead of
+    showing a spinner that means any of four different things.
+
+    reason is one of the READY_* constants. `front` and `bound` are included
+    so the phone can name both apps without a second round trip; both are
+    "" when we could not read them."""
+    from .talkd import bound_app
+    bound = bound_app()
+    if DRYRUN:
+        return {"ok": True, "reason": READY_OK, "front": "", "bound": bound}
+    if not _target_transcript():
+        return {"ok": False, "reason": READY_NO_SESSION,
+                "front": "", "bound": bound}
+    front = inject.frontmost_app()
+    if not bound:
+        # Unbound is the pre-binding version's always-on behaviour, and
+        # app_focused() still honours it, so readiness must agree rather
+        # than block a setup that injection would happily accept.
+        return {"ok": True, "reason": READY_OK, "front": front, "bound": ""}
+    if front:
+        ok = front.strip().casefold() == bound.casefold()
+        return {"ok": ok, "reason": READY_OK if ok else READY_NOT_FRONTMOST,
+                "front": front, "bound": bound}
+    # No frontmost app: blocked either way, but the phone deserves the real
+    # reason. A locked screen is worth naming because it is the one a person
+    # can fix from across the room; anything else stays honestly vague.
+    locked = oslayer.screen_locked()
+    return {"ok": False,
+            "reason": READY_LOCKED if locked else READY_UNKNOWN_FRONT,
+            "front": "", "bound": bound}
+
+
+def readiness_cached(ttl: float = _READY_TTL) -> dict:
+    """readiness() shared across event streams. See _READY_TTL."""
+    global _READY_AT, _READY_VAL
+    with _READY_LOCK:
+        if _READY_VAL and time.time() - _READY_AT < ttl:
+            return _READY_VAL
+    val = readiness()          # probe OUTSIDE the lock: it spawns a process
+    with _READY_LOCK:
+        _READY_AT, _READY_VAL = time.time(), val
+    return val
+
+
+def readiness_reason(r: dict) -> str:
+    """The speakable sentence for a blocked readiness, "" when it is fine."""
+    if r.get("ok"):
+        return ""
+    say = READY_SAY.get(r.get("reason", ""), "")
+    return say.format(front=r.get("front") or "Another app",
+                      bound=r.get("bound") or "the terminal")
+
+
 def _inject_only(text: str) -> str:
     """Inject a turn WITHOUT waiting: '' on success, else a speakable reason.
     The stream (SSE) carries completion, so the non-blocking /ask path
@@ -357,9 +452,12 @@ def _inject_only(text: str) -> str:
         return _handle_pending(text, pending)   # '' when yes was delivered
     from .talkd import bound_app
     if not inject.paste_text(text, send=True, expect_app=bound_app()):
-        return ("I couldn't type into the session, the terminal isn't the "
-                "focused window on your Mac. Bring it to the front, or check "
-                "the screen isn't locked, then try again.")
+        # The paste is the authority on failure; readiness only supplies the
+        # WORDING, freshly, so we name the actual blocker instead of listing
+        # every thing it might have been.
+        return (readiness_reason(readiness())
+                or "I couldn't type into the session. Bring the terminal to "
+                   "the front on your Mac, then try again.")
     return ""
 
 
@@ -386,9 +484,9 @@ def _ask_session(text: str, turn_id: str = "") -> str:
         # instead of typing into Slack / waiting 90s for nothing.
         from .talkd import bound_app
         if not inject.paste_text(text, send=True, expect_app=bound_app()):
-            return ("I couldn't type into the session, the terminal isn't "
-                    "the focused window on your Mac. Bring it to the front, "
-                    "or check the screen isn't locked, then try again.")
+            return (readiness_reason(readiness())
+                    or "I couldn't type into the session. Bring the terminal "
+                       "to the front on your Mac, then try again.")
     if turn_id:
         # Delivery ack on the event stream: the phone stops guessing whether
         # its prompt actually landed in the session.
@@ -4831,6 +4929,11 @@ class Handler(BaseHTTPRequestHandler):
                 emit("hello", {"uuid": last_u})
                 last_pend, last_size, ticks, last_tp = "", -1, 0, tp
                 last_sstate, last_qid = "", ""
+                # Readiness is pushed once up front so a phone that connects
+                # while the Mac is already blocked shows the banner without
+                # waiting for a change that may never come.
+                last_ready = readiness_cached()
+                emit("ready", last_ready)
                 while True:
                     try:
                         ev = q.get(timeout=1.0)   # acks etc, or a 1s tick
@@ -4876,16 +4979,30 @@ class Handler(BaseHTTPRequestHandler):
                         last_sstate = sstate
                         emit("sstate", {"state": sstate})
                     # An OPEN AskUserQuestion becomes in-chat option cards.
-                    q = core.pending_question(tp) if tp else {}
-                    qid = q.get("id", "") if q else ""
+                    # NOT `q`: that name is this stream's subscriber queue.
+                    # Rebinding it to a dict made the next q.get(timeout=...)
+                    # a dict.get() with a keyword, which killed the loop after
+                    # ONE tick, and then _SUBS.discard(q) raised on the
+                    # unhashable dict so the queue was never unregistered.
+                    # The stream survived only because EventSource reconnects,
+                    # turning a long-lived channel into a 1s reconnect loop
+                    # that leaked a subscriber every time round.
+                    pq = core.pending_question(tp) if tp else {}
+                    qid = pq.get("id", "") if pq else ""
                     if qid != last_qid:
                         last_qid = qid
                         if qid:
-                            emit("question", q)
+                            emit("question", pq)
                         else:
                             emit("question_clear", {})
+                    # Whether a turn could land: emitted only when it FLIPS,
+                    # so a phone sitting on a healthy Mac gets nothing.
+                    rd = readiness_cached()
+                    if rd != last_ready:
+                        last_ready = rd
+                        emit("ready", rd)
                     ticks += 1
-                    if ticks % 10 == 0:
+                    if ticks % SSE_PING_TICKS == 0:
                         self.wfile.write(b": ping\n\n")
                         self.wfile.flush()
             except Exception:
@@ -4920,6 +5037,10 @@ class Handler(BaseHTTPRequestHandler):
                     core.get_pending_message(sid), max_chars=300),
                 "state": core.active_session_state(tp) if tp else "idle",
                 "question": core.pending_question(tp) if tp else {},
+                # Can a turn actually LAND right now, and if not, why. The
+                # client shows this as a banner naming the blocker rather
+                # than discovering it after a turn is already spoken.
+                "ready": readiness_cached(),
             }).encode(), "application/json")
         elif path == "/poll":
             # Latest reply of the active session, no injection: lets the page

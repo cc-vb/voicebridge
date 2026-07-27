@@ -67,16 +67,12 @@ def press_enter(expect_app: str = "") -> bool:
 
 
 def frontmost_app() -> str:
-    """Name of the app that will receive the paste; logged for diagnosis."""
-    try:
-        r = subprocess.run(
-            ["osascript", "-e",
-             'tell application "System Events" to get name of first '
-             'application process whose frontmost is true'],
-            capture_output=True, text=True)
-        return r.stdout.strip()
-    except Exception:
-        return ""
+    """Name of the app that will receive the paste; logged for diagnosis.
+
+    The probe itself is per-platform, so it lives in oslayer with the rest
+    of the OS-specific code. This name stays because it is the seam the
+    focus tests patch and what talkd calls."""
+    return oslayer.frontmost_app()
 
 
 def paste_text(text: str, send: bool = False, expect_app: str = "") -> bool:

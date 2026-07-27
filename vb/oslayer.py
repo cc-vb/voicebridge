@@ -138,6 +138,85 @@ def press_escape() -> None:
         _xdotool("key", "Escape")
 
 
+# ---------- who would receive a keystroke, and can they receive one ---------
+def frontmost_app() -> str:
+    """Name of the app a paste would land in right now, "" when unknown.
+
+    Empty is a meaningful answer and must stay one. A locked screen, a
+    switched macOS user and a missing Accessibility grant all answer ""
+    here, and every caller treats "" as "do not inject" (talkd.app_focused
+    fails closed on it). Never substitute a guess to fill the gap.
+
+    WINDOWS/LINUX: UNVERIFIED."""
+    if IS_MAC:
+        return _run_out(["osascript", "-e",
+                         'tell application "System Events" to get name of '
+                         'first application process whose frontmost is true'])
+    if IS_WIN:
+        ps = (
+            "Add-Type @'\nusing System;\nusing System.Runtime.InteropServices;"
+            "\npublic class VBWin {\n"
+            '  [DllImport("user32.dll")] public static extern IntPtr '
+            "GetForegroundWindow();\n"
+            '  [DllImport("user32.dll")] public static extern int '
+            "GetWindowThreadProcessId(IntPtr h, out int p);\n}\n'@\n"
+            "$p=0; [void][VBWin]::GetWindowThreadProcessId("
+            "[VBWin]::GetForegroundWindow(), [ref]$p); "
+            "(Get-Process -Id $p).ProcessName"
+        )
+        return _run_out(["powershell", "-NoProfile", "-Command", ps])
+    xd = which("xdotool")
+    if not xd:
+        return ""
+    return _run_out([xd, "getactivewindow", "getwindowname"])
+
+
+def screen_locked() -> bool:
+    """True when the screen is locked and a keystroke would go nowhere.
+
+    macOS publishes CGSSessionScreenIsLocked in IOConsoleUsers only WHILE
+    the screen is locked, so the key's absence is the unlocked state rather
+    than a failed probe. A running screen saver counts too: it can be
+    configured without a password, but it still eats the keystroke.
+
+    Returns False when we cannot tell, and that is the honest direction to
+    be wrong in. This value never decides WHETHER to inject, frontmost_app()
+    already fails closed for that; it only chooses the WORDING of the reason
+    the phone shows. Guessing "locked" would put a specific, checkable claim
+    on screen that we did not actually verify.
+
+    WINDOWS/LINUX: UNVERIFIED, reported as not-locked."""
+    if not IS_MAC:
+        return False
+    out = _run_out(["ioreg", "-n", "Root", "-d1", "-a"])
+    i = out.find("CGSSessionScreenIsLocked")
+    if i >= 0:
+        # ioreg -a is a plist: the key is followed by its boolean element.
+        return "<true" in out[i:i + 80]
+    return _proc_running("ScreenSaverEngine")
+
+
+def _run_out(cmd: list, timeout: float = 5.0) -> str:
+    """Stdout of a probe, "" on any failure. A non-zero exit answers ""
+    rather than leaking a partial line: callers read "" as "cannot tell"."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout)
+    except Exception:
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _proc_running(name: str) -> bool:
+    if IS_WIN:
+        return False        # no pgrep; the ioreg path is macOS-only anyway
+    try:
+        return subprocess.run(["pgrep", "-x", name], capture_output=True,
+                              timeout=3).returncode == 0
+    except Exception:
+        return False
+
+
 # ---- mac impls ----
 def _osa(script: str) -> None:
     subprocess.run(["osascript", "-e", script],
