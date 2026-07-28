@@ -399,12 +399,18 @@ def main(argv) -> int:
             return 1
         saved = core._read(core.STATE_DIR / "public_url")
         if saved:
-            # Permanent link: but VERIFY it's actually reachable before
-            # printing a beautiful QR to a dead endpoint.
-            if _up(saved):
-                return main(["call", "tunnel"])
-            print(f"saved link {saved} isn't responding; starting a fresh "
-                  f"tunnel instead (clear it with: vb call link off)")
+            # Permanent link (e.g. a Tailscale Funnel / named CF tunnel URL):
+            # verify it is reachable, but forgivingly, a stable URL can be
+            # briefly slow, so retry a few times with a longer timeout before
+            # giving up. A one-shot 3s check wrongly rejected valid URLs and
+            # silently fell back to a quick tunnel, defeating the pin.
+            for _try in range(3):
+                if _up(saved, timeout=6.0):
+                    return main(["call", "tunnel"])
+                _t.sleep(1.5)
+            print(f"saved link {saved} isn't responding after 3 tries; "
+                  f"is the relay up (vb call on)? starting a quick tunnel for "
+                  f"now (clear the pin with: vb call link off)")
         cf = _sh.which("cloudflared") or next(
             (p for p in ("/opt/homebrew/bin/cloudflared",
                          "/usr/local/bin/cloudflared") if Path(p).exists()), "")
