@@ -4882,17 +4882,17 @@ function armStitch(){
   }, 200);
 }
 function armStitchMax(){
-  /* Silence endpoint + safety net. whisperVoice() can keep blocking the normal
-     holdMs flush while the mic is open (a segment reads as ongoing speech), so
-     in practice THIS timer, not armStitch, decides when most whisper prompts
-     send. A flat 4s made every prompt sit ~4s on "listening" before it went,
-     which felt stuck and slow. Flush ~1.5s after the LAST transcribed word
-     (2.4s if you clearly trailed off mid-thought), reset on each new word so a
-     long multi-segment prompt still extends. Whisper only emits real words, so
-     ambient noise never resets this, noise-after-you-stop can't stall it. */
+  /* Short settle after the recorder's own 1.0s silence endpoint already
+     decided you stopped. This timer, not armStitch, decides when most whisper
+     prompts send (whisperVoice() stays true while the mic is open, blocking the
+     holdMs path). It used to be a flat 4s, then 1.5s, both STACKED on top of
+     the 1.0s silence, so a prompt sat 3-4s before it went. Now ~0.5s (0.9s if
+     you clearly trailed off mid-thought on a comma or and/but/so). Resets on
+     each new transcribed word so a genuine continuation still extends, and
+     since whisper only emits real words, ambient noise never resets it. */
   if(stitchMax) clearTimeout(stitchMax);
   const mid = /(,|\b(and|or|but|so|because|then|plus|also|with))$/i.test(stitchBuf.trim());
-  const ms = mid ? 2400 : 1500;
+  const ms = mid ? 900 : 500;
   stitchMax = setTimeout(function(){ stitchMax = null; if(stitchBuf.trim()) flushStitch(); }, ms);
 }
 function holdStitchOnSpeech(){
@@ -5036,10 +5036,11 @@ async function listenWhisper(){
       spoke = true; quiet = 0;
       if(stitchTimer) holdStitchOnSpeech();   // resumed inside the window
     } else if(spoke) quiet++;
-    /* ~1.4s of RMS silence ends the utterance (7 x 200ms); thinking pauses
-       shorter than that stay inside ONE segment, and longer ones are caught
-       by the stitch window that follows */
-    if((spoke && quiet >= 7) || (!spoke && ++idle > 250)){ clearInterval(iv); mr.stop(); }
+    /* ~1.0s of RMS silence ends the utterance (5 x 200ms). This is the
+       end-of-speech detector: once you have been quiet this long you have
+       stopped, so the prompt should go. Shorter thinking pauses stay inside
+       ONE segment; a longer pause means "send it" (tap the orb to add more). */
+    if((spoke && quiet >= 5) || (!spoke && ++idle > 250)){ clearInterval(iv); mr.stop(); }
   }, 200);
   mr.onstop = () => {
     src.disconnect(); recActive = false;
