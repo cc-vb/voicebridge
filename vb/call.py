@@ -522,6 +522,43 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
+  CHANGES, v23 to v24, ONE scoped wire-format change (nothing else touched:
+  turn engine + stream protocol, session isolation, connect-guard,
+  mic-release, false-barge resume, activity chips, mode picker, composer,
+  single voice picker, orb rendering, reply queueing, whisper toggle, orb
+  replay + double-tap skip, per-reply replay):
+
+    OPUS SPOKEN AUDIO with a WAV fallback. The Mac (Kokoro) voice pipeline now
+    asks the server for ogg/opus (roughly 15x smaller than wav, so it moves
+    fast over the tunnel) and only falls back to wav on a browser that cannot
+    decode it. The server contract: POST /tts takes {text,voice,opus}; with
+    opus:true it returns audio/ogg (opus), otherwise audio/wav. Both decode
+    through the SAME WebAudio decodeAudioData path already in use.
+      - New module flag opusOk (default true) gates whether a request asks for
+        opus. EVERY POST /tts body (fetchTts for spoken replies AND
+        previewVoice for the settings preview) now carries opus: opusOk
+        alongside the existing text/voice.
+      - THE GUARANTEE (no gap, no dropped chunk): some browsers, notably iOS
+        Safari, cannot decode ogg/opus via decodeAudioData. Playback still runs
+        every returned chunk through decodeAudioData. When opusOk is true and a
+        decode THROWS/REJECTS on a chunk, opusOk is set false PERMANENTLY for
+        the session (disableOpus), and that SAME chunk is IMMEDIATELY re-fetched
+        with opus:false (wav) and decoded, so the user never hears a gap. The
+        discovery is persisted in localStorage vbopus='off'.
+      - PRE-CHECK: on load, if localStorage vbopus==='off', opusOk starts false
+        so that device skips opus entirely and never pays the decode-then-retry
+        round trip again. There is NO user-agent sniff; the decode-failure
+        fallback is the real guarantee, the localStorage flag is only a cache.
+      - decodeAudio(ab) factors the callback-form decodeAudioData wrap that both
+        fetchTts and previewVoice already used, so the fallback lives in one
+        place. Everything else about the pipeline (short-first-chunk chunking,
+        prefetch, gapless chaining, pause/resume/replay, skip, per-reply replay,
+        queueing, the phone-voice fallback on non-opus failures) is UNCHANGED;
+        only the request format and the one opus-decode fallback path are new.
+    Validation harness (r-string round-trip, node --check, id/ref audit,
+    mini-DOM smoke test) lives alongside this file, not in it.
+-->
+<!--
   CHANGES, v22 to v23, TWO scoped chat changes (nothing else touched: turn
   engine + stream protocol, session isolation, connect-guard, mic-release,
   false-barge resume, activity chips + detail sheet, mode picker, multi-line
@@ -2860,6 +2897,21 @@ try{
   var _sp = localStorage.getItem('vbstt');
   sttPref = (_sp === 'phone') ? 'phone' : 'mac';
 }catch(e){ sttPref = 'mac'; }
+/* v24 wire format: ask the server for ogg/opus spoken audio (~15x smaller
+   than wav over the tunnel). opusOk gates whether a POST /tts asks for opus.
+   Some browsers (iOS Safari) cannot decode ogg/opus via decodeAudioData; a
+   decode failure flips this off for the session and re-fetches the chunk as
+   wav (see fetchTts). We persist that discovery in localStorage vbopus='off'
+   and honor it as a cheap pre-check on load, so a known no-opus device skips
+   opus entirely. NO user-agent sniff: the decode-failure fallback is the real
+   guarantee, this flag is only a cache. */
+let opusOk = true;
+try{ if(localStorage.getItem('vbopus') === 'off') opusOk = false; }catch(e){}
+function disableOpus(){
+  if(!opusOk) return;
+  opusOk = false;
+  try{ localStorage.setItem('vbopus', 'off'); }catch(e){}
+}
 /* WHICH Kokoro voice speaks. Three curated ids, picked in settings,
    persisted, sent as {"voice": id} in every /tts body. A switch applies
    from the next reply (no mid-reply engine restart). */
@@ -3112,6 +3164,12 @@ function sayPhone(text, done){
 function stopMacAudio(){
   if(macSrc){ try{ macSrc.onended = null; macSrc.stop(); }catch(e){} macSrc = null; }
 }
+/* Shared decode: callback form because older iOS Safari has no promise
+   decodeAudioData. Both fetchTts and previewVoice run returned bytes through
+   this, so the opus-vs-wav fallback logic lives in exactly one shape. */
+function decodeAudio(ab){
+  return new Promise((res, rej) => { audioCtx.decodeAudioData(ab, res, rej); });
+}
 function fetchTts(text){
   const ctl = new AbortController();
   /* Length-aware timeout. A ~290-char chunk takes ~3.5s to synthesize on the
@@ -3122,16 +3180,31 @@ function fetchTts(text){
      waits when synthesis is actually working. */
   const ms = Math.min(15000, Math.max(9000, text.length * 45));
   const tm = setTimeout(() => ctl.abort(), ms);
+  /* Snapshot the requested format for THIS fetch: only a chunk we asked for
+     as opus is allowed to retry as wav on a decode failure. */
+  const useOpus = opusOk;
   const p = fetch(urlFor('/tts'), {
     method:'POST', headers:{ 'Content-Type':'application/json' },
-    body:JSON.stringify({ text: text, voice: voiceName }), signal: ctl.signal })
+    body:JSON.stringify({ text: text, voice: voiceName, opus: useOpus }), signal: ctl.signal })
   .then(r => {
     if(!r.ok) throw new Error('tts ' + r.status);   // 503 = Kokoro unavailable
     return r.arrayBuffer();
   })
-  .then(ab => new Promise((res, rej) => {
-    /* callback form: older iOS Safari has no promise decodeAudioData */
-    audioCtx.decodeAudioData(ab, res, rej);
+  .then(ab => decodeAudio(ab).catch(err => {
+    /* Opus decode is unsupported here (iOS Safari): disable opus for the whole
+       session, remember it, and re-fetch THIS SAME chunk as wav so the user
+       hears no gap and no chunk is dropped. Only an opus-requested decode
+       retries; a wav decode failure is a real failure and propagates. */
+    if(!(useOpus && opusOk)) throw err;
+    disableOpus();
+    return fetch(urlFor('/tts'), {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ text: text, voice: voiceName, opus: false }), signal: ctl.signal })
+    .then(r => {
+      if(!r.ok) throw new Error('tts ' + r.status);
+      return r.arrayBuffer();
+    })
+    .then(ab2 => decodeAudio(ab2));
   }))
   .finally(() => clearTimeout(tm));
   p.catch(() => {});   // mark handled; the awaiter still sees the rejection
@@ -5217,18 +5290,28 @@ function previewVoice(id){
     if(audioCtx.state === 'suspended') audioCtx.resume();
   }catch(e){ toast('Natural voice unreachable right now'); return; }
   const name = VOICE_LABELS[id] || 'this voice';
+  const line = "Hi, I'm " + name + '. This is how I sound.';
   const ctl = new AbortController();
   previewCtl = ctl;
   const tm = setTimeout(() => { try{ ctl.abort(); }catch(e){} }, 5000);
+  /* Snapshot the requested format so only an opus preview retries as wav. */
+  const useOpus = opusOk;
   fetch(urlFor('/tts'), {
     method:'POST', headers:{ 'Content-Type':'application/json' },
-    body:JSON.stringify({ text: "Hi, I'm " + name + '. This is how I sound.',
-                          voice: id }),
+    body:JSON.stringify({ text: line, voice: id, opus: useOpus }),
     signal: ctl.signal })
   .then(r => { if(!r.ok) throw new Error('tts ' + r.status); return r.arrayBuffer(); })
-  .then(ab => new Promise((res, rej) => {
-    /* callback form: older iOS Safari has no promise decodeAudioData */
-    audioCtx.decodeAudioData(ab, res, rej);
+  .then(ab => decodeAudio(ab).catch(err => {
+    /* Opus decode unsupported here: disable opus for the session, remember it,
+       and re-fetch this preview as wav so the tapped voice still sounds. */
+    if(!(useOpus && opusOk)) throw err;
+    disableOpus();
+    return fetch(urlFor('/tts'), {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ text: line, voice: id, opus: false }),
+      signal: ctl.signal })
+    .then(r => { if(!r.ok) throw new Error('tts ' + r.status); return r.arrayBuffer(); })
+    .then(ab2 => decodeAudio(ab2));
   }))
   .then(buf => {
     if(myGen !== previewGen) return;   /* a newer tap superseded this one */
