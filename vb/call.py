@@ -396,7 +396,11 @@ def _inject_only(text: str) -> str:
     pending = core.get_pending_notice(_active_sid())
     if pending:
         return _handle_pending(text, pending)   # '' when yes was delivered
-    from .talkd import bound_app
+    from .talkd import bound_app, tty_for_sid
+    # Target THIS session's own terminal tab (via OWNERS sid->pid->tty), so
+    # with several sessions open the prompt lands in the one the phone
+    # selected, never just the frontmost tab.
+    target_tty = tty_for_sid(_active_sid())
     with _INJECT_LOCK:
         # Wait for the session to be FREE so the prompt lands as its own turn
         # instead of being lost while Claude is mid-reply. Capped; if it never
@@ -406,7 +410,8 @@ def _inject_only(text: str) -> str:
         while (core.active_session_state(tp) == "working"
                and time.time() - t0 < 45):
             time.sleep(0.6)
-        if not inject.paste_text(text, send=True, expect_app=bound_app()):
+        if not inject.paste_text(text, send=True, expect_app=bound_app(),
+                                 target_tty=target_tty):
             return ("I couldn't type into the session, the terminal isn't the "
                     "focused window on your Mac. Bring it to the front, or "
                     "check the screen isn't locked, then try again.")
@@ -434,8 +439,9 @@ def _ask_session(text: str, turn_id: str = "") -> str:
         # Guard the paste: it lands in the FRONTMOST Mac app, so if the bound
         # terminal isn't focused (or the screen is locked) refuse loudly
         # instead of typing into Slack / waiting 90s for nothing.
-        from .talkd import bound_app
-        if not inject.paste_text(text, send=True, expect_app=bound_app()):
+        from .talkd import bound_app, tty_for_sid
+        if not inject.paste_text(text, send=True, expect_app=bound_app(),
+                                 target_tty=tty_for_sid(_active_sid())):
             return ("I couldn't type into the session, the terminal isn't "
                     "the focused window on your Mac. Bring it to the front, "
                     "or check the screen isn't locked, then try again.")

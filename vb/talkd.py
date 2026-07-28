@@ -386,6 +386,24 @@ def _record_owner(sid: str, pid: int) -> None:
         core.log(f"talkd._record_owner failed: {e}")
 
 
+def tty_for_sid(sid: str) -> str:
+    """The /dev tty of the terminal running session `sid`, via the OWNERS
+    (sid -> Claude Code pid) registry, so a phone prompt targets THAT
+    session's tab even when several sessions are open. '' if unknown/dead."""
+    if not sid:
+        return ""
+    try:
+        pid = int((OWNERS / sid).read_text().strip())
+    except Exception:
+        return ""
+    try:
+        t = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=3).stdout.strip()
+        return ("/dev/" + t) if t and t not in ("??", "?") else ""
+    except Exception:
+        return ""
+
+
 def known_owners() -> dict:
     """{sid: pid} for every session we've seen, dropping records old enough to
     be noise (the roster only reaches back hours anyway)."""

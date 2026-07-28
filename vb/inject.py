@@ -185,7 +185,8 @@ def _terminal_inject(text: str, tty: str) -> bool:
         return False
 
 
-def paste_text(text: str, send: bool = False, expect_app: str = "") -> bool:
+def paste_text(text: str, send: bool = False, expect_app: str = "",
+               target_tty: str = "") -> bool:
     """Paste text into the focused app; optionally press Return to send.
 
     `expect_app` is the app voice is bound to. If anything else is frontmost
@@ -202,10 +203,14 @@ def paste_text(text: str, send: bool = False, expect_app: str = "") -> bool:
     # FOCUS-FREE fast path: if the bound app is Terminal, write straight into
     # the session's tab by tty, no activation, no flicker, and it can't hit
     # the wrong window. Only when submitting (the phone always submits).
+    # target_tty (the SELECTED session's tty, from OWNERS) is preferred so a
+    # prompt lands in THE RIGHT session's tab when several are open; else fall
+    # back to "the one claude tab" heuristic.
     if send and target.casefold() == "terminal":
-        tty = _claude_terminal_tty()
+        tty = (target_tty or "").strip() or _claude_terminal_tty()
         if tty and _terminal_inject(text, tty):
-            core.log(f"focus-free inject -> Terminal {tty}")
+            core.log(f"focus-free inject -> Terminal {tty}"
+                     + (" (session-targeted)" if target_tty else ""))
             return True
         # else fall through to the activate-restore path below
     restore = ""
