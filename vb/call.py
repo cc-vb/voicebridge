@@ -4836,6 +4836,7 @@ function stopHeartbeat(){
    status line counts down with shrinking dots so it never feels stuck. */
 let stitchBuf = '', stitchTimer = null, stitchTick = null, stitchDeadline = 0;
 let sttPending = 0;          // whisper segments still transcribing on the Mac
+let stitchMax = null;        // hard-cap: force a send N s after the last real word
 let flushWaits = 0;          // bounded wait for those segments at flush time
 let whisperVoice = () => false;   // is the CURRENT whisper segment already voiced?
 const CMD_RE = /^(stop listening|end call|hang up|goodbye)[.!]?$/i;
@@ -4861,6 +4862,15 @@ function armStitch(){
     statusEl.textContent = 'listening ' + '. '.repeat(dots).trim();
   }, 200);
 }
+function armStitchMax(){
+  /* Safety net for noisy places: whisperVoice() can keep blocking the normal
+     silence-based flush when ambient noise reads as speech, so a transcribed
+     prompt would sit unsent forever. This forces a flush ~4s after the LAST
+     REAL word (reset on each new transcribed word, so a long multi-segment
+     prompt still extends, but noise-after-you-stop can't stall the send). */
+  if(stitchMax) clearTimeout(stitchMax);
+  stitchMax = setTimeout(function(){ stitchMax = null; if(stitchBuf.trim()) flushStitch(); }, 4000);
+}
 function holdStitchOnSpeech(){
   /* the user resumed inside the window: cancel the pending send, keep buffer */
   if(stitchTimer){ clearTimeout(stitchTimer); stitchTimer = null; }
@@ -4869,6 +4879,7 @@ function holdStitchOnSpeech(){
 }
 function clearStitch(){
   if(stitchTimer){ clearTimeout(stitchTimer); stitchTimer = null; }
+  if(stitchMax){ clearTimeout(stitchMax); stitchMax = null; }
   stopStitchTick();
   stitchBuf = '';
 }
@@ -4880,6 +4891,7 @@ function stitchAppend(t){
   }
   cancelBargeResume();   // a real prompt arrived: the barge was genuine
   stitchBuf += (stitchBuf ? ' ' : '') + t;
+  armStitchMax();        // guarantee this eventually sends, even in noise
   const whole = stitchBuf.trim();
   if(CMD_RE.test(whole)){   // "end call" should not sit in a hold window
     clearStitch(); stopListening(); handleUtterance(whole); return;
@@ -4891,6 +4903,7 @@ function stitchAppend(t){
 }
 function flushStitch(){
   stitchTimer = null;
+  if(stitchMax){ clearTimeout(stitchMax); stitchMax = null; }
   stopStitchTick();
   if(sttPending > 0 && flushWaits < 32){   // a segment is still transcribing
     flushWaits++;
