@@ -424,6 +424,14 @@ def main(argv) -> int:
             import os.path as _op
             if _t.time() - _op.getmtime(str(core.STATE_DIR / "tunnel.pid")) > 3 * 3600:
                 raise Exception("tunnel too old to trust")
+            # The tunnel must still target the CURRENT port. A version update
+            # can change the per-user port (8790 -> 8790+uid), and a stale
+            # tunnel left aimed at the old port yields a 502 Bad Gateway. Read
+            # the running cloudflared's target and remint if it moved.
+            _tcmd = subprocess.run(["ps", "-o", "command=", "-p", str(tp_pid)],
+                                   capture_output=True, text=True).stdout
+            if f"127.0.0.1:{port}" not in _tcmd:
+                raise Exception("tunnel targets a stale port; reminting")
             _log0 = logf.read_text()
             m0 = _re0.search(r"https://[a-z0-9-]+\.trycloudflare\.com", _log0)
             # Judge OUR tunnel locally, never via public DNS: a fresh
