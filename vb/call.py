@@ -382,6 +382,30 @@ def _handle_pending(text: str, pending: str) -> str:
     return f"Claude is waiting on you: {q}. Say yes to allow, or no to decline."
 
 
+def _read_tts(wav: str, want_opus: bool):
+    """Return (bytes, content-type) for a synthesized WAV. When the phone asks
+    for opus, transcode to ogg/opus (~16x smaller over the tunnel, big audio-
+    latency win); fall back to the raw WAV if opus encoding isn't available."""
+    if want_opus:
+        try:
+            ogg = wav + ".ogg"
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", wav,
+                 "-c:a", "libopus", "-b:a", "24k", ogg],
+                capture_output=True, timeout=20)
+            if r.returncode == 0 and os.path.getsize(ogg) > 200:
+                data = open(ogg, "rb").read()
+                os.remove(ogg)
+                return data, "audio/ogg"
+            try:
+                os.remove(ogg)
+            except OSError:
+                pass
+        except Exception as e:
+            core.log(f"opus encode failed, sending wav: {e}")
+    return open(wav, "rb").read(), "audio/wav"
+
+
 def _inject_only(text: str) -> str:
     """Inject a turn WITHOUT waiting: '' on success, else a speakable reason.
     The stream (SSE) carries completion, so the non-blocking /ask path
@@ -6473,6 +6497,7 @@ class Handler(BaseHTTPRequestHandler):
                 b = json.loads(raw or b"{}")
                 text = (b.get("text") or "").strip()
                 voice = (b.get("voice") or "").strip()
+                want_opus = bool(b.get("opus"))   # 16x smaller over the tunnel
                 try:
                     speed = float(b.get("speed") or 0)
                 except (TypeError, ValueError):
@@ -6504,8 +6529,8 @@ class Handler(BaseHTTPRequestHandler):
                         pass
             if wav:
                 try:
-                    with open(wav, "rb") as f:
-                        self._reply(200, f.read(), "audio/wav")
+                    body, ctype = _read_tts(wav, want_opus)
+                    self._reply(200, body, ctype)
                     return
                 except Exception:
                     pass
