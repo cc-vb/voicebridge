@@ -498,6 +498,51 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
+  CHANGES, v21 to v22, THREE scoped audio/turn behavior changes (nothing else
+  touched: turn engine + stream protocol, session isolation, connect-guard,
+  mic-release, false-barge resume, activity chips + detail sheet, mode picker,
+  multi-line composer, focus-free inject, single voice picker, orb rendering):
+
+    1. RECOGNITION SOURCE toggle, DEFAULT = Mac whisper. A new settings row
+       "Recognition: Mac (whisper, better) | Phone (browser)" picks how speech
+       is transcribed, persisted in localStorage key `vbstt` (module var
+       sttPref, default 'mac'). listen()'s dispatcher was
+       ((SR && !srDead) ? listenSR : listenWhisper); now: sttPref==='mac'
+       ALWAYS uses listenWhisper (record + POST /stt, tuned local whisper on the
+       Mac); sttPref==='phone' keeps the browser-SR-with-whisper-fallback path
+       (srDead) unchanged. listenWhisper is reused untouched, so its RMS
+       bumpLevel mic pulse still drives the orb. Hint: "Mac whisper is more
+       accurate for accents and code; Phone is lower latency."
+
+    2. REPLY QUEUEING (never interrupt speech with a NEW unsolicited reply).
+       speakIncoming (the SSE `reply` event / idleWatch / hello-catchup /
+       reconcileState follow-on path) used to stopSpeaking() and jump to the
+       new reply, cutting off whatever was playing for a listener not looking
+       at the screen. Now: if a reply is CURRENTLY being spoken
+       (state==='speaking'), the arrival is QUEUED in speakQueue (dedup by
+       uuid) and the actual speaking is factored into doSpeakIncoming(); the
+       queue drains in BOTH say-completion paths (doSpeakIncoming and
+       finishTurn) via drainSpeakQueue(), in order. UNCHANGED distinctions:
+       (a) the user's OWN turn completion (finishTurn) still speaks immediately;
+       (b) real barge-in (talking over it) still interrupts immediately (it
+       stopSpeaking()s, so no completion callback fires, so no drain, so the
+       reply is not lost, it drains on the next natural finish);
+       (c) tapping the orb to pause/stop still works (same reason). A tiny
+       "N queued" chip (#queueChip) under the state word shows the backlog.
+
+    3. SKIP on DOUBLE-TAP the orb. A tap-count detector wraps the orb click:
+       a LONE tap (settled after ~350ms) runs the existing orbTap()
+       (pause -> resume -> replay-when-ended); a DOUBLE tap (two within 350ms)
+       runs skipChunk(). skipChunk stops the CURRENT Mac audio source WITHOUT
+       cancelling the whole reply (it leaves macSrc.onended intact so the sayMac
+       pump's `await playBuf` resolves, idx advances, and the already-prefetched
+       next chunk plays; the last chunk just ends). The phone speechSynthesis
+       path has no per-chunk handle, so skip is a safe no-op there. Reduced
+       motion is unaffected (no animation is involved).
+    Validation harness (r-string round-trip, node --check, id/ref audit,
+    mini-DOM smoke test) lives alongside this file, not in it.
+-->
+<!--
   CHANGES, v20 to v21, ONE scoped upgrade: a LIVE "Claude is working"
   activity indicator (nothing else touched: turn engine, session isolation,
   activity chips + detail sheet on completed replies, orb replay, single
@@ -1606,6 +1651,15 @@ body[data-state="thinking"] #stateWord { color:#b3a6f2; }
   padding:0 24px; font-variant-numeric:tabular-nums; margin-top:-14px;
 }
 body[data-state="needs"] #status { color:#f0a294; }
+/* v22: tiny "N queued" affordance for follow-on replies waiting behind the one
+   currently speaking; hidden unless the queue is non-empty */
+#queueChip {
+  display:none; align-self:center; margin-top:6px;
+  font-size:11.5px; letter-spacing:.04em; color:#aac6f6;
+  background:rgba(120,150,220,.14); border:1px solid rgba(120,150,220,.28);
+  border-radius:999px; padding:3px 11px; text-align:center;
+}
+#queueChip.on { display:inline-block; }
 
 /* ==== bottom: the control row (thumb zone). Mute / End / Chat, each with
    an 11px/500 label beneath; End is the only red-by-default control. ==== */
@@ -2317,6 +2371,7 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
   </div>
   <div id="stateWord" role="status" aria-live="polite"></div>
   <div id="status" role="status" aria-live="polite">call ended</div>
+  <div id="queueChip" role="status" aria-live="polite"></div>
 </main>
 
 <footer>
@@ -2502,6 +2557,14 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
   <p class="hint">Natural voice is made on your Mac and played here, and the phone voice
      takes over automatically if the Mac is unreachable.</p>
   <p class="hint">A new voice takes effect on the next reply.</p>
+  <div class="setrow">
+    <span class="setlbl">Recognition</span>
+    <div class="seg" role="radiogroup" aria-label="Recognition source">
+      <button id="sttMacBtn" role="radio" aria-checked="true">Mac (whisper, better)</button>
+      <button id="sttPhoneBtn" role="radio" aria-checked="false">Phone (browser)</button>
+    </div>
+  </div>
+  <p class="hint" id="sttHint">Mac whisper is more accurate for accents and code; Phone is lower latency.</p>
 </section>
 
 <!-- v17: activity detail sheet + its own scrim (stacks above the chat) -->
@@ -2678,6 +2741,15 @@ try{
      to the phone voice mid-reply, so the default is safe everywhere. */
   voicePref = (_vp === 'phone') ? 'phone' : 'mac';
 }catch(e){ voicePref = 'mac'; }
+/* v22 recognition source: 'mac' = record + POST /stt (a tuned local whisper on
+   the Mac, more accurate for accents and code), 'phone' = browser
+   SpeechRecognition with the existing whisper fallback (srDead). DEFAULT = mac.
+   Persisted in localStorage key vbstt. */
+let sttPref='mac';
+try{
+  var _sp = localStorage.getItem('vbstt');
+  sttPref = (_sp === 'phone') ? 'phone' : 'mac';
+}catch(e){ sttPref = 'mac'; }
 /* WHICH Kokoro voice speaks. Three curated ids, picked in settings,
    persisted, sent as {"voice": id} in every /tts body. A switch applies
    from the next reply (no mid-reply engine restart). */
@@ -3957,7 +4029,44 @@ async function pollUntilChanged(id){
    HERE. The Mac is silenced during a call, so without this nobody says it. */
 let lastUuid = '';
 let connectGuardUntil = 0;  // grace at connect: re-baseline, don't speak old replies
-function speakIncoming(rep){
+/* v22 reply queue: unsolicited follow-on replies that arrive WHILE one is
+   being spoken wait here (dedup by uuid) and speak in order, so a "he found
+   this too" never cuts off the reply a listener is mid-way through. */
+let speakQueue = [];
+function syncQueueChip(){
+  const el = $('queueChip');
+  if(!el) return;
+  const n = speakQueue.length;
+  el.textContent = n === 1 ? '1 queued' : (n + ' queued');
+  el.classList.toggle('on', n > 0);
+}
+function enqueueSpeak(rep, uuid){
+  const key = uuid || rep;
+  if(speakQueue.some(q => q.key === key)) return;   // dedup by uuid
+  speakQueue.push({ key: key, text: rep });
+  syncQueueChip();
+}
+/* Drain one queued reply after a completion. Returns true if it started one
+   (so the caller must NOT fall through to its listening branch). Called from
+   BOTH doSpeakIncoming's and finishTurn's say-completion paths. */
+function drainSpeakQueue(){
+  if(!live){ speakQueue = []; syncQueueChip(); return false; }
+  const nxt = speakQueue.shift();
+  if(!nxt) return false;
+  syncQueueChip();
+  doSpeakIncoming(nxt.text);
+  return true;
+}
+/* speakIncoming is the ENTRY for every unsolicited follow-on (SSE reply event,
+   idleWatch, hello-catchup, reconcileState). If a reply is CURRENTLY being
+   spoken, queue this one; otherwise speak it now. finishTurn (the user's OWN
+   answer) and barge-in never route through here, so they still take over
+   immediately. */
+function speakIncoming(rep, uuid){
+  if(state === 'speaking'){ enqueueSpeak(rep, uuid); return; }
+  doSpeakIncoming(rep);
+}
+function doSpeakIncoming(rep){
   stopListening();
   stopSpeaking();                         // never let two voices overlap on one reply
   lastReplyText = rep; updateReplay();   // the Replay control re-reads this
@@ -3968,6 +4077,7 @@ function speakIncoming(rep){
   say(rep, () => {
     stopBarge();
     if(!live) return;
+    if(drainSpeakQueue()) return;         // v22: speak the next queued reply
     if(muted){ setState('muted'); }
     else { setState('listening'); listen(); }
   });
@@ -3982,7 +4092,7 @@ async function idleWatch(){
   if(u === lastUuid || !rep) return;
   if(!live || turnActive) return;
   lastUuid = u;
-  if(Date.now() > connectGuardUntil) speakIncoming(rep);
+  if(Date.now() > connectGuardUntil) speakIncoming(rep, u);
 }
 setInterval(idleWatch, 5000);
 
@@ -4014,7 +4124,7 @@ function startEvents(){
           if(j.uuid && j.uuid !== lastUuid && rep){
             lastUuid = j.uuid;
             if(turnActive){ finishTurn(turnId, rep); }
-            else if(live && Date.now() > connectGuardUntil){ speakIncoming(rep); }
+            else if(live && Date.now() > connectGuardUntil){ speakIncoming(rep, j.uuid); }
           }
         }).catch(() => {});
       }
@@ -4040,7 +4150,7 @@ function startEvents(){
       if(!u || !rep || u === lastUuid) return;
       lastUuid = u;
       if(turnActive){ finishTurn(turnId, rep); }
-      else if(live && Date.now() > connectGuardUntil){ speakIncoming(rep); }
+      else if(live && Date.now() > connectGuardUntil){ speakIncoming(rep, u); }
     }catch(x){}
   });
   es.addEventListener('pending', e => {
@@ -4096,7 +4206,7 @@ function reconcileState(st){
     if(u && rep && u !== baselineUuid && u !== lastUuid){
       lastUuid = u;
       if(turnActive) finishTurn(turnId, rep);   // the missed completion
-      else speakIncoming(rep);
+      else speakIncoming(rep, u);
       return;
     }
     // Server is idle, no newer reply, and we've shown working for >4s: the
@@ -4135,6 +4245,7 @@ function finishTurn(id, reply){
   say(reply, () => {
     stopBarge();
     if(!live) return;
+    if(drainSpeakQueue()) return;   // v22: speak anything queued during the answer
     if(muted){ setState('muted'); }
     else { setState('listening'); setTimeout(listen, 300); }
   });
@@ -4712,8 +4823,13 @@ function listen(){
     return;
   }
   if(!live || muted || turnActive || decisionOpen) return;
-  /* srDead: SR proved unusable this session (iOS service-not-allowed twice) */
-  ((SR && !srDead) ? listenSR : listenWhisper)();
+  /* v22 recognition source. Mac whisper (the record + /stt path, its RMS still
+     feeds bumpLevel so the orb pulses) is the default and most accurate, so it
+     is used whenever sttPref==='mac'. 'phone' keeps the browser-SR path with
+     its whisper fallback: srDead means SR proved unusable this session (iOS
+     service-not-allowed twice). */
+  if(sttPref === 'mac'){ listenWhisper(); }
+  else ((SR && !srDead) ? listenSR : listenWhisper)();
 }
 function stopListening(){
   gen++;
@@ -4788,6 +4904,7 @@ function endCall(){
      nothing, which is the only guarantee that matters here. */
   micLive(false);
   clearHush();
+  speakQueue = []; syncQueueChip();   // v22: drop any queued follow-on replies
   /* the full-screen chat would sit above the call-ended overlay */
   closeChatSheet();
   setState('ended', 'call ended');
@@ -4973,8 +5090,25 @@ function setVoicePref(p){
   if(p === 'mac'){ macDead = false; macFails = 0; }
   renderVoicePref();
 }
+/* v22 recognition source toggle */
+function renderSttPref(){
+  const mac = sttPref === 'mac';
+  $('sttMacBtn').classList.toggle('sel', mac);
+  $('sttMacBtn').setAttribute('aria-checked', String(mac));
+  $('sttPhoneBtn').classList.toggle('sel', !mac);
+  $('sttPhoneBtn').setAttribute('aria-checked', String(!mac));
+}
+function setSttPref(p){
+  sttPref = (p === 'phone') ? 'phone' : 'mac';
+  try{ localStorage.setItem('vbstt', sttPref); }catch(e){}
+  renderSttPref();
+}
+$('sttMacBtn').addEventListener('click', () => setSttPref('mac'));
+$('sttPhoneBtn').addEventListener('click', () => setSttPref('phone'));
+renderSttPref();
 function openSetSheet(){
   renderVoicePref();
+  renderSttPref();
   setOpen = true;
   setSheet.classList.add('open');
   syncScrim();
@@ -5330,7 +5464,34 @@ function orbTap(){
   if(hushPaused && resumeText){ resumeVoice(); return; }
   if(live && !turnActive && !decisionOpen && lastReplyText){ replayLast(); }
 }
-$('orbzone').addEventListener('click', orbTap);
+/* v22 skip-chunk: advance past the CURRENT spoken chunk to the next part of the
+   reply in progress, without cancelling the whole reply. On the Mac (WebAudio)
+   path, stopping the current buffer source fires its onended, which resolves
+   sayMac's `await playBuf`, so the pump does idx++ and plays the already
+   prefetched next chunk (or ends cleanly if this was the last one). We must
+   NOT null macSrc.onended here (stopMacAudio does, for a full stop), or the
+   pump would wedge. The phone speechSynthesis path chains per-chunk utterances
+   with no stable handle, so skip is a safe no-op there. */
+function skipChunk(){
+  if(state !== 'speaking') return;
+  if(macSrc){
+    haptic(8);
+    try{ macSrc.stop(); }catch(e){}   // onended -> playBuf resolves -> next chunk
+  }
+}
+/* Tap-count detector: a lone tap (settled after DBLTAP_MS) runs orbTap()
+   (pause / resume / replay); two taps within the window run skipChunk(). */
+const DBLTAP_MS = 350;
+let orbTapTimer = null;
+function onOrbTap(){
+  if(orbTapTimer){
+    clearTimeout(orbTapTimer); orbTapTimer = null;
+    skipChunk();
+    return;
+  }
+  orbTapTimer = setTimeout(() => { orbTapTimer = null; orbTap(); }, DBLTAP_MS);
+}
+$('orbzone').addEventListener('click', onOrbTap);
 hushBtn.addEventListener('click', toggleHush);
 scrim.addEventListener('click', () => { closeSessSheet(); closeClosedSheet(); closeSetSheet(); });
 $('pill').addEventListener('click', () => { sessOpen ? closeSessSheet() : openSessSheet(); });
