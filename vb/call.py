@@ -6264,12 +6264,43 @@ if(v){localStorage.setItem('vbk',v);location.href='/?k='+encodeURIComponent(v);}
 
 
 class Handler(BaseHTTPRequestHandler):
+    # HTTP/1.1 so the socket is kept alive across requests: over a tunnel each
+    # fresh connection costs a ~0.4s TCP+TLS handshake, and every spoken reply
+    # is its own /tts fetch. Reusing the socket cuts that handshake off all but
+    # the first request. Safe here because every _reply sets Content-Length and
+    # the one streaming path (/events) closes its own connection.
+    protocol_version = "HTTP/1.1"
+
+    # Text-ish types worth gzip; opus/audio and other binaries are already
+    # compact and skipped.
+    _GZIP_TYPES = ("text/", "application/json", "image/svg",
+                   "application/javascript")
+
     def log_message(self, fmt, *args):  # keep the daemon quiet
         core.log("call http: " + fmt % args)
 
     def _reply(self, code: int, body: bytes, ctype: str):
+        # Compress text bodies when the client accepts it. The page is ~280KB
+        # raw; Tailscale Funnel (unlike Cloudflare's edge) does not compress, so
+        # the whole payload crossed the wire every load (~3s to first paint).
+        # HTML/JS gzips ~6x, bringing it back in line with the old quick tunnel.
+        enc = None
+        if (len(body) > 1024
+                and "gzip" in self.headers.get("Accept-Encoding", "")
+                and any(ctype.startswith(t) for t in self._GZIP_TYPES)):
+            import gzip as _gz
+            body = _gz.compress(body, 6)
+            enc = "gzip"
+        # Error paths may not have drained the request body; on a kept-alive
+        # socket an unread body would desync the next request. Close on error
+        # (rare) and keep-alive only the clean 2xx hot paths.
+        if code >= 400:
+            self.close_connection = True
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        if enc:
+            self.send_header("Content-Encoding", enc)
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         # Never cache: phones held onto old page versions ("I see no change")
         # and stale rosters. The page is one request; freshness wins.
@@ -6360,9 +6391,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 self._reply(401, b"unauthorized", "text/plain")
                 return
+            # No Content-Length (it streams forever), so it must not be pooled
+            # on the kept-alive socket: mark it connection-closing.
+            self.close_connection = True
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
 
