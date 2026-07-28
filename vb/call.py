@@ -6747,6 +6747,10 @@ class Handler(BaseHTTPRequestHandler):
                                    capture_output=True, timeout=120)
                 if r.returncode == 0:
                     text = core.cleanup_transcript(_stt.transcribe(wav))
+                    # Log what whisper actually heard, so a "my prompt never
+                    # arrived" is diagnosable at a glance (empty = mic/whisper
+                    # dropped it; text = a client dispatch problem).
+                    core.log(f"stt heard: {text!r}")
             finally:
                 for p in (src, wav):
                     try:

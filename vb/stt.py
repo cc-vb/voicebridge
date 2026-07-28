@@ -167,12 +167,12 @@ def _transcribe_server(wav: str) -> "tuple[str, float] | None":
         r = subprocess.run(
             ["curl", "-s", "-m", "30", f"http://127.0.0.1:{WHISPER_PORT}/inference",
              "-F", f"file=@{wav}", "-F", "response_format=verbose_json",
-             "-F", "temperature=0.0",
-             # accuracy knobs that were never wired: vocabulary biasing, and
-             # anti-hallucination (reject silence, no temperature fallback).
-             "-F", f"prompt={whisper_prompt()}",
-             "-F", "no_speech_thold=0.6",
-             "-F", "no_fallback=true"],
+             # vocabulary biasing (pure win). The anti-hallucination knobs
+             # (no_fallback, aggressive no_speech) were DROPPING real speech
+             # in noisy / far-mic conditions: no_fallback disables the
+             # temperature retry that RECOVERS hard audio, so whisper returned
+             # empty and the prompt silently never sent. Let it fall back.
+             "-F", "prompt=" + whisper_prompt()],
             capture_output=True, timeout=35)
         data = json.loads(r.stdout.decode("utf-8", "replace"))
     except Exception as e:
