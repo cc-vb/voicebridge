@@ -132,6 +132,55 @@ def update_status() -> dict:
     return {"version": _local_version(), "latest": latest}
 
 
+_STT_FILLER = re.compile(
+    r"^(?:\s*(?:um+|uh+|erm+|hmm+|uhh+|like|you know)[,\.\s]+)+", re.I)
+
+
+def _ollama_cleanup(text: str, timeout: float = 4.0) -> str:
+    """Optional Wispr-Flow-style cleanup via a LOCAL Ollama model, only when
+    the user opted in with VB_CLEANUP_MODEL (it adds latency, so it is off by
+    default). Fail-safe: any error / missing binary returns '' and the caller
+    keeps the rule-based result."""
+    model = os.environ.get("VB_CLEANUP_MODEL", "")
+    if not model:
+        return ""
+    import shutil
+    if not shutil.which("ollama"):
+        return ""
+    prompt = ("Rewrite the dictated text with correct capitalization and "
+              "punctuation and filler words removed. Preserve the exact "
+              "meaning and wording. Output ONLY the cleaned text.\n\n" + text)
+    try:
+        r = subprocess.run(["ollama", "run", model, prompt],
+                           capture_output=True, text=True, timeout=timeout)
+        out = " ".join(r.stdout.split())
+        # guard against a chatty model: reject if it ballooned or emptied
+        if r.returncode == 0 and out and len(out) <= len(text) * 3:
+            return out
+    except Exception:
+        pass
+    return ""
+
+
+def cleanup_transcript(text: str) -> str:
+    """Tidy a dictated transcript into a clean prompt: trim leading fillers
+    (um/uh/like/you know) and capitalize the first letter. CONSERVATIVE by
+    design, no added terminal punctuation, no word rewriting, so a spoken
+    command ("end call", "yes") is never mangled. An opt-in local Ollama
+    model (VB_CLEANUP_MODEL) does a fuller pass when available."""
+    t = " ".join((text or "").split())
+    if not t:
+        return t
+    llm = _ollama_cleanup(t)
+    if llm:
+        return llm
+    trimmed = _STT_FILLER.sub("", t).strip()
+    t = trimmed or t
+    if t:
+        t = t[0].upper() + t[1:]
+    return t
+
+
 def mark_call_live() -> None:
     """The phone page pings this every ~5s during a call."""
     try:

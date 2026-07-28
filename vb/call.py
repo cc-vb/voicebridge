@@ -6733,7 +6733,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "-ac", "1", wav],
                                    capture_output=True, timeout=120)
                 if r.returncode == 0:
-                    text = _stt.transcribe(wav)
+                    text = core.cleanup_transcript(_stt.transcribe(wav))
             finally:
                 for p in (src, wav):
                     try:
