@@ -2977,13 +2977,21 @@ function pickVoice(){
 /* Mobile browsers cut long utterances (a known engine bug), so split into
    sentence-sized chunks (<=170 chars, well under the 200-char danger zone)
    and chain them; an iOS synthesis stall then loses at most one chunk. */
-function chunkText(text, max){
+function chunkText(text, max, first){
+  /* The FIRST chunk is capped short (first clause ~ `first` chars) so first
+     audio synthesizes in ~0.6s instead of ~2.6s for a full 240-char chunk;
+     later chunks use `max` and prefetch while this one plays. */
+  first = first || max;
+  const capAt = i => (i === 0 ? first : max);
   const sents = text.match(/[^.!?\n]+[.!?]*\s*/g) || [text];
   const out = [];
   for(const s of sents){
-    if(out.length && (out[out.length-1] + s).length <= max) out[out.length-1] += s;
-    else if(s.length <= max) out.push(s);
-    else for(let i=0; i<s.length; i+=max) out.push(s.slice(i, i+max));
+    if(out.length){
+      const li = out.length - 1;
+      if((out[li] + s).length <= capAt(li)){ out[li] += s; continue; }
+    }
+    if(s.length <= capAt(out.length)){ out.push(s); }
+    else { let i = 0; while(i < s.length){ const c = capAt(out.length); out.push(s.slice(i, i + c)); i += c; } }
   }
   return out.map(x => x.trim()).filter(Boolean);
 }
@@ -3035,7 +3043,7 @@ function sayPhone(text, done){
   if(!TTS){ done && done(); return; }
   speechSynthesis.cancel();
   speechCancelled = false;
-  const parts = chunkText(text, 170);
+  const parts = chunkText(text, 170, 60);
   speechStart(parts);
   let i = 0;
   /* iOS PAUSES synthesis when the screen locks or the tab hides; besides the
@@ -3124,7 +3132,7 @@ function sayMac(text, done){
   /* Smaller chunks (240) synthesize faster than 300 and start sooner, which
      both cuts the opening delay and keeps every chunk comfortably under the
      timeout. */
-  const parts = chunkText(text, 240);
+  const parts = chunkText(text, 240, 60);
   if(!parts.length){ done && done(); return; }
   speechStart(parts);
   let idx = 0;
@@ -6236,7 +6244,7 @@ class Handler(BaseHTTPRequestHandler):
                 last_sstate, last_qid, last_act = "", "", ""
                 while True:
                     try:
-                        ev = q.get(timeout=1.0)   # acks etc, or a 1s tick
+                        ev = q.get(timeout=0.4)   # acks etc, or a ~0.4s tick (snappier push)
                         emit(ev.get("type", "event"), ev)
                     except _queue.Empty:
                         pass
