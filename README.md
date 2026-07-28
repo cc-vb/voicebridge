@@ -1,13 +1,59 @@
 # voicebridge
 
-**Talk to Claude Code like a teammate.** voicebridge turns your Claude Code
-sessions into hands-free voice conversations: you speak, your words land in
-the real session (your files, your context), and Claude answers out loud in
-a natural neural voice. On your Mac, or from your phone anywhere.
+**Hands-free voice for Claude Code, at your desk or from your phone.** Speak
+your intent, your words land in the real session (your files, your context),
+and Claude answers out loud in a natural neural voice. The superpower: drive
+your live coding sessions by voice from your phone, from anywhere.
 
-Everything runs locally: speech-to-text is whisper.cpp on your machine,
-text-to-speech is Kokoro (bundled setup) or macOS voices. Free, no cloud
-voice services, no per-minute fees.
+<!-- HERO VIDEO: paste the YouTube link to the 60-90s demo here once recorded.
+     Storyboard and full shot list live in docs/launch.md. Keep it embedded from
+     YouTube (a raw mp4 will not play inline on GitHub). Suggested markup:
+     [![voicebridge demo](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://youtu.be/VIDEO_ID) -->
+
+<!-- HERO GIF: drop a short (10s or less, 5MB or less) looping clip of the fleet
+     moment here so the page moves before anyone clicks play, e.g.:
+     ![control every agent by voice](docs/media/fleet.gif) -->
+
+## What it does
+
+- **Drive coding sessions from your phone.** `/voice-phone` prints a QR, scan
+  it, tap Start, and talk to your live session from anywhere. Your Mac keeps
+  running the work; your phone is the call, and it speaks Claude's replies back.
+- **Talk hands-free at your desk.** `/voice-agent` is a continuous
+  conversation: everything you say goes to Claude, replies are read aloud, and
+  you can talk over a reply to interrupt it (barge-in).
+- **Steer a whole fleet with one voice.** Ask "which agents need me?", say
+  "switch to jobhunt", or "read me codex's last reply", and it speaks up on its
+  own when an agent finishes ("heads up, signup is ready for you").
+- **Runs locally, free.** Speech-to-text is whisper.cpp on your machine;
+  text-to-speech is Kokoro neural TTS (54 voices, on CPU, Apache 2.0). No cloud
+  voice services, no per-minute fees.
+- **Works with any coding agent** (Codex, Cursor, Cline, Copilot): voice pastes
+  into whatever is focused, replies are read back per agent, and it never talks
+  over itself (echo guard plus dedup).
+
+## Quickstart
+
+Inside any Claude Code session on a Mac:
+
+```
+/plugin marketplace add cc-vb/voicebridge
+/plugin install voicebridge@voicebridge
+/voicebridge:setup
+```
+
+`setup` installs the local speech stack (one time, 5-10 min) and runs a health
+check. Grant the two macOS prompts (Microphone plus Accessibility for your
+terminal app), then:
+
+```
+/voicebridge:voice-agent      # talk hands-free at your desk
+/voicebridge:voice-phone      # scan the QR, drive the session from your phone
+```
+
+(Cloned directly instead of installing the plugin? Same commands without the
+`voicebridge:` prefix.) The full command guide, every mode, and troubleshooting
+are below and in `vb help`.
 
 ## Who it's for
 
