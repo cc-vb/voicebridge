@@ -408,7 +408,7 @@ def main(argv) -> int:
         cf = _sh.which("cloudflared") or next(
             (p for p in ("/opt/homebrew/bin/cloudflared",
                          "/usr/local/bin/cloudflared") if Path(p).exists()), "")
-        port = _os.environ.get("VB_CALL_PORT", "8790")
+        port = str(_os.environ.get("VB_CALL_PORT") or (8790 + _os.getuid() % 1000))
         logf = core.STATE_DIR / "tunnel.log"
         # REUSE our live tracked tunnel first: a fresh quick tunnel costs
         # ~30s of waiting (the "QR takes forever" complaint), and reusing the
@@ -925,7 +925,7 @@ def main(argv) -> int:
                 print(f"using saved permanent link ({saved})")
                 show_link(saved)
                 return 0
-            port = _os.environ.get("VB_CALL_PORT", "8790")
+            port = str(_os.environ.get("VB_CALL_PORT") or (8790 + _os.getuid() % 1000))
             cf = _sh.which("cloudflared") or next(
                 (p for p in ("/opt/homebrew/bin/cloudflared",
                              "/usr/local/bin/cloudflared")

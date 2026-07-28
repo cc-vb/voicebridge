@@ -37,7 +37,10 @@ EPOCH = core.STATE_DIR / "call_epoch"   # bumped by /switch: aborts stale turns
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 if not os.path.exists(FFMPEG):
     FFMPEG = "/usr/local/bin/ffmpeg"
-PORT = int(os.environ.get("VB_CALL_PORT", "8790"))
+# PER-USER port: two macOS users on one Mac must NOT share one relay, or the
+# second user's `vb phone` finds the first user's relay on the shared port
+# and bridges into their sessions. Derive a distinct default port per uid.
+PORT = int(os.environ.get("VB_CALL_PORT") or (8790 + os.getuid() % 1000))
 TIMEOUT = float(os.environ.get("VB_CALL_TIMEOUT", "90"))
 DRYRUN = bool(os.environ.get("VB_CALL_DRYRUN"))
 
