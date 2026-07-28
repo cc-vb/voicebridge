@@ -498,6 +498,62 @@ def _sse(text: str) -> bytes:
 
 PAGE = r"""<!DOCTYPE html>
 <!--
+  CHANGES, v22 to v23, TWO scoped chat changes (nothing else touched: turn
+  engine + stream protocol, session isolation, connect-guard, mic-release,
+  false-barge resume, activity chips + detail sheet, mode picker, multi-line
+  composer, focus-free inject, single voice picker, orb rendering, reply
+  queueing, whisper toggle, orb replay + double-tap skip):
+
+    1. PER-REPLY REPLAY BUTTON. Every AGENT reply in the transcript now carries
+       its own small speaker button in its eyebrow row, to the LEFT of the copy
+       button (both grouped right in a new .ebctl flex container). Tapping it
+       re-speaks THAT reply's text through the current voice path via the same
+       say() dispatcher the global replay uses, so it respects the current voice
+       (voicePref/voiceName) and speed; it is LOCAL re-speak only and never
+       re-sends anything to the session. It is independent of the orb/header
+       replay (which only ever re-reads lastReplyText, the latest reply): the
+       per-reply button re-reads THIS reply's raw text, stashed on the element
+       (button._replyText and wrapper._replyText, both String()-coerced when the
+       bubble is built) so it is never re-derived from rendered (and possibly
+       hostile) markup.
+         - State: script-scope let replyPlayBtn holds the button currently in
+           the playing state; clearReplyPlay() resets its class + aria-label.
+           stopSpeaking() calls clearReplyPlay(), so ANY interruption (a new
+           live reply, a barge-in, the global replay, mute, end) drops the
+           per-reply playing visual automatically, and the button never fights
+           an in-progress live reply: tapping stops current speech first (like a
+           manual replay) before starting its own read.
+         - Toggle: a SECOND tap on the same playing button stops it (captured as
+           wasPlaying BEFORE stopSpeaking clears the ref) and returns via
+           resumeAfterSpeech(); it does not restart. playReply() mirrors
+           replayLast()'s guard (requires live), clearHush + stopSpeaking +
+           stopListening, setState('speaking','replaying'), startBarge (talking
+           over it interrupts), then say(text, done) restoring state on finish.
+
+    2. CHAT READABILITY PASS (structure only; the calm single-column,
+       open-agent-text / subtle-user-block layout is UNCHANGED, no ping-pong
+       bubbles reintroduced):
+         - Measure + rhythm: agent text stays 16px/1.62 but is now capped to a
+           ~66ch measure (.msg-a max-width:66ch) for a comfortable line length.
+         - Real paragraphs: renderBlocks' flush() no longer dumps plain text
+           into one dense <span>; it splits on blank lines (/\n{2,}/) into
+           separate <p class="mpar"> nodes with paragraph spacing, so a
+           double-newline reply reads as distinct paragraphs (single newlines
+           stay soft via pre-wrap within a paragraph). Still textContent-safe
+           (renderInline builds every node, no innerHTML of content).
+         - Heading hierarchy: the block regex now captures 1-3 '#'s; "# " ->
+           .mh1 (20px/700), "## " -> .mh2 (17px/650), "### " -> .mh3 (15px/650),
+           each with real top spacing.
+         - Legible code: fenced .cblk cards keep mono + dark inset + x-scroll
+           (never wrap the page) with a touch more contrast; inline .ichip chips
+           and .msg-a strong (now 700) stand out.
+         - Quiet metadata: eyebrow label, timestamps, copy + per-reply replay
+           controls stay low-emphasis (dim inks, tints of the existing Signal on
+           Graphite palette vars) so the words dominate; body text stays AA.
+    Validation harness (r-string round-trip, node --check, id/ref audit,
+    mini-DOM smoke test) lives alongside this file, not in it.
+-->
+<!--
   CHANGES, v21 to v22, THREE scoped audio/turn behavior changes (nothing else
   touched: turn engine + stream protocol, session isolation, connect-guard,
   mic-release, false-barge resume, activity chips + detail sheet, mode picker,
@@ -2008,14 +2064,30 @@ body.hush-paused #hushBtn { display:flex; }
 }
 .typing .tf:empty { display:none; }
 /* copy button: v16, lives at the RIGHT of the eyebrow row on every
-   message (a button, not long-press: long-press means selection on iOS) */
+   message (a button, not long-press: long-press means selection on iOS).
+   v23: the metadata controls (per-reply replay + copy) share a right-aligned
+   .ebctl group so they cluster together without a gap. */
+.ebctl { display:flex; align-items:center; gap:2px; margin-left:auto; }
 .copybtn {
   flex:none; width:26px; height:26px; margin-left:auto;
   border-radius:8px; display:flex; align-items:center; justify-content:center;
   color:#5b6479; background:none;
 }
+.ebctl .copybtn { margin-left:0; }
 .copybtn:active { transform:scale(.9); color:#e8ebf2; }
 .copybtn svg { width:14px; height:14px; }
+/* v23 per-reply replay: a quiet speaker button on each AGENT reply that
+   re-speaks THAT reply locally. Low-emphasis like copy; mint tint while it is
+   the one currently playing, a soft pulse the reduced-motion block freezes. */
+.rplybtn {
+  flex:none; width:26px; height:26px;
+  border-radius:8px; display:flex; align-items:center; justify-content:center;
+  color:#5b6479; background:none;
+}
+.rplybtn:active { transform:scale(.9); color:#e8ebf2; }
+.rplybtn svg { width:15px; height:15px; }
+.rplybtn.playing { color:var(--mint); animation:rplypulse 1.4s ease-in-out infinite; }
+@keyframes rplypulse { 0%,100%{ opacity:1; } 50%{ opacity:.5; } }
 /* unread dot: a reply arrived while chat was closed */
 #chatBtn.unread::after {
   content:''; position:absolute; top:9px; right:9px;
@@ -2063,25 +2135,33 @@ body.hush-paused #hushBtn { display:flex; }
   color:#eceef0; user-select:text; -webkit-user-select:text;
 }
 .ublk.live { border-style:dashed; }
-/* AGENT replies: OPEN text directly on the background, same column */
+/* AGENT replies: OPEN text directly on the background, same column.
+   v23: capped to a ~66ch measure so lines stay a comfortable length; the
+   block/list/code renderers each still reset their own white-space. */
 .msg-a {
-  width:100%; padding:2px 0;
+  width:100%; max-width:66ch; padding:2px 0;
   font-size:16px; line-height:1.62; white-space:pre-wrap; word-break:break-word;
   font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color:#eceef0; user-select:text; -webkit-user-select:text;
 }
+/* v23 real paragraphs: double-newline segments become separate .mpar nodes
+   with a clear gap; single newlines inside one stay soft via pre-wrap. */
+.mpar { margin:0 0 .72em; white-space:pre-wrap; }
+.msg-a .mpar:last-child, .ublk .mpar:last-child { margin-bottom:0; }
+.msg-a .mpar:first-child, .ublk .mpar:first-child { margin-top:0; }
 .ublk .bwrap, .msg-a .bwrap { display:block; }
 .ublk.clamp .bwrap, .msg-a.clamp .bwrap { max-height:19em; overflow:hidden;
   -webkit-mask-image:linear-gradient(#000 72%, transparent);
   mask-image:linear-gradient(#000 72%, transparent); }
 .showmore { display:block; margin-top:6px; background:none; border:0;
   color:#46d7c3; font-size:13px; padding:2px 0; letter-spacing:.03em; }
-/* code: monospace cards with their own x-scroll, never widening the page */
-.cblk { background:#0b0f12; border:1px solid var(--line); border-radius:10px;
-  padding:10px 12px; margin:8px 0;
-  font:13px/1.45 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
+/* code: monospace cards with their own x-scroll, never widening the page.
+   v23: darker inset + a hair more line-height for legibility. */
+.cblk { background:#0a0e11; border:1px solid var(--line); border-radius:10px;
+  padding:11px 13px; margin:9px 0; color:#e7ecf2;
+  font:13px/1.5 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace;
   overflow-x:auto; white-space:pre; max-width:100%; }
-.ichip { background:rgba(255,255,255,.09); border-radius:5px; padding:1px 5px;
+.ichip { background:rgba(255,255,255,.1); border-radius:5px; padding:1px 5px; color:#eef2f8;
   font:.92em ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Roboto Mono", "Liberation Mono", monospace; }
 /* timestamps: grouped cluster dividers ("Jul 25 at 3:16 PM"), never
    per-message; v16: quieter, 12px, dimmer ink, more margin */
@@ -2093,10 +2173,14 @@ body.hush-paused #hushBtn { display:flex; }
 /* structured agent text: headings and real list rows (hanging indents).
    These sit inside the pre-wrap message column, so each block resets its
    own white-space. */
+/* v23 heading hierarchy: "# " -> .mh1, "## " -> .mh2, "### " -> .mh3, each
+   with real top spacing so a reply scans like a document. */
 .mhead {
-  font-size:19px; font-weight:650; line-height:1.35; color:#f2f4f6;
-  margin:14px 0 3px; white-space:normal;
+  font-weight:650; line-height:1.32; color:#f2f4f6; white-space:normal;
 }
+.mhead.mh1 { font-size:20px; font-weight:700; margin:18px 0 5px; }
+.mhead.mh2 { font-size:17px; margin:16px 0 4px; }
+.mhead.mh3 { font-size:15px; letter-spacing:.01em; margin:13px 0 3px; color:#e4e8ee; }
 .mhead:first-child { margin-top:2px; }
 .lirow { display:flex; align-items:flex-start; gap:9px; margin:3px 0; white-space:normal; }
 .lirow .limark {
@@ -2108,7 +2192,7 @@ body.hush-paused #hushBtn { display:flex; }
   background:#9aa4b8; margin:9px 4px 0 9px;
 }
 .lirow .litext { flex:1; min-width:0; white-space:pre-wrap; }
-.msg-a strong, .bub strong { font-weight:650; color:#f2f5fb; }
+.msg-a strong, .ublk strong, .bub strong { font-weight:700; color:#f4f7fc; }
 /* delivery state: right-aligned under the last user block, matching
    the block's right inset (v16) */
 .dstate {
@@ -2296,6 +2380,8 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
   .sdot.working, .badge.needs, #decide .eyebrow .ddot { animation:none; }
   /* typing dots hold steady; state stays legible via color and text */
   .typing .td { animation:none; }
+  /* the per-reply replay button still tints mint, just no pulse */
+  .rplybtn.playing { animation:none; }
 }
 </style></head><body data-state="ended" class="home">
 
@@ -2921,6 +3007,7 @@ function stopSpeaking(){
   stopMacAudio();
   cancelPreview();   /* v16: a playing voice preview dies with the speech */
   stopBarge();
+  clearReplyPlay();  /* v23: any stop drops the per-reply playing visual */
 }
 /* iOS unlocks speechSynthesis only inside a user gesture: speak a silent
    warm-up utterance AND create/resume the AudioContext in the start tap,
@@ -3277,11 +3364,21 @@ function renderInline(el, text){
 function renderBlocks(el, seg){
   const lines = String(seg).split('\n');
   let plain = [];
+  /* v23: flush the buffered plain lines as REAL paragraphs. A run split on
+     one-or-more blank lines becomes separate <p class="mpar"> nodes (clear
+     paragraph gap); single newlines inside a paragraph stay soft via
+     pre-wrap. Still textContent-safe: renderInline builds every node. */
   const flush = () => {
     if(!plain.length) return;
-    const p = document.createElement('span');
-    renderInline(p, plain.join('\n'));
-    el.appendChild(p);
+    const paras = plain.join('\n').split(/\n{2,}/);
+    for(let pi = 0; pi < paras.length; pi++){
+      const body = paras[pi].replace(/^\n+|\n+$/g, '');
+      if(!body) continue;
+      const p = document.createElement('p');
+      p.className = 'mpar';
+      renderInline(p, body);
+      el.appendChild(p);
+    }
     plain = [];
   };
   const listRow = (markText, body) => {
@@ -3298,10 +3395,11 @@ function renderBlocks(el, seg){
   for(let i = 0; i < lines.length; i++){
     const ln = lines[i];
     let m;
-    if((m = ln.match(/^\s*#{1,2}\s+(.*)$/))){
+    if((m = ln.match(/^\s*(#{1,3})\s+(.*)$/))){
       flush();
-      const h = document.createElement('div'); h.className = 'mhead';
-      renderInline(h, m[1]);
+      const h = document.createElement('div');
+      h.className = 'mhead mh' + m[1].length;
+      renderInline(h, m[2]);
       el.appendChild(h);
     }else if((m = ln.match(/^\s*[-*]\s+(.*)$/))){
       flush();
@@ -3566,6 +3664,24 @@ function bubble(role, text, liveNow, label, activity){
   const eb = document.createElement('div'); eb.className = 'ebrow';
   const lb = document.createElement('span'); lb.className = 'eblbl';
   if(label) lb.textContent = label;
+  /* v23: the metadata controls cluster in a right-aligned group. AGENT
+     replies get a per-reply replay (speaker) button to the LEFT of copy. */
+  const ctrls = document.createElement('div'); ctrls.className = 'ebctl';
+  const raw = String(text);   /* the reply's own text, stashed for re-speak */
+  if(role !== 'user'){
+    const rp = document.createElement('button');
+    rp.className = 'rplybtn';
+    rp.setAttribute('aria-label', 'Replay this reply');
+    rp.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"' +
+      ' aria-hidden="true"><path d="M4 9v6h4l5 5V4L8 9H4z"/>' +
+      '<path d="M16 8.5a4 4 0 0 1 0 7" fill="none" stroke="currentColor"' +
+      ' stroke-width="2" stroke-linecap="round"/>' +
+      '<path d="M18.5 6a7 7 0 0 1 0 12" fill="none" stroke="currentColor"' +
+      ' stroke-width="2" stroke-linecap="round"/></svg>';
+    rp._replyText = raw;
+    rp.addEventListener('click', ev => { ev.stopPropagation(); playReply(rp, rp._replyText); });
+    ctrls.appendChild(rp);
+  }
   const cp = document.createElement('button');
   cp.className = 'copybtn';
   cp.setAttribute('aria-label', 'Copy this message');
@@ -3573,9 +3689,11 @@ function bubble(role, text, liveNow, label, activity){
     ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<rect x="9" y="9" width="11" height="11" rx="2.5"/>' +
     '<path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>';
-  cp.addEventListener('click', ev => { ev.stopPropagation(); copyText(String(text)); });
-  eb.append(lb, cp);
+  cp.addEventListener('click', ev => { ev.stopPropagation(); copyText(raw); });
+  ctrls.appendChild(cp);
+  eb.append(lb, ctrls);
   w.appendChild(eb);
+  w._replyText = raw;   /* re-derivable per-bubble raw text */
   const d = document.createElement('div');
   d.className = (role === 'user' ? 'ublk' : 'msg-a') + (liveNow ? ' live' : '');
   const wrap = document.createElement('div'); wrap.className = 'bwrap';
@@ -4970,6 +5088,40 @@ function replayLast(){
 }
 replayBtn.addEventListener('click', replayLast);
 chatReplayBtn.addEventListener('click', replayLast);
+
+/* ---- v23 PER-REPLY replay: re-speak ANY past agent reply on demand, LOCAL
+   only (never re-sends to the session). Independent of the global replay,
+   which only re-reads lastReplyText (the latest). replyPlayBtn tracks the one
+   button currently in its playing state; clearReplyPlay() resets it and is
+   called from stopSpeaking(), so any interruption (a fresh live reply, a
+   barge-in, mute, end, the global replay) drops the playing visual and the
+   button never fights an in-progress reply. ---- */
+let replyPlayBtn = null;
+function clearReplyPlay(){
+  if(!replyPlayBtn) return;
+  replyPlayBtn.classList.remove('playing');
+  replyPlayBtn.setAttribute('aria-label', 'Replay this reply');
+  replyPlayBtn = null;
+}
+function playReply(btn, text){
+  const wasPlaying = (btn === replyPlayBtn);
+  /* like a manual replay: stop whatever is speaking first (this also clears
+     any prior per-reply playing visual via clearReplyPlay in stopSpeaking) */
+  clearHush();
+  stopSpeaking(); stopListening();
+  if(wasPlaying){ resumeAfterSpeech(); return; }   /* second tap = stop */
+  if(!text || !live) return;
+  replyPlayBtn = btn;
+  btn.classList.add('playing');
+  btn.setAttribute('aria-label', 'Stop replay');
+  setState('speaking', 'replaying');
+  if(!decisionOpen) startBarge();     /* talking over it interrupts it */
+  say(String(text), () => {
+    stopBarge();
+    clearReplyPlay();
+    resumeAfterSpeech();
+  });
+}
 
 /* ============================================================ sheets */
 const scrim=$('scrim'), chatSheet=$('chatSheet'), sessSheet=$('sessSheet'),
