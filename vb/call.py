@@ -4882,13 +4882,18 @@ function armStitch(){
   }, 200);
 }
 function armStitchMax(){
-  /* Safety net for noisy places: whisperVoice() can keep blocking the normal
-     silence-based flush when ambient noise reads as speech, so a transcribed
-     prompt would sit unsent forever. This forces a flush ~4s after the LAST
-     REAL word (reset on each new transcribed word, so a long multi-segment
-     prompt still extends, but noise-after-you-stop can't stall the send). */
+  /* Silence endpoint + safety net. whisperVoice() can keep blocking the normal
+     holdMs flush while the mic is open (a segment reads as ongoing speech), so
+     in practice THIS timer, not armStitch, decides when most whisper prompts
+     send. A flat 4s made every prompt sit ~4s on "listening" before it went,
+     which felt stuck and slow. Flush ~1.5s after the LAST transcribed word
+     (2.4s if you clearly trailed off mid-thought), reset on each new word so a
+     long multi-segment prompt still extends. Whisper only emits real words, so
+     ambient noise never resets this, noise-after-you-stop can't stall it. */
   if(stitchMax) clearTimeout(stitchMax);
-  stitchMax = setTimeout(function(){ stitchMax = null; if(stitchBuf.trim()) flushStitch(); }, 4000);
+  const mid = /(,|\b(and|or|but|so|because|then|plus|also|with))$/i.test(stitchBuf.trim());
+  const ms = mid ? 2400 : 1500;
+  stitchMax = setTimeout(function(){ stitchMax = null; if(stitchBuf.trim()) flushStitch(); }, ms);
 }
 function holdStitchOnSpeech(){
   /* the user resumed inside the window: cancel the pending send, keep buffer */
