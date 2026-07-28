@@ -19,11 +19,41 @@ PROJECTS = Path(os.path.expanduser("~/.claude/projects"))
 _HOMEISH = {"home", "", "documents", "desktop", "downloads"}
 
 
-def _label(transcript_path: str) -> str:
-    """Human name for a session from its encoded project dir. Falls back to
-    the session's first user prompt when the dir is a generic home folder,
-    so two sessions in ~ don't both read as your username."""
+def _ai_title(transcript_path: str, cap: int = 60) -> str:
+    """Claude Code's OWN session name, the title it shows and that /rename
+    sets, stored as `aiTitle` on transcript records. Read the newest one from
+    the tail so a rename wins. '' if the session has no title yet."""
     try:
+        with open(transcript_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 262144))
+            tail = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    title = ""
+    for ln in tail.splitlines():
+        if '"aiTitle"' not in ln:
+            continue
+        try:
+            t = json.loads(ln).get("aiTitle")
+            if t:
+                title = t
+        except Exception:
+            pass
+    title = " ".join(str(title).split())
+    return (title[:cap - 3] + "...") if len(title) > cap else title
+
+
+def _label(transcript_path: str) -> str:
+    """Human name for a session. Prefer Claude Code's OWN title (aiTitle, what
+    it shows and /rename sets) so the phone reads the same as the terminal;
+    fall back to the project dir, then the first prompt, when there's no title
+    yet (so two sessions in ~ don't both read as your username)."""
+    try:
+        title = _ai_title(transcript_path)
+        if title:
+            return title
         d = Path(transcript_path).parent.name  # -Users-me-jobhunt
         seg = [s for s in d.split("-") if s]
         name = seg[-1] if seg else "home"
