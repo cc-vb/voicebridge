@@ -34,6 +34,33 @@ def _best_model(names=None):
 
 MODEL = _best_model()
 
+# Vocabulary biasing (whisper `initial_prompt`): conditions the decoder toward
+# the words this tool actually hears, so coding jargon, tool names, and git
+# terms transcribe correctly instead of as near-homophones. whisper uses it
+# for conditioning only, it is never echoed into the transcript. A natural
+# sentence in the expected register works better than a bare word list. A
+# user vocabulary file (~/.voicebridge/vocab) is appended when present.
+_BASE_PROMPT = (
+    "A spoken instruction to a coding assistant in the terminal. It may "
+    "mention code, files, functions, variables, git, commit, rebase, pull "
+    "request, branch, terminal, session, prompt, and tools like Claude, "
+    "Claude Code, GitHub, npm, Python, JavaScript, whisper, Kokoro, and "
+    "voicebridge."
+)
+
+
+def whisper_prompt() -> str:
+    """The initial_prompt: the base coding vocabulary plus any user terms in
+    ~/.voicebridge/vocab (one phrase per line), capped to whisper's window."""
+    extra = ""
+    try:
+        extra = (core.STATE_DIR / "vocab").read_text().strip()
+        extra = " ".join(extra.split())
+    except Exception:
+        pass
+    p = (_BASE_PROMPT + " " + extra).strip() if extra else _BASE_PROMPT
+    return p[:800]   # whisper caps ~224 tokens; stay well under
+
 
 def stt_lang_mode() -> "tuple":
     """(model_path, whisper -l arg). English-only for now: the English model
@@ -140,7 +167,12 @@ def _transcribe_server(wav: str) -> "tuple[str, float] | None":
         r = subprocess.run(
             ["curl", "-s", "-m", "30", f"http://127.0.0.1:{WHISPER_PORT}/inference",
              "-F", f"file=@{wav}", "-F", "response_format=verbose_json",
-             "-F", "temperature=0.0"],
+             "-F", "temperature=0.0",
+             # accuracy knobs that were never wired: vocabulary biasing, and
+             # anti-hallucination (reject silence, no temperature fallback).
+             "-F", f"prompt={whisper_prompt()}",
+             "-F", "no_speech_thold=0.6",
+             "-F", "no_fallback=true"],
             capture_output=True, timeout=35)
         data = json.loads(r.stdout.decode("utf-8", "replace"))
     except Exception as e:
@@ -293,6 +325,7 @@ def transcribe_ex(wav: str) -> "tuple[str, float]":
         return "", 0.0
     base = wav + ".vbout"
     cmd = [wb, "-m", str(model), "-f", wav, "-nt", "-np", "-l", lang,
+           "--prompt", whisper_prompt(),   # same vocabulary biasing as the server
            "-ojf", "-of", base]   # -ojf: full JSON includes token probabilities
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
