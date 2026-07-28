@@ -2810,6 +2810,24 @@ const statusEl=$('status'), stateWord=$('stateWord'), pillName=$('pillName'),
       clipBtn=$('clipBtn'), pickFile=$('pickFile'), chipsEl=$('chips'),
       modeChip=$('modeChip'), modeChipLbl=$('modeChipLbl'),
       chatModeChip=$('chatModeChip'), chatModeChipLbl=$('chatModeChipLbl');
+const VB_PAGE_VERSION = "__VB_VERSION__";   // server stamps the real version
+/* Self-heal a stale tab: if the relay has shipped a newer version than the
+   code running in THIS page, reload to pick it up (once the reload lands, the
+   stamp matches and it stops). This ends the "a fix shipped but the phone is
+   still on old code" bug that kept eating prompts. Never reload mid-turn. */
+let _verReloaded = false;
+async function checkVersion(){
+  if(_verReloaded) return;
+  let v;
+  try{ v = (await (await fetch(urlFor('/version'))).json()).version; }
+  catch(e){ return; }
+  if(v && VB_PAGE_VERSION && v !== VB_PAGE_VERSION && v !== "__VB_VERSION__"){
+    if(turnActive || decisionOpen){ return; }   // wait for a lull
+    _verReloaded = true;
+    try{ location.reload(); }catch(e){ location.href = location.href; }
+  }
+}
+setInterval(checkVersion, 20000);
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const TTS = 'speechSynthesis' in window;
 
@@ -4399,6 +4417,7 @@ function startEvents(){
   es.addEventListener('question_clear', () => { answeredQid = ''; clearQuestion(); });
 }
 startEvents();
+checkVersion();   // catch a stale tab on load
 /* ---- state reconciliation: the server tells us the REAL session state
    ('working' | 'idle'); the phone's local orb state is only a projection and
    can drift (a missed SSE/poll leaves turnActive stuck true forever, which is
@@ -6485,7 +6504,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(401, AUTH_PAGE.encode(),
                             "text/html; charset=utf-8")
                 return
-            self._reply(200, PAGE.encode(), "text/html; charset=utf-8")
+            # Stamp the served page with the current version so a stale tab
+            # (JS still in memory from before an update) can notice it is
+            # behind and auto-reload, ending the "did you reload?" class of
+            # bug where a fix ships but the phone keeps running old code.
+            page = PAGE.replace("__VB_VERSION__", core._local_version() or "0")
+            self._reply(200, page.encode(), "text/html; charset=utf-8")
+        elif path == "/version":
+            # Tiny, unauthenticated-friendly: the page polls this and reloads
+            # itself when the server version moved past the page's stamp.
+            self._reply(200, json.dumps(
+                {"version": core._local_version() or "0"}).encode(),
+                "application/json")
         else:
             self._reply(404, b"not found", "text/plain")
 
