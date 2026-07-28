@@ -64,6 +64,74 @@ def get_stats(window: float = 900.0) -> dict:
         return {}
 
 
+UPDATE_FLAG = STATE_DIR / "update_available"      # newer version is out
+_UPDATE_TS = STATE_DIR / "update_check_ts"         # last remote check
+_REMOTE_MANIFEST = ("https://raw.githubusercontent.com/cc-vb/voicebridge/"
+                    "main/.claude-plugin/plugin.json")
+
+
+def _local_version() -> str:
+    """The version of THIS install (the plugin.json beside the running code)."""
+    try:
+        root = Path(__file__).resolve().parent.parent
+        return json.loads(
+            (root / ".claude-plugin" / "plugin.json").read_text()).get(
+            "version", "")
+    except Exception:
+        return ""
+
+
+def _vtuple(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except Exception:
+        return (0,)
+
+
+def check_for_update(min_interval: float = 6 * 3600) -> None:
+    """Fail-silent, cached: at most once per min_interval, compare the
+    installed version to the latest on GitHub and write UPDATE_FLAG (the
+    newer version string) or clear it. This is what actually lights the
+    status-line nudge and the phone's 'update available' banner, the flag
+    was read everywhere but never written, so the nudge never fired."""
+    try:
+        if time.time() - float(_UPDATE_TS.read_text().strip()) < min_interval:
+            return
+    except Exception:
+        pass
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _UPDATE_TS.write_text(str(time.time()))
+    except Exception:
+        pass
+    local = _local_version()
+    if not local:
+        return
+    try:
+        import urllib.request
+        with urllib.request.urlopen(_REMOTE_MANIFEST, timeout=4) as r:
+            remote = json.loads(r.read().decode("utf-8")).get("version", "")
+    except Exception:
+        return   # offline / GitHub hiccup: never surface an error
+    try:
+        if remote and _vtuple(remote) > _vtuple(local):
+            UPDATE_FLAG.write_text(remote)
+        elif UPDATE_FLAG.exists():
+            UPDATE_FLAG.unlink()
+    except Exception:
+        pass
+
+
+def update_status() -> dict:
+    """{'version': installed, 'latest': newer-or-'' } for status/doctor/phone."""
+    latest = ""
+    try:
+        latest = UPDATE_FLAG.read_text().strip()
+    except Exception:
+        pass
+    return {"version": _local_version(), "latest": latest}
+
+
 def mark_call_live() -> None:
     """The phone page pings this every ~5s during a call."""
     try:

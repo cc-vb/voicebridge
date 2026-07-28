@@ -6330,6 +6330,7 @@ class Handler(BaseHTTPRequestHandler):
                 "state": core.active_session_state(tp) if tp else "idle",
                 "mode": core.current_permission_mode(tp) if tp else "",
                 "question": core.pending_question(tp) if tp else {},
+                "update": core.update_status(),
             }).encode(), "application/json")
         elif path == "/poll":
             # Latest reply of the active session, no injection: lets the page

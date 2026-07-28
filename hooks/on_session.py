@@ -12,6 +12,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from vb import core  # noqa: E402
 
+
+def _kick_update_check() -> None:
+    """Fire a cached, fail-silent version check in the background so it never
+    delays session start; it writes update_available, which lights the status
+    line and the phone banner when a newer version is out."""
+    try:
+        import subprocess
+        subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys;sys.path.insert(0,%r);from vb import core;"
+             "core.check_for_update()" % str(Path(__file__).resolve().parent.parent)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except Exception:
+        pass
+
 HINT = """\
 🎙  voicebridge is ready. Talk to Claude, hands-free.
 
@@ -68,7 +84,8 @@ def _auto_update() -> None:
 
 
 def main() -> int:
-    _auto_update()
+    _auto_update()          # clone installs self-pull
+    _kick_update_check()    # everyone (esp. plugin installs) gets the nudge
     flag = core.STATE_DIR / "hint_shown"
     if flag.exists():
         return 0
