@@ -200,4 +200,15 @@ def summarize(text: str, engine: str = "auto") -> str:
     if not e:
         return ""
     prompt = _PROMPT + text[:MAX_INPUT_CHARS]
-    return _RUN[e](prompt).strip()
+    out = _RUN[e](prompt).strip()
+    if out and _dropped_question(text, out):
+        return ""   # safety net: speak the full reply rather than swallow a Q
+    return out
+
+
+def _dropped_question(full: str, brief: str) -> bool:
+    """If the reply ends with a question to the user but the briefing has none,
+    the summary likely dropped it. Better to speak the full reply than to
+    silently swallow a question you need to answer. Conservative (only the
+    trailing chunk) so it doesn't over-trigger on incidental '?' mid-reply."""
+    return "?" in full[-240:] and "?" not in brief

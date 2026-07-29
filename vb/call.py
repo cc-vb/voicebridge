@@ -1602,6 +1602,8 @@ header {
    on home (updateModeChipVis toggles .on for the live-call case). */
 #modeChip:not(.on) { display:none; }
 body.chat-full #modeChip, body.home #modeChip { display:none !important; }
+#briefChip:not(.on) { display:none; }
+body.chat-full #briefChip, body.home #briefChip { display:none !important; }
 /* v18b: the chat-header chip sits between the title and the hush button; it is
    flex:none so it never squeezes the session name, and compact for the row. */
 #chatModeChip { flex:none; max-width:44vw; }
@@ -2513,6 +2515,11 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
     </span>
     <span class="mclbl" id="modeChipLbl">Mode</span>
   </button>
+  <button id="briefChip" type="button" class="mchip" data-on="0"
+          aria-label="Spoken length: full or brief"
+          title="Spoken replies: Full, or a short Brief">
+    <span class="mclbl" id="briefChipLbl">Full</span>
+  </button>
 </header>
 
 <main>
@@ -2823,6 +2830,7 @@ const statusEl=$('status'), stateWord=$('stateWord'), pillName=$('pillName'),
       closedName=$('closedName'), closedBody=$('closedBody'),
       clipBtn=$('clipBtn'), pickFile=$('pickFile'), chipsEl=$('chips'),
       modeChip=$('modeChip'), modeChipLbl=$('modeChipLbl'),
+      briefChip=$('briefChip'), briefChipLbl=$('briefChipLbl'),
       chatModeChip=$('chatModeChip'), chatModeChipLbl=$('chatModeChipLbl');
 const VB_PAGE_VERSION = "__VB_VERSION__";   // server stamps the real version
 /* Self-heal a stale tab: if the relay has shipped a newer version than the
@@ -4299,10 +4307,10 @@ function syncQueueChip(){
   el.textContent = n === 1 ? '1 queued' : (n + ' queued');
   el.classList.toggle('on', n > 0);
 }
-function enqueueSpeak(rep, uuid){
+function enqueueSpeak(rep, uuid, spoken){
   const key = uuid || rep;
   if(speakQueue.some(q => q.key === key)) return;   // dedup by uuid
-  speakQueue.push({ key: key, text: rep });
+  speakQueue.push({ key: key, text: rep, spoken: spoken });
   syncQueueChip();
 }
 /* Drain one queued reply after a completion. Returns true if it started one
@@ -4313,7 +4321,7 @@ function drainSpeakQueue(){
   const nxt = speakQueue.shift();
   if(!nxt) return false;
   syncQueueChip();
-  doSpeakIncoming(nxt.text);
+  doSpeakIncoming(nxt.text, nxt.spoken);
   return true;
 }
 /* speakIncoming is the ENTRY for every unsolicited follow-on (SSE reply event,
@@ -4321,11 +4329,11 @@ function drainSpeakQueue(){
    spoken, queue this one; otherwise speak it now. finishTurn (the user's OWN
    answer) and barge-in never route through here, so they still take over
    immediately. */
-function speakIncoming(rep, uuid){
-  if(state === 'speaking'){ enqueueSpeak(rep, uuid); return; }
-  doSpeakIncoming(rep);
+function speakIncoming(rep, uuid, spoken){
+  if(state === 'speaking'){ enqueueSpeak(rep, uuid, spoken); return; }
+  doSpeakIncoming(rep, spoken);
 }
-function doSpeakIncoming(rep){
+function doSpeakIncoming(rep, spoken){
   stopListening();
   stopSpeaking();                         // never let two voices overlap on one reply
   lastReplyText = rep; updateReplay();   // the Replay control re-reads this
@@ -4333,7 +4341,7 @@ function doSpeakIncoming(rep){
   chatAdd('assistant', rep); refreshChat();
   setState('speaking');
   startBarge();
-  say(rep, () => {
+  say(spoken || rep, () => {              // Brief mode speaks `spoken`; chat full
     stopBarge();
     if(!live) return;
     if(drainSpeakQueue()) return;         // v22: speak the next queued reply
@@ -4406,10 +4414,11 @@ function startEvents(){
     try{
       const d = JSON.parse(e.data);
       const rep = String(d.reply || '').trim(), u = String(d.uuid || '');
+      const brief = String(d.brief || '').trim();   // '' unless Brief mode + engine ready
       if(!u || !rep || u === lastUuid) return;
       lastUuid = u;
-      if(turnActive){ finishTurn(turnId, rep); }
-      else if(live && Date.now() > connectGuardUntil){ speakIncoming(rep, u); }
+      if(turnActive){ finishTurn(turnId, rep, brief); }
+      else if(live && Date.now() > connectGuardUntil){ speakIncoming(rep, u, brief); }
     }catch(x){}
   });
   es.addEventListener('pending', e => {
@@ -4484,7 +4493,7 @@ function settleToIdle(){
   if(state === 'speaking' || decisionOpen) return;
   setState('listening'); listen();
 }
-function finishTurn(id, reply){
+function finishTurn(id, reply, spoken){
   if(id !== turnId) return;
   pendingSend = null;
   turnId++;                       // one winner: kill the other waiters
@@ -4502,7 +4511,7 @@ function finishTurn(id, reply){
   stopSpeaking();                 // cancel any in-flight audio: one voice, one reply
   setState('speaking');
   startBarge();                   // v5: talking over the reply interrupts it
-  say(reply, () => {
+  say(spoken || reply, () => {    // Brief mode speaks `spoken`; chat kept full
     stopBarge();
     if(!live) return;
     if(drainSpeakQueue()) return;   // v22: speak anything queued during the answer
@@ -4697,6 +4706,7 @@ async function statusLoop(myGen){
       // v18: authoritative permission-mode sync + chip visibility.
       syncModeFromStatus(s.mode);
       updateModeChipVis();
+      if(briefChip) setBriefChip(!!s.summarize);   // reflect Full/Brief state
     }catch(e){}
     await sleep(turnActive ? 4000 : 8000);
     if(!live || myGen !== liveGen) return;
@@ -4754,6 +4764,19 @@ function updateModeChipVis(){
      chat view is open. */
   modeChip.classList.toggle('on', live && !chatOpenState && !onHome);
   if(chatModeChip) chatModeChip.classList.toggle('on', live && chatOpenState);
+  if(briefChip) briefChip.classList.toggle('on', live && !chatOpenState && !onHome);
+}
+function setBriefChip(on){
+  if(!briefChip) return;
+  briefChip.dataset.on = on ? '1' : '0';
+  if(briefChipLbl) briefChipLbl.textContent = on ? 'Brief' : 'Full';
+}
+function toggleBrief(){
+  if(!briefChip) return;
+  const next = briefChip.dataset.on !== '1';
+  setBriefChip(next);                          // optimistic
+  jpost('/summarize', { on: next })
+    .then(r => r.json()).then(j => setBriefChip(!!j.on)).catch(() => {});
 }
 function syncModeFromStatus(raw){
   claudeMode = String(raw || '');
@@ -4835,6 +4858,7 @@ async function chooseMode(raw){
 }
 /* both chips open the SAME picker; the blind cycle-on-tap is retired. */
 modeChip.addEventListener('click', openModePicker);
+if(briefChip) briefChip.addEventListener('click', toggleBrief);
 if(chatModeChip) chatModeChip.addEventListener('click', openModePicker);
 for(const el of modeOptEls){
   if(!el) continue;
@@ -6489,7 +6513,20 @@ class Handler(BaseHTTPRequestHandler):
                             last_u = u
                             cur = core.clean_for_speech(
                                 core.last_assistant_text(tp), max_chars=2500)
-                            emit("reply", {"uuid": u, "reply": cur})
+                            ev = {"uuid": u, "reply": cur}
+                            # Summarized voice: attach a short briefing (made
+                            # locally on the Mac) for the phone to SPEAK; the full
+                            # reply above still shows in the chat. Degrades to no
+                            # brief (phone speaks full) if the engine isn't ready.
+                            try:
+                                from . import summarize as _sum
+                                if _sum.is_on():
+                                    _b = _sum.summarize(cur)
+                                    if _b:
+                                        ev["brief"] = _b
+                            except Exception:
+                                pass
+                            emit("reply", ev)
                         # live progress: push the latest tool action so the
                         # chat shows "Running ...", "Editing X" as it happens
                         act = core.latest_activity(tp) if tp else {}
@@ -6551,6 +6588,11 @@ class Handler(BaseHTTPRequestHandler):
             sid = _active_sid()
             pend = core.get_pending_notice(sid)       # permission-only
             tp = _target_transcript()
+            try:
+                from . import summarize as _sum
+                _sum_on = _sum.is_on()
+            except Exception:
+                _sum_on = False
             self._reply(200, json.dumps({
                 "pending": core.clean_for_speech(pend, max_chars=300)
                 if pend else "",
@@ -6561,6 +6603,7 @@ class Handler(BaseHTTPRequestHandler):
                 "mode": core.current_permission_mode(tp) if tp else "",
                 "question": core.pending_question(tp) if tp else {},
                 "update": core.update_status(),
+                "summarize": _sum_on,   # phone's Full/Brief chip reflects this
             }).encode(), "application/json")
         elif path == "/poll":
             # Latest reply of the active session, no injection: lets the page
@@ -6769,6 +6812,22 @@ class Handler(BaseHTTPRequestHandler):
             # you're away from the laptop).
             core.mark_call_live()
             self._reply(200, b"{}", "application/json")
+            return
+
+        if path == "/summarize":   # toggle summarized-voice mode from the phone
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                body = {}
+            from . import summarize as _sum
+            if "on" in body:
+                _sum.set_mode(bool(body["on"]))
+                if _sum.is_on():
+                    _sum.start_mlx_server()   # warm it (first use pulls the model)
+            self._reply(200, json.dumps(
+                {"on": _sum.is_on(),
+                 "engine": _sum.engine_available("auto")}).encode(),
+                "application/json")
             return
 
         if path == "/mode":  # set Claude's permission mode (direct, or cycle)
