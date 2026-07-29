@@ -424,6 +424,25 @@ def known_owners() -> dict:
     return out
 
 
+def owner_sid() -> str:
+    """The session id of the Claude Code process THIS code is running under,
+    found by matching our owner pid against the OWNERS registry.
+
+    A hook or a tool-launched `vb phone` runs as a DESCENDANT of the Claude
+    process, so owner_pid() walks up to it and known_owners() maps it back to a
+    sid. This is why it works where the LAST file does not: `vb phone` fired
+    from the slash command runs in a subprocess with a stale/empty LAST, so it
+    used to opt in nothing and the phone saw "no sessions". '' if unresolved.
+    """
+    pid = owner_pid()
+    if pid <= 0:
+        return ""
+    for sid, opid in known_owners().items():
+        if opid == pid:
+            return sid
+    return ""
+
+
 def sid_alive(sid: str, live: set = None) -> bool:
     """Is this session still open? None when we've never seen it, so callers
     can fall back instead of declaring a session dead on no evidence."""

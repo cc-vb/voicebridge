@@ -385,7 +385,13 @@ def main(argv) -> int:
         # the relay and the tunnel end with it instead of staying reachable.
         try:
             from vb import talkd as _td
-            _owner = (_td._read_json(_td.LAST) or {}).get("session_id", "")
+            # Resolve the CALLING session by process tree first: `vb phone`
+            # fired from the slash command runs in a subprocess where LAST is
+            # stale/empty, so trusting LAST opted in nothing and the phone saw
+            # "no sessions". owner_sid() walks up to the Claude process we run
+            # under and maps it to a sid. LAST stays as the fallback.
+            _owner = _td.owner_sid() or (
+                _td._read_json(_td.LAST) or {}).get("session_id", "")
             if _owner:
                 _td.CALL_OWNER.write_text(_owner)
                 # Default-DENY isolation: opt ONLY this session into phone
