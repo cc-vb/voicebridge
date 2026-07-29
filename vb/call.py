@@ -271,7 +271,8 @@ def _asked_load() -> None:
     retrying an already-injected turn against a fresh relay would inject the
     same prompt a second time (critic finding #8)."""
     try:
-        _ASKED.update(json.loads(_ASKED_FILE.read_text()))
+        with _ASKED_LOCK:
+            _ASKED.update(json.loads(_ASKED_FILE.read_text()))
     except Exception:
         pass
 
@@ -279,7 +280,8 @@ def _asked_load() -> None:
 def _asked_save() -> None:
     try:
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        _ASKED_FILE.write_text(json.dumps(_ASKED))
+        with _ASKED_LOCK:
+            _ASKED_FILE.write_text(json.dumps(dict(_ASKED)))
     except Exception:
         pass
 
@@ -305,6 +307,12 @@ _TTS_LOCK = _threading.Lock()
 # landed" bug, confirmed in the relay log). This serializes + waits-for-idle.
 _INJECT_LOCK = _threading.Lock()
 
+# The _ASKED turn ledger is touched by concurrent /ask handler threads (tunnels
+# double-send; the client auto-retries a dropped POST). Guard every access so
+# check-then-reserve is atomic (no double-inject) and _prune_asked can't raise
+# "dict changed size during iteration". RLock: _prune_asked nests _asked_save.
+_ASKED_LOCK = _threading.RLock()
+
 
 def _broadcast(ev: dict) -> None:
     with _SUBS_LOCK:
@@ -317,9 +325,13 @@ def _broadcast(ev: dict) -> None:
 
 def _prune_asked(max_age: float = 900.0) -> None:
     now = time.time()
-    for k in [k for k, v in _ASKED.items() if now - v.get("ts", 0) > max_age]:
-        _ASKED.pop(k, None)
-    _asked_save()   # ledger survives relay restarts (idempotency holds)
+    with _ASKED_LOCK:
+        # snapshot with list(): popping while iterating _ASKED.items() directly
+        # would raise "dict changed size" if another thread also mutates it.
+        for k in [k for k, v in list(_ASKED.items())
+                  if now - v.get("ts", 0) > max_age]:
+            _ASKED.pop(k, None)
+        _asked_save()   # ledger survives relay restarts (idempotency holds)
 
 
 def _await_reply(rec: dict) -> str:
@@ -392,7 +404,7 @@ def _read_tts(wav: str, want_opus: bool):
         try:
             ogg = wav + ".ogg"
             r = subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", wav,
+                [FFMPEG, "-y", "-loglevel", "error", "-i", wav,
                  "-c:a", "libopus", "-b:a", "24k", ogg],
                 capture_output=True, timeout=20)
             if r.returncode == 0 and os.path.getsize(ogg) > 200:
@@ -6475,12 +6487,16 @@ class Handler(BaseHTTPRequestHandler):
                         last_sstate = sstate
                         emit("sstate", {"state": sstate})
                     # An OPEN AskUserQuestion becomes in-chat option cards.
-                    q = core.pending_question(tp) if tp else {}
-                    qid = q.get("id", "") if q else ""
+                    # NB: use a distinct name, NOT `q` (that is the subscriber
+                    # queue for this stream). Rebinding `q` here killed the SSE
+                    # loop after one tick (q.get on a dict) and leaked the real
+                    # queue past _SUBS.discard, silently disabling live push.
+                    qn = core.pending_question(tp) if tp else {}
+                    qid = qn.get("id", "") if qn else ""
                     if qid != last_qid:
                         last_qid = qid
                         if qid:
-                            emit("question", q)
+                            emit("question", qn)
                         else:
                             emit("question_clear", {})
                     ticks += 1
@@ -6611,25 +6627,35 @@ class Handler(BaseHTTPRequestHandler):
                 # Non-blocking protocol: inject (idempotently), ACK at once
                 # with the reply-uuid BASELINE; completion arrives only on
                 # the event stream. One channel, one truth.
-                if turn_id in _ASKED:
+                # Atomically CLAIM this turn id so two racing posts (a tunnel
+                # double-send, or the client's auto-retry beat) can never both
+                # inject. The claim is a placeholder; the baseline is filled in
+                # right after, outside the lock (it does transcript I/O).
+                with _ASKED_LOCK:
+                    dup = turn_id in _ASKED
+                    if dup:
+                        seen_base = _ASKED[turn_id].get("base", "")
+                    else:
+                        _ASKED[turn_id] = {"ts": time.time()}
+                if dup:
                     self._reply(200, json.dumps(
                         {"ok": True, "delivered": True,
-                         "uuid": _ASKED[turn_id].get("base", "")}).encode(),
-                        "application/json")
+                         "uuid": seen_base}).encode(), "application/json")
                     return
                 tp0 = _target_transcript()
                 base = core.latest_assistant_uuid(tp0) if tp0 else ""
-                # Reserve BEFORE injecting: _inject_only may block waiting for
-                # the session to go idle, and a retry with the same id during
-                # that wait must dedup, not paste a second copy.
-                _ASKED[turn_id] = {
-                    "tp": tp0,
-                    "prev": core.last_assistant_text(tp0) if tp0 else "",
-                    "base": base, "ts": time.time()}
+                prev = core.last_assistant_text(tp0) if tp0 else ""
+                # Fill the reserved claim BEFORE injecting: _inject_only may block
+                # waiting for the session to go idle, and a retry with the same
+                # id during that wait dedups on the claim above.
+                with _ASKED_LOCK:
+                    _ASKED[turn_id].update(
+                        {"tp": tp0, "prev": prev, "base": base})
                 _prune_asked()
                 why = _inject_only(text) if text else "Sorry, I didn't catch that."
                 if why:
-                    _ASKED.pop(turn_id, None)   # failed: allow a real retry
+                    with _ASKED_LOCK:
+                        _ASKED.pop(turn_id, None)   # failed: allow a real retry
                     self._reply(200, json.dumps(
                         {"ok": False, "reply": why}).encode(),
                         "application/json")
@@ -6647,10 +6673,11 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 if turn_id:
                     tp0 = _target_transcript()
-                    _ASKED[turn_id] = {
-                        "tp": tp0,
-                        "prev": core.last_assistant_text(tp0) if tp0 else "",
-                        "ts": time.time()}
+                    prev = core.last_assistant_text(tp0) if tp0 else ""
+                    with _ASKED_LOCK:
+                        if turn_id not in _ASKED:   # re-check under lock
+                            _ASKED[turn_id] = {
+                                "tp": tp0, "prev": prev, "ts": time.time()}
                     _prune_asked()
                 answer = (_ask_session(text, turn_id) if text
                           else "Sorry, I didn't catch that.")
