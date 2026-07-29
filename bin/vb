@@ -1017,7 +1017,14 @@ def main(argv) -> int:
                 print("set: vb call link <https://your-stable-url>  "
                       "(see README for the free Tailscale setup)")
         elif sub == "__run__":
-            return call.run_daemon()
+            from vb import recover as _rec
+            import time as _t
+            while True:
+                try:
+                    return call.run_daemon()          # normal return exits
+                except Exception as _e:
+                    _rec.record("call-daemon", _e)     # crash: record + restart
+                    _t.sleep(1.0)
         else:
             print("usage: vb call on|off|status|tunnel")
             return 1
@@ -1057,7 +1064,14 @@ def main(argv) -> int:
             print("talkd stopped")
             print(talkd.status())
         elif sub == "__run__":
-            return talkd.run_daemon()
+            from vb import recover as _rec
+            import time as _t
+            while True:
+                try:
+                    return talkd.run_daemon()         # normal return exits
+                except Exception as _e:
+                    _rec.record("talkd-daemon", _e)    # crash: record + restart
+                    _t.sleep(1.0)
         else:
             print("usage: vb talkd on|off|off-all|status|stop")
             return 1
@@ -1365,6 +1379,36 @@ def main(argv) -> int:
                 print(f"  fixed: {line}")
         else:
             print("voicebridge selfheal: all healthy, nothing to fix")
+        return 0
+
+    elif cmd == "telemetry":
+        from vb import telemetry as _tel
+        sub = rest[0] if rest else "status"
+        if sub == "on":
+            _tel.set_opt_in(True)
+            print("telemetry ON. Anonymous, scrubbed crash reports only: "
+                  "error type + our own stack + version + OS. NEVER your "
+                  "prompts, code, paths, or transcripts. `vb telemetry off` "
+                  "to stop.")
+        elif sub == "off":
+            _tel.set_opt_in(False)
+            print("telemetry OFF. Nothing leaves your machine.")
+        else:
+            print("telemetry: " + ("ON" if _tel.opted_in()
+                                    else "OFF (default)"))
+        return 0
+
+    elif cmd == "errors":
+        import datetime as _dt
+        from vb import recover as _rec
+        errs = _rec.recent_errors(20)
+        if not errs:
+            print("no recent errors recorded.")
+        for e in errs:
+            t = _dt.datetime.fromtimestamp(
+                e.get("ts", 0)).strftime("%m-%d %H:%M")
+            print(f"  {t}  [{e.get('where', '?')}] "
+                  f"{e.get('type', '?')}: {e.get('msg', '')[:120]}")
         return 0
         return 0 if not bad else 1
 
