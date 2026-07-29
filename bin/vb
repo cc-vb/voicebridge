@@ -1292,8 +1292,13 @@ def main(argv) -> int:
               "run install.sh (downloads ggml-small.en.bin)")
         check("say (macOS TTS)", _os.path.exists("/usr/bin/say"),
               "macOS only")
+        from vb import selfheal as _sh0
+        # Plugin installs put commands under the plugin dir (/voicebridge:...)
+        # and hooks in the plugin's hooks.json, not ~/.claude, so a healthy
+        # plugin user was wrongly told to run install.sh. Treat either as PASS.
+        is_plugin = "/.claude/plugins/" in str(_sh0.REPO)
         cmds = Path.home() / ".claude" / "commands"
-        check("/voice-on command", (cmds / "voice-on.md").exists(),
+        check("/voice-on command", (cmds / "voice-on.md").exists() or is_plugin,
               "run install.sh (copies slash commands)")
         sj = Path.home() / ".claude" / "settings.json"
         hooked = False
@@ -1301,7 +1306,13 @@ def main(argv) -> int:
             hooked = "voicebridge" in sj.read_text()
         except Exception:
             pass
-        check("hooks registered", hooked, "run install.sh (registers hooks)")
+        check("hooks registered", hooked or is_plugin,
+              "run install.sh (registers hooks)")
+        # The exact class of the reported live bug: `vb` on PATH must resolve to
+        # THIS install and be runnable (a stale/foreign symlink is invisible to
+        # every other check).
+        check("vb on PATH", _sh0._vb_path_ok(),
+              "run `vb selfheal` (re-links ~/.local/bin/vb) or fix your PATH")
         # Accessibility: can osascript send keystrokes from this context?
         r = subprocess.run(
             ["osascript", "-e",
@@ -1335,6 +1346,26 @@ def main(argv) -> int:
         bad = [n for n, ok, _ in results if not ok]
         print("all good, run /voice-on inside a Claude session" if not bad
               else f"{len(bad)} issue(s) above")
+        heal_hints = _sh0.report()
+        if heal_hints:
+            print("  self-heal can fix (run `vb selfheal`):")
+            for line in heal_hints:
+                print(f"    - {line}")
+        return 0
+
+    elif cmd == "selfheal":
+        # Deterministic, local auto-fixes for conditions that otherwise leave a
+        # user stuck (a stale/foreign `vb` symlink, dead PID markers). Safe to
+        # run anytime; no-ops when healthy. Also runs quietly at session start.
+        from vb import selfheal as _shc
+        done = _shc.heal(apply=True)
+        if done:
+            print("voicebridge selfheal:")
+            for line in done:
+                print(f"  fixed: {line}")
+        else:
+            print("voicebridge selfheal: all healthy, nothing to fix")
+        return 0
         return 0 if not bad else 1
 
     elif cmd == "selftest":

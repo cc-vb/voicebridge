@@ -28,6 +28,23 @@ def _kick_update_check() -> None:
     except Exception:
         pass
 
+
+def _kick_selfheal() -> None:
+    """Run the deterministic self-heals in the background, so a stale/foreign
+    `vb` symlink or a dead PID marker is fixed before the user ever hits it (and
+    without them running `vb doctor`, which most never do). Fail-silent; never
+    delays session start; idempotent and no-ops when healthy."""
+    try:
+        import subprocess
+        subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys;sys.path.insert(0,%r);from vb import selfheal;"
+             "selfheal.heal(True)" % str(Path(__file__).resolve().parent.parent)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except Exception:
+        pass
+
 HINT = """\
 🎙  voicebridge is ready. Talk to Claude, hands-free.
 
@@ -86,6 +103,7 @@ def _auto_update() -> None:
 def main() -> int:
     _auto_update()          # clone installs self-pull
     _kick_update_check()    # everyone (esp. plugin installs) gets the nudge
+    _kick_selfheal()        # quietly fix a stale vb symlink / dead PID markers
     flag = core.STATE_DIR / "hint_shown"
     if flag.exists():
         return 0
