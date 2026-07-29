@@ -109,3 +109,114 @@ def discover() -> list:
             except OSError:
                 pass
     return rows
+
+
+# --------------------------------------------------------------------------
+# Control seam: how voicebridge DELIVERS to and CONTROLS a target.
+#
+# The functions above are the READ side (get the reply out of an agent's log),
+# already agent-agnostic. The classes below are the matching WRITE/control side
+# (send a prompt, interrupt, approve, cycle mode), which was still hard-wired to
+# Claude Code at the call sites. Together the two halves are the whole "talk to
+# any agent" boundary. Today the only control target is Claude Code in a
+# terminal, so there is one adapter. A second target (Codex, Google Antigravity,
+# another agent, or Friday) slots in by adding a class, registering its `kind`,
+# and teaching kind_for_sid, no call site changes. Adapters lazily import
+# inject/talkd inside methods to avoid an import cycle.
+# --------------------------------------------------------------------------
+
+
+class TargetAdapter:
+    """How voicebridge controls one kind of agent target. Every method takes
+    the session id so an adapter can address the right instance when several
+    are open. Returns True on success unless noted."""
+
+    kind = "target"
+    reply_kind = "claude"   # how last_reply() should read this target's output
+
+    def send(self, sid: str, text: str) -> bool:
+        """Deliver a prompt to the target session and submit it."""
+        raise NotImplementedError
+
+    def read_state(self, sid: str, transcript: str = "") -> str:
+        """Coarse session state: 'working', 'idle', or similar."""
+        raise NotImplementedError
+
+    def interrupt(self, sid: str) -> bool:
+        """Stop the target's current generation."""
+        raise NotImplementedError
+
+    def approve(self, sid: str) -> bool:
+        """Answer a blocking permission prompt affirmatively."""
+        raise NotImplementedError
+
+    def decline(self, sid: str) -> bool:
+        """Dismiss a blocking permission prompt."""
+        raise NotImplementedError
+
+    def cycle_mode(self, sid: str, n: int = 1) -> bool:
+        """Advance the target's mode selector n steps (e.g. permission mode)."""
+        raise NotImplementedError
+
+
+class ClaudeCodeAdapter(TargetAdapter):
+    """Claude Code running in a terminal. Delivery is a focus-free paste into
+    the session's own tab (by tty, via the OWNERS registry) so a prompt lands
+    in the selected session even with several open; interrupt/approve/mode are
+    the same keystrokes you would press in the TUI yourself."""
+
+    kind = "claude-code"
+    reply_kind = "claude"
+
+    def send(self, sid: str, text: str) -> bool:
+        from . import inject
+        from .talkd import bound_app, tty_for_sid
+        return inject.paste_text(text, send=True, expect_app=bound_app(),
+                                 target_tty=tty_for_sid(sid))
+
+    def read_state(self, sid: str, transcript: str = "") -> str:
+        return core.active_session_state(transcript) if transcript else "idle"
+
+    def interrupt(self, sid: str) -> bool:
+        from . import inject
+        inject.press_escape()
+        return True
+
+    def approve(self, sid: str) -> bool:
+        from . import inject
+        from .talkd import bound_app
+        return inject.press_enter(expect_app=bound_app())
+
+    def decline(self, sid: str) -> bool:
+        from . import inject
+        inject.press_escape()
+        return True
+
+    def cycle_mode(self, sid: str, n: int = 1) -> bool:
+        from . import inject
+        from .talkd import bound_app
+        import time as _t
+        ok = True
+        n = max(0, n)   # n == 0 is a valid no-op (target mode already current)
+        for i in range(n):
+            ok = inject.press_shift_tab(expect_app=bound_app()) and ok
+            if i + 1 < n:
+                _t.sleep(0.18)   # let each Shift+Tab register before the next
+        return ok
+
+
+# The registry is the extension point: map a target `kind` to its adapter.
+_REGISTRY = {ClaudeCodeAdapter.kind: ClaudeCodeAdapter()}
+_DEFAULT_KIND = ClaudeCodeAdapter.kind
+
+
+def kind_for_sid(sid: str) -> str:
+    """Which kind of control target this session is. Every session is Claude
+    Code today; this is where a per-session target marker gets read once other
+    adapters exist, so the choice becomes data, not a change at the call site."""
+    return _DEFAULT_KIND
+
+
+def for_sid(sid: str) -> TargetAdapter:
+    """The control adapter for a session's target."""
+    return _REGISTRY.get(kind_for_sid(sid), _REGISTRY[_DEFAULT_KIND])

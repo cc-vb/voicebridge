@@ -29,7 +29,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import core, inject, oslayer
+from . import core, oslayer
 from .talkd import ACTIVE, _read_json
 
 PID = core.STATE_DIR / "call.pid"
@@ -364,9 +364,11 @@ def _handle_pending(text: str, pending: str) -> str:
     highlighted default), spoken no -> Escape (dismiss). Anything else gets
     told what Claude is asking, typing prose into a permission dialog would
     go nowhere anyway."""
-    from .talkd import bound_app
+    from . import adapters
+    sid = _active_sid()
+    agent = adapters.for_sid(sid)
     if YES_RE.match(text):
-        if not inject.press_enter(expect_app=bound_app()):
+        if not agent.approve(sid):
             # Keystroke had nowhere to go: keep the notice (the dialog is
             # still up!) and say exactly what's wrong instead of looping.
             return ("I couldn't press allow, the terminal isn't the focused "
@@ -376,7 +378,7 @@ def _handle_pending(text: str, pending: str) -> str:
         return ""   # approved: fall through to waiting for the reply
     if NO_RE.match(text):
         core.clear_pending_notice()
-        inject.press_escape()
+        agent.decline(sid)
         return "Okay, declined. What next?"
     q = core.clean_for_speech(pending, max_chars=300)
     return f"Claude is waiting on you: {q}. Say yes to allow, or no to decline."
@@ -420,11 +422,12 @@ def _inject_only(text: str) -> str:
     pending = core.get_pending_notice(_active_sid())
     if pending:
         return _handle_pending(text, pending)   # '' when yes was delivered
-    from .talkd import bound_app, tty_for_sid
-    # Target THIS session's own terminal tab (via OWNERS sid->pid->tty), so
-    # with several sessions open the prompt lands in the one the phone
-    # selected, never just the frontmost tab.
-    target_tty = tty_for_sid(_active_sid())
+    from . import adapters
+    # Deliver through the target's adapter (today: Claude Code in a terminal).
+    # The adapter targets THIS session's own tab (via OWNERS sid->pid->tty), so
+    # with several sessions open the prompt lands in the one the phone selected,
+    # never just the frontmost tab.
+    sid = _active_sid()
     with _INJECT_LOCK:
         # Wait for the session to be FREE so the prompt lands as its own turn
         # instead of being lost while Claude is mid-reply. Capped; if it never
@@ -434,8 +437,7 @@ def _inject_only(text: str) -> str:
         while (core.active_session_state(tp) == "working"
                and time.time() - t0 < 45):
             time.sleep(0.6)
-        if not inject.paste_text(text, send=True, expect_app=bound_app(),
-                                 target_tty=target_tty):
+        if not adapters.for_sid(sid).send(sid, text):
             return ("I couldn't type into the session, the terminal isn't the "
                     "focused window on your Mac. Bring it to the front, or "
                     "check the screen isn't locked, then try again.")
@@ -460,12 +462,12 @@ def _ask_session(text: str, turn_id: str = "") -> str:
         if out:
             return out
     else:
-        # Guard the paste: it lands in the FRONTMOST Mac app, so if the bound
-        # terminal isn't focused (or the screen is locked) refuse loudly
+        # Guard the delivery: it lands in the FRONTMOST Mac app, so if the bound
+        # terminal isn't focused (or the screen is locked) the adapter refuses
         # instead of typing into Slack / waiting 90s for nothing.
-        from .talkd import bound_app, tty_for_sid
-        if not inject.paste_text(text, send=True, expect_app=bound_app(),
-                                 target_tty=tty_for_sid(_active_sid())):
+        from . import adapters
+        sid = _active_sid()
+        if not adapters.for_sid(sid).send(sid, text):
             return ("I couldn't type into the session, the terminal isn't "
                     "the focused window on your Mac. Bring it to the front, "
                     "or check the screen isn't locked, then try again.")
@@ -6725,7 +6727,6 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": False, "reply": "No shared session to switch."}
                 ).encode(), "application/json")
                 return
-            from .talkd import bound_app
             try:
                 to = (json.loads(raw or b"{}").get("to") or "").strip()
             except Exception:
@@ -6753,11 +6754,8 @@ class Handler(BaseHTTPRequestHandler):
                 presses = (_idx(to) - _idx(before)) % len(ORDER)
             else:
                 presses = 1   # no target: plain single cycle
-            ok = True
-            for i in range(presses):
-                ok = inject.press_shift_tab(expect_app=bound_app()) and ok
-                if i + 1 < presses:
-                    time.sleep(0.18)
+            from . import adapters
+            ok = adapters.for_sid(_active_sid()).cycle_mode(_active_sid(), presses)
             self._reply(200 if ok else 409, json.dumps(
                 {"ok": bool(ok), "was": before, "to": to,
                  "presses": presses}).encode(), "application/json")
