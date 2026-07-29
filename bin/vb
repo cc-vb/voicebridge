@@ -1427,8 +1427,9 @@ def main(argv) -> int:
                     _sum.start_mlx_server()   # warm now; first run pulls the model
                     print("summarized voice ON (engine: mlx). Spoken replies "
                           "become a short briefing; the full reply still shows "
-                          "on the phone. First use downloads the model (~2GB) in "
-                          "the background, replies stay full until it's ready.")
+                          "on the phone. First use downloads a small model "
+                          "(~1GB) in the background, replies stay full until it's "
+                          "ready.")
                 elif eng:
                     print(f"summarized voice ON (engine: {eng}). Spoken replies "
                           "become a short briefing; the full reply still shows "

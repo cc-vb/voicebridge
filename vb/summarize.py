@@ -37,8 +37,13 @@ _PROMPT = (
     "changed (files, commands, results). Describe code in words, never quote "
     "it. Output ONLY the summary, nothing else.\n\nREPLY:\n")
 
-_MLX_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
-_OLLAMA_MODEL = "qwen2.5:3b"
+# Summarizing into 2-3 sentences is an easy task, so default to a SMALL model
+# (~1GB) to keep the one-time download light. Override to a bigger one (e.g.
+# mlx-community/Qwen2.5-3B-Instruct-4bit, ~2GB) via VB_SUMMARIZE_MODEL only if
+# the small model's briefings aren't good enough.
+_MLX_MODEL = (os.environ.get("VB_SUMMARIZE_MODEL")
+              or "mlx-community/Qwen2.5-1.5B-Instruct-4bit")   # ~1GB
+_OLLAMA_MODEL = os.environ.get("VB_SUMMARIZE_MODEL_OLLAMA") or "qwen2.5:1.5b"
 # voicebridge-managed MLX venv (built by install.sh, exactly like the Kokoro
 # venv) so the user never runs pip. Served warm on a per-uid port like the
 # Kokoro/whisper servers.
