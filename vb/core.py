@@ -1395,6 +1395,23 @@ def speak_chunks_blocking(text: str) -> None:
     synthesizes, so the first words come out after one small synth instead
     of after the whole reply. Falls back to `say` when the server is down."""
     set_hud("speaking", text=text)   # indicator: a reply is playing aloud
+    from . import oslayer
+    if not oslayer.IS_MAC:
+        # The chunked afplay/say pipeline below is macOS-only; the bare `say`
+        # calls in it would raise FileNotFoundError and kill this worker off-Mac
+        # (no audio at all). Route non-Mac through the OS layer instead. The
+        # chunk prefetch/rewind niceties stay Mac-only for now.
+        try:
+            wav = str(STATE_DIR / "speech-os.wav")
+            rate = get_rate()
+            if oslayer.tts_to_wav(text, wav, rate, ""):
+                subprocess.run(oslayer.play_cmd(wav), stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+            else:
+                oslayer.tts_speak_blocking(text, rate, "")
+        except Exception as e:
+            log(f"os-layer speak failed: {e}")
+        return
     # Kokoro's voices are English-only. Detect from the TEXT itself: any
     # Devanagari means this reply needs the macOS Hindi voice, regardless
     # of settings, so auto-detected Hindi conversations just work.

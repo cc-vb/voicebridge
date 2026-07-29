@@ -75,7 +75,13 @@ def press_shift_tab(expect_app: str = "") -> bool:
     (normal -> auto-accept edits -> plan -> ...). Delivered to the bound
     terminal even from another app via activate-restore. Returns delivered."""
     if not oslayer.IS_MAC:
-        return False
+        # Was a hard no-op off-Mac (mode never cycled); send Shift+Tab via the
+        # OS layer instead.
+        if oslayer.IS_WIN:
+            oslayer._win_sendkeys("+{TAB}")
+        else:
+            oslayer._xdotool("key", "shift+Tab")
+        return True
     restore = ""
     if expect_app:
         front = frontmost_app()
@@ -96,6 +102,15 @@ def press_enter(expect_app: str = "") -> bool:
     a blind Return from the phone's Allow button once went to whatever
     window happened to be focused, the dialog stayed up, and the "Claude
     needs your input" nag looped forever. Returns whether it was sent."""
+    if not oslayer.IS_MAC:
+        # The expect_app focus guard below is osascript-only (Mac). Off-Mac it
+        # used to run FIRST and always fail (osascript absent), so the phone's
+        # "yes" never delivered Return. Deliver via the OS layer, best-effort.
+        if oslayer.IS_WIN:
+            oslayer._win_sendkeys("{ENTER}")
+        else:
+            oslayer._xdotool("key", "Return")
+        return True
     restore = ""
     if expect_app:
         front = frontmost_app()
@@ -106,9 +121,6 @@ def press_enter(expect_app: str = "") -> bool:
                 return False
             restore = front
             time.sleep(0.18)
-    if not oslayer.IS_MAC:
-        oslayer._win_sendkeys("{ENTER}") if oslayer.IS_WIN else oslayer._xdotool("key", "Return")
-        return True
     _osa('tell application "System Events" to key code 36')
     if restore:
         time.sleep(0.05)
@@ -196,8 +208,7 @@ def paste_text(text: str, send: bool = False, expect_app: str = "",
     if not text:
         return False
     if not oslayer.IS_MAC:      # Windows/Linux go through the OS layer
-        oslayer.paste_text(text, send)
-        return True
+        return oslayer.paste_text(text, send)   # real success, not blind True
     front = frontmost_app()
     target = (expect_app or "").strip()
     # FOCUS-FREE fast path: if the bound app is Terminal, write straight into
