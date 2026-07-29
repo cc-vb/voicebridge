@@ -1410,6 +1410,39 @@ def main(argv) -> int:
             print(f"  {t}  [{e.get('where', '?')}] "
                   f"{e.get('type', '?')}: {e.get('msg', '')[:120]}")
         return 0
+
+    elif cmd == "summarize":
+        # Testing tool for the summarized-output layer (not wired into voice yet).
+        #   vb summarize engines                 what backends are available
+        #   pbpaste | vb summarize               summarize stdin (auto engine)
+        #   vb summarize --engine mlx < file.txt  force a backend to compare
+        import sys as _sys
+        import time as _t
+        from vb import summarize as _sum
+        if rest and rest[0] == "engines":
+            for e in ("apple", "mlx", "ollama"):
+                print(f"  {e:7} {'available' if _sum.engine_available(e) else '-'}")
+            print(f"  auto -> {_sum.engine_available('auto') or '(none available)'}")
+            return 0
+        engine = "auto"
+        args = list(rest)
+        if len(args) >= 2 and args[0] == "--engine":
+            engine, args = args[1], args[2:]
+        text = " ".join(args) if args else _sys.stdin.read()
+        used = _sum.engine_available(engine)
+        t0 = _t.time()
+        out = _sum.summarize(text, engine)
+        dt = _t.time() - t0
+        if out:
+            print(out)
+            print(f"\n  [engine={used}  {dt:.1f}s  {len(text)} -> {len(out)} chars]",
+                  file=_sys.stderr)
+        else:
+            why = ("under the %d-char threshold" % _sum.MIN_CHARS
+                   if len(text.strip()) < _sum.MIN_CHARS
+                   else f"engine={used or 'none available'}")
+            print(f"  (no summary: {why})", file=_sys.stderr)
+        return 0
         return 0 if not bad else 1
 
     elif cmd == "selftest":
