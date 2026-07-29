@@ -526,9 +526,28 @@ def _code_landmark(m) -> str:
     return f" ({what} on screen here, about {lines} lines, skipping it) "
 
 
+# Claude Code machinery that must NEVER be spoken: system-reminder blocks, hook
+# output/wrappers, and command/stdout tags. Only these exact machinery tag names
+# match, so legitimate text like "x < 5" or "<div>" is left untouched.
+_MACHINERY = re.compile(
+    r"<(system-reminder|[a-z][a-z0-9-]*-hook|command-[a-z-]+|local-command-stdout)"
+    r"\b[^>]*>.*?</\1>", re.S | re.I)
+_MACHINERY_ORPHAN = re.compile(
+    r"</?(system-reminder|[a-z][a-z0-9-]*-hook|command-[a-z-]+|local-command-stdout)"
+    r"\b[^>]*>", re.I)
+
+
+def _strip_machinery(text: str) -> str:
+    """Drop hook/system machinery so it is never read aloud, e.g. a user's Stop
+    hook printing 'saved a learning' should stay silent, not get spoken."""
+    if not text or "<" not in text:
+        return text
+    return _MACHINERY_ORPHAN.sub(" ", _MACHINERY.sub(" ", text))
+
+
 def _strip_for_speech(text: str) -> str:
     """Markdown/code stripping, shared by the capped and stashing paths."""
-    t = _FENCE.sub(_code_landmark, text)
+    t = _FENCE.sub(_code_landmark, _strip_machinery(text))
     t = _LINK.sub(r"\1", t)
     t = _URL.sub(" a link ", t)
     t = _INLINE_CODE.sub(r"\1", t)
@@ -1406,6 +1425,7 @@ def speak_chunks_blocking(text: str) -> None:
     synthesizes, so the first words come out after one small synth instead
     of after the whole reply. Falls back to `say` when the server is down."""
     set_hud("speaking", text=text)   # indicator: a reply is playing aloud
+    text = _strip_machinery(text)    # never read hook/system machinery aloud
     # Optional summarized-output mode (opt-in, off by default). Runs HERE, in the
     # background speak worker, never in the Stop hook, so the hook stays instant
     # and nothing prints to Claude's terminal. Falls back to the full text if no
