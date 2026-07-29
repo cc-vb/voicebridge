@@ -331,8 +331,11 @@ def main(argv) -> int:
             print("         (list: curl -s localhost:8798/voices)")
 
     elif cmd == "__install_hooks__":
-        # Register the three hooks in settings.json (cross-platform; used by
-        # install.sh and install.ps1). Args: <repo_dir> <settings_path>
+        # Register the voicebridge hooks in settings.json (cross-platform; used
+        # by install.ps1). Args: <repo_dir> <settings_path>. Must match the full
+        # set install.sh and the plugin hooks.json register: without SessionEnd
+        # voice outlives a closed session; without SessionStart clone installs
+        # never self-update or show the first-run hint.
         import json as _json
         import os as _os
         repo, path = rest[0], rest[1]
@@ -341,7 +344,9 @@ def main(argv) -> int:
             settings = _json.loads(open(path).read() or "{}")
         hooks = settings.setdefault("hooks", {})
         wanted = {"Stop": "on_stop.py", "Notification": "on_notify.py",
-                  "UserPromptSubmit": "on_prompt.py"}
+                  "UserPromptSubmit": "on_prompt.py",
+                  "SessionEnd": "on_session_end.py",
+                  "SessionStart": "on_session.py"}
         changed = False
         for ev, script in wanted.items():
             entries = hooks.setdefault(ev, [])
@@ -941,6 +946,9 @@ def main(argv) -> int:
             print(call.status())
         elif sub == "tunnel":
             import os as _os
+            import shutil as _sh   # used below; without this `vb call tunnel`
+            #                        raised UnboundLocalError (only `vb phone`
+            #                        imported it, and the two branches are exclusive)
 
             def show_link(url):
                 secret = _os.environ.get("VB_CALL_SECRET", "") \
@@ -1236,8 +1244,14 @@ def main(argv) -> int:
         # refresh installed slash commands, then restart voice on new code
         cmds = Path.home() / ".claude" / "commands"
         cmds.mkdir(parents=True, exist_ok=True)
+        # Command bodies hardcode /opt/homebrew/bin/vb; install.sh rewrites that
+        # to the real vb path. `vb update` must do the same, or after an update
+        # the slash commands point at a nonexistent path (e.g. on Intel Macs
+        # where vb lives in /usr/local/bin) and silently fail.
+        vb_path = str(Path(repo) / "bin" / "vb")
         for src in (Path(repo) / "commands").glob("*.md"):
-            (cmds / src.name).write_text(src.read_text())
+            body = src.read_text().replace("/opt/homebrew/bin/vb", vb_path)
+            (cmds / src.name).write_text(body)
         from vb import talkd as _td
         _td.stop_daemon()
         print(f"updated {before} -> {after}. Restart voice with /voice-on.")

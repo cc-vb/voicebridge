@@ -73,6 +73,9 @@ WANTED = {
     # Voice must not outlive the session it was bound to: this is what stops
     # the mic and the speech when you close a session instead of /voice-off.
     "SessionEnd": f"{repo}/hooks/on_session_end.py",
+    # Clone installs self-update and show the first-run hint from here; without
+    # it registered, neither ever fired for install.sh (non-plugin) users.
+    "SessionStart": f"{repo}/hooks/on_session.py",
 }
 changed = False
 for event, script in WANTED.items():
@@ -113,7 +116,12 @@ if [ "$WANT_KOKORO" = "1" ]; then
     "$KOKORO_VENV/bin/pip" -q install --upgrade pip
     "$KOKORO_VENV/bin/pip" -q install kokoro-onnx soundfile
   fi
-  pip3 install --quiet --user qrcode 2>/dev/null || true
+  # Install into the SAME interpreter that runs bin/vb, and don't fully hide a
+  # failure (PEP 668 / externally-managed Homebrew Python blocks a plain --user
+  # install). vb phone still works without it (it prints a link), but say so.
+  python3 -m pip install --quiet --user qrcode 2>/dev/null \
+    || python3 -m pip install --quiet --user --break-system-packages qrcode 2>/dev/null \
+    || echo "  note: couldn't install qrcode; vb phone will show a link instead of an inline QR code"
   if true; then :
   fi
   [ -f "$KOKORO_MODEL" ] || curl -fSL -o "$KOKORO_MODEL" --create-dirs \
