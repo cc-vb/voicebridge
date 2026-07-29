@@ -82,10 +82,19 @@ def _local_version() -> str:
 
 
 def _vtuple(v: str) -> tuple:
-    try:
-        return tuple(int(x) for x in str(v).split("."))
-    except Exception:
-        return (0,)
+    # Tolerant: a pre-release suffix ("2.21.0-rc1") used to make int() raise and
+    # collapse the whole version to (0,), so a newer pre-release never triggered
+    # an update. Take the leading digits of each dotted part instead.
+    parts = []
+    for x in str(v).split("."):
+        digits = ""
+        for ch in x:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) if parts else (0,)
 
 
 def check_for_update(min_interval: float = 6 * 3600) -> None:
@@ -99,11 +108,6 @@ def check_for_update(min_interval: float = 6 * 3600) -> None:
             return
     except Exception:
         pass
-    try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        _UPDATE_TS.write_text(str(time.time()))
-    except Exception:
-        pass
     local = _local_version()
     if not local:
         return
@@ -112,7 +116,20 @@ def check_for_update(min_interval: float = 6 * 3600) -> None:
         with urllib.request.urlopen(_REMOTE_MANIFEST, timeout=4) as r:
             remote = json.loads(r.read().decode("utf-8")).get("version", "")
     except Exception:
-        return   # offline / GitHub hiccup: never surface an error
+        # Offline / GitHub hiccup: DON'T stamp the full interval (that used to
+        # suppress checks for 6h after a brief outage). Back off ~15 min so a
+        # reconnect surfaces an available update soon.
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            _UPDATE_TS.write_text(str(time.time() - min_interval + 900))
+        except Exception:
+            pass
+        return
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _UPDATE_TS.write_text(str(time.time()))   # stamp only after a real check
+    except Exception:
+        pass
     try:
         if remote and _vtuple(remote) > _vtuple(local):
             UPDATE_FLAG.write_text(remote)
@@ -589,35 +606,68 @@ def _blocks_to_text(content) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def last_assistant_text(transcript_path: str) -> str:
-    """Return the text of the final assistant message in the transcript.
+def _tail_records(path: str, nbytes: int = 65536) -> list:
+    """Parsed JSONL records from the last `nbytes` of a transcript ([] on
+    error). Skips unparseable lines, including the partial first line the byte
+    window usually starts on. Lets hot-path readers avoid loading a multi-MB
+    transcript in full."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - nbytes))
+            tail = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return []
+    recs = []
+    for line in tail.splitlines():
+        line = line.strip()
+        if line:
+            try:
+                recs.append(json.loads(line))
+            except Exception:
+                pass
+    return recs
 
-    Reads the JSONL from the end so we don't parse the whole file. Skips
-    records that are only tool calls (no spoken text).
+
+def _all_records(path: str) -> list:
+    recs = []
+    try:
+        for line in Path(path).read_text(errors="ignore").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    recs.append(json.loads(line))
+                except Exception:
+                    pass
+    except Exception as e:
+        log(f"read transcript failed: {e}")
+    return recs
+
+
+def last_assistant_text(transcript_path: str) -> str:
+    """Text of the final assistant message. Scans a bounded tail first (the last
+    reply is almost always near the end); only falls back to the whole file if
+    the tail has no assistant text. Previously always read the entire file, on
+    the hot capture/idempotency path this cost hundreds of ms on long sessions.
     """
     p = Path(transcript_path)
     if not p.exists():
         return ""
-    try:
-        lines = p.read_text(errors="ignore").splitlines()
-    except Exception as e:
-        log(f"read transcript failed: {e}")
+
+    def _scan(recs):
+        for rec in reversed(recs):
+            if rec.get("type") != "assistant":
+                continue
+            text = _blocks_to_text(rec.get("message", {}).get("content", ""))
+            if text.strip():
+                return text
         return ""
-    for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except Exception:
-            continue
-        if rec.get("type") != "assistant":
-            continue
-        msg = rec.get("message", {})
-        text = _blocks_to_text(msg.get("content", ""))
-        if text.strip():
-            return text
-    return ""
+
+    out = _scan(_tail_records(str(p), 262144))
+    if out:
+        return out
+    return _scan(_all_records(str(p)))   # rare: nothing in the tail window
 
 
 def print_qr(url: str) -> bool:
@@ -1001,22 +1051,12 @@ def active_session_state(transcript_path: str) -> str:
     p = Path(transcript_path)
     if not p.exists():
         return "idle"
-    try:
-        with open(p, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            f.seek(max(0, size - 65536))
-            tail = f.read().decode("utf-8", "ignore")
-    except Exception:
-        return "idle"
-    recs = []
-    for line in tail.splitlines():
-        line = line.strip()
-        if line:
-            try:
-                recs.append(json.loads(line))
-            except Exception:
-                pass
+    recs = _tail_records(str(p), 65536)
+    if not recs:
+        # A final record larger than the tail window (e.g. a big Write payload)
+        # leaves no complete line in it; widen once so the state doesn't read
+        # "idle" while the turn is actually still working.
+        recs = _tail_records(str(p), 1_048_576)
     for rec in reversed(recs):
         t = rec.get("type")
         if t == "assistant":

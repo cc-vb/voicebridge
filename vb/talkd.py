@@ -236,7 +236,13 @@ _LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
 def _foreign_script(text: str) -> bool:
-    other = [c for c in _LETTER.findall(text)
+    # NFKD first so accented Latin (café, résumé, naïve) decomposes to ASCII
+    # base letters + combining marks; the marks aren't letters, so they don't
+    # count. Without this, é/ï read as "foreign" and a real English prompt with
+    # loanwords was silently dropped as background media.
+    import unicodedata
+    norm = unicodedata.normalize("NFKD", text)
+    other = [c for c in _LETTER.findall(norm)
              if not ("a" <= c.lower() <= "z" or "ऀ" <= c <= "ॿ")]
     return len(other) >= 2
 
@@ -598,10 +604,10 @@ def record_prompt(session_id: str, transcript_path: str) -> None:
                    # session going away.
                    "owner_pid": owner_pid()}
         _record_owner(session_id, payload["owner_pid"])
-        LAST.write_text(json.dumps(payload))
+        _atomic_write(LAST, json.dumps(payload))
         # If this session is voiced, the mic follows it (most recent wins).
         if (VOICED / session_id).exists():
-            ACTIVE.write_text(json.dumps(payload))
+            _atomic_write(ACTIVE, json.dumps(payload))
     except Exception as e:
         core.log(f"talkd.record_prompt failed: {e}")
 
@@ -611,6 +617,22 @@ def _read_json(path):
         return json.loads(path.read_text())
     except Exception:
         return None
+
+
+def _atomic_write(path, text: str) -> None:
+    """Write via a temp file + os.replace (atomic) so a concurrent reader never
+    sees a half-written file. The daemon polls ACTIVE continuously; a torn read
+    made json.loads fail and the daemon drop to 'no active session' for a tick."""
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w") as f:
+            f.write(text)
+        os.replace(tmp, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 # ---------- the silence hotkey ------------------------------------------------
@@ -688,7 +710,7 @@ def voice_on(ensure: bool = True) -> str:
             except OSError:
                 pass
     (VOICED / sid).write_text(tp)
-    ACTIVE.write_text(json.dumps(last))
+    _atomic_write(ACTIVE, json.dumps(last))
     app = bind_app()
     if ensure:
         ensure_daemon()
