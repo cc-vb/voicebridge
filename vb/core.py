@@ -956,9 +956,20 @@ def recent_turns(transcript_path: str, n: int = 30) -> list:
 
 
 def latest_assistant_uuid(transcript_path: str) -> str:
-    """The uuid of the newest reply, for marking a session read on join."""
-    replies = assistant_replies_after(transcript_path)
-    return replies[-1][0] if replies else ""
+    """The uuid of the newest reply, for marking a session read on join.
+
+    Runs on the hot SSE detection tick (once per changed transcript per open
+    phone stream), so it scans a bounded tail instead of the whole (multi-MB)
+    file, with a full-file fallback only if the tail holds no assistant reply.
+    """
+    def _last(recs):
+        for rec in reversed(recs):
+            if rec.get("type") == "assistant" and _blocks_to_text(
+                    rec.get("message", {}).get("content", "")).strip():
+                return rec.get("uuid") or ""
+        return ""
+    p = str(transcript_path)
+    return _last(_tail_records(p, 262144)) or _last(_all_records(p))
 
 
 def pending_question(transcript_path: str) -> dict:

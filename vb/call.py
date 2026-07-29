@@ -3090,7 +3090,11 @@ function chunkText(text, max, first){
      audio synthesizes in ~0.6s instead of ~2.6s for a full 240-char chunk;
      later chunks use `max` and prefetch while this one plays. */
   first = first || max;
-  const capAt = i => (i === 0 ? first : max);
+  // Ramp the cap (first -> ~2x -> max) instead of jumping straight to max on
+  // chunk 2: a mid-size second chunk synthesizes fast enough to land before the
+  // short first chunk finishes playing, closing the audible gap between them.
+  const caps = [first, Math.min(max, first * 2), max];
+  const capAt = i => caps[i < caps.length ? i : caps.length - 1];
   const sents = text.match(/[^.!?\n]+[.!?]*\s*/g) || [text];
   const out = [];
   for(const s of sents){
@@ -6254,6 +6258,24 @@ refreshChat();
 
 """
 
+
+def _strip_html_comments(html: str) -> str:
+    """Drop the developer changelog/design <!-- --> blocks (~53KB raw, ~24% of
+    the gzipped payload) from what we SEND, keeping them in the source. Guarded:
+    if a strip ever removes too much (a stray '-->' inside JS) or drops a
+    required marker, fall back to the full page rather than serve a broken one."""
+    import re as _re
+    stripped = _re.sub(r"<!--.*?-->", "", html, flags=_re.S)
+    ok = (len(stripped) >= len(html) * 0.7
+          and all(m in stripped for m in
+                  ("VB_PAGE_VERSION", "startEvents", "__VB_VERSION__",
+                   "</html>", "function chunkText")))
+    return stripped if ok else html
+
+
+# Computed once at import: the comment-free page we actually serve.
+_PAGE_SERVE = _strip_html_comments(PAGE)
+
 # Shown on 401 for "/": the installed PWA loses ?k= (a manifest start_url
 # must not carry the secret), so this page auto-recovers from localStorage,
 # or asks once and remembers. Dark and calm, not a bare error string.
@@ -6438,7 +6460,9 @@ class Handler(BaseHTTPRequestHandler):
                 last_sstate, last_qid, last_act = "", "", ""
                 while True:
                     try:
-                        ev = q.get(timeout=0.4)   # acks etc, or a ~0.4s tick (snappier push)
+                        ev = q.get(timeout=0.2)   # push acks instantly, else a
+                        #   0.2s detection tick (halved from 0.4s now that each
+                        #   tick's transcript reads are bounded tails, not full)
                         emit(ev.get("type", "event"), ev)
                     except _queue.Empty:
                         pass
@@ -6567,7 +6591,7 @@ class Handler(BaseHTTPRequestHandler):
             # (JS still in memory from before an update) can notice it is
             # behind and auto-reload, ending the "did you reload?" class of
             # bug where a fix ships but the phone keeps running old code.
-            page = PAGE.replace("__VB_VERSION__", core._local_version() or "0")
+            page = _PAGE_SERVE.replace("__VB_VERSION__", core._local_version() or "0")
             self._reply(200, page.encode(), "text/html; charset=utf-8")
         elif path == "/version":
             # Tiny, unauthenticated-friendly: the page polls this and reloads
