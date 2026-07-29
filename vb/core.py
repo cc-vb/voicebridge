@@ -1406,6 +1406,19 @@ def speak_chunks_blocking(text: str) -> None:
     synthesizes, so the first words come out after one small synth instead
     of after the whole reply. Falls back to `say` when the server is down."""
     set_hud("speaking", text=text)   # indicator: a reply is playing aloud
+    # Optional summarized-output mode (opt-in, off by default). Runs HERE, in the
+    # background speak worker, never in the Stop hook, so the hook stays instant
+    # and nothing prints to Claude's terminal. Falls back to the full text if no
+    # backend is available or the reply is already short. The full reply still
+    # reaches the phone chat; only the spoken audio becomes the briefing.
+    try:
+        from . import summarize as _sum
+        if _sum.is_on():
+            _brief = _sum.summarize(text)
+            if _brief:
+                text = _brief
+    except Exception as _e:
+        log(f"summarize skipped: {_e}")
     from . import oslayer
     if not oslayer.IS_MAC:
         # The chunked afplay/say pipeline below is macOS-only; the bare `say`

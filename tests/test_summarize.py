@@ -55,9 +55,24 @@ def test_engine_available_priority_and_override():
          summarize._ollama_ready) = orig
 
 
+def test_mode_toggle_default_off():
+    import tempfile
+    orig = summarize.MODE_FLAG
+    try:
+        summarize.MODE_FLAG = Path(tempfile.mkdtemp()) / "m"
+        assert summarize.is_on() is False        # opt-in: off by default
+        summarize.set_mode(True)
+        assert summarize.is_on() is True
+        summarize.set_mode(False)
+        assert summarize.is_on() is False
+    finally:
+        summarize.MODE_FLAG = orig
+
+
 if __name__ == "__main__":
     test_short_text_is_not_summarized()
     test_uses_selected_backend_and_passes_the_reply()
     test_no_backend_falls_back_to_empty()
     test_engine_available_priority_and_override()
-    print("ok  summarize: skip-short, backend selection, soft-fail")
+    test_mode_toggle_default_off()
+    print("ok  summarize: skip-short, backend selection, soft-fail, mode toggle")

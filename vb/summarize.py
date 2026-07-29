@@ -39,6 +39,25 @@ _PROMPT = (
 _MLX_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
 _OLLAMA_MODEL = "qwen2.5:3b"
 
+# Summarized-output mode is OPT-IN: presence of this flag == on. Full is the
+# spoken default. An embedder (Friday) never sets this, so it always gets full.
+MODE_FLAG = core.STATE_DIR / "summarize_mode"
+
+
+def is_on() -> bool:
+    return MODE_FLAG.exists()
+
+
+def set_mode(on: bool) -> None:
+    try:
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if on:
+            MODE_FLAG.write_text("1")
+        elif MODE_FLAG.exists():
+            MODE_FLAG.unlink()
+    except OSError as e:
+        core.log(f"summarize mode write failed: {e}")
+
 
 # ---------- backend availability -------------------------------------------
 def _apple_ready() -> bool:

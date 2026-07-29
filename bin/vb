@@ -1419,6 +1419,26 @@ def main(argv) -> int:
         import sys as _sys
         import time as _t
         from vb import summarize as _sum
+        if rest and rest[0] in ("on", "off", "status"):
+            if rest[0] == "on":
+                _sum.set_mode(True)
+                eng = _sum.engine_available("auto")
+                if eng:
+                    print(f"summarized voice ON (engine: {eng}). Spoken replies "
+                          "become a short briefing; the full reply still shows "
+                          "on the phone.")
+                else:
+                    print("summarized voice ON, but no backend is installed, so "
+                          "it will keep speaking full replies until you add one "
+                          "(pip install mlx-lm, or Ollama). See "
+                          "`vb summarize engines`.")
+            elif rest[0] == "off":
+                _sum.set_mode(False)
+                print("summarized voice OFF (speaking full replies).")
+            else:
+                print(f"summarized voice: {'ON' if _sum.is_on() else 'OFF (default)'}"
+                      f"  |  engine: {_sum.engine_available('auto') or 'none installed'}")
+            return 0
         if rest and rest[0] == "engines":
             for e in ("apple", "mlx", "ollama"):
                 print(f"  {e:7} {'available' if _sum.engine_available(e) else '-'}")
