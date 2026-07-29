@@ -1467,6 +1467,14 @@ def run_daemon() -> int:
     # Warm the STT server too, so the first utterance doesn't pay a ~2s
     # cold model+backend load (issue #2). Falls back to the CLI if absent.
     threading.Thread(target=stt.ensure_whisper_server, daemon=True).start()
+    # If summarized voice is on, warm its server too so the first briefing is
+    # fast (no-op when the mode is off or the engine isn't provisioned).
+    try:
+        from . import summarize as _sum0
+        if _sum0.is_on():
+            threading.Thread(target=_sum0.start_mlx_server, daemon=True).start()
+    except Exception:
+        pass
     wav = str(STATE / "talkd.wav")
     wav2 = str(STATE / "talkd_cont.wav")   # continuation, recorded while
     #                                        the main capture transcribes

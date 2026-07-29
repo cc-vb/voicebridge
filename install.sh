@@ -137,6 +137,33 @@ else
   echo "  skipped (enable later per README 'Better voice: Kokoro')"
 fi
 
+say_step "Summarizer engine (optional; powers 'vb summarize on'; Apple Silicon)"
+# Summarized-voice mode is opt-in and OFF by default, so setup installs only the
+# small mlx-lm package into a voicebridge-managed venv (never system Python, no
+# user pip). The ~2GB model downloads automatically the first time the user runs
+# `vb summarize on`, so the base install stays lean. Set VB_MLX=0 to skip.
+WANT_MLX="${VB_MLX:-1}"
+MLX_VENV="$STATE_DIR/mlx-venv"
+if [ "$WANT_MLX" = "1" ] && [ "$(uname -m)" = "arm64" ]; then
+  PYBIN=$(ls /opt/homebrew/bin/python3.1[0-9] 2>/dev/null | head -1)
+  if [ -z "$PYBIN" ]; then
+    echo "  skipped (needs Homebrew python3.1x; summarized voice falls back to full)"
+  elif [ -f "$MLX_VENV/bin/python" ]; then
+    echo "  summarizer engine already installed"
+  else
+    "$PYBIN" -m venv "$MLX_VENV"
+    "$MLX_VENV/bin/pip" -q install --upgrade pip
+    if "$MLX_VENV/bin/pip" -q install mlx-lm; then
+      echo "  summarizer engine installed (model downloads on first 'vb summarize on')"
+    else
+      rm -rf "$MLX_VENV"
+      echo "  note: mlx-lm install failed; summarized voice will fall back to full replies"
+    fi
+  fi
+else
+  echo "  skipped (Apple Silicon only; summarized voice falls back to full replies)"
+fi
+
 say_step "7/8 Hotkeys (hush, interrupt, speed, pause)"
 if brew list skhd >/dev/null 2>&1 || brew install koekeishiya/formulae/skhd; then
   SKHDRC="$HOME/.skhdrc"

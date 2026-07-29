@@ -17,6 +17,7 @@ reply, never an error. Nothing calls this yet; wiring into the voice flow and a
 Full/Summarized toggle come next.
 """
 
+import os
 import shutil
 import subprocess
 
@@ -38,6 +39,11 @@ _PROMPT = (
 
 _MLX_MODEL = "mlx-community/Qwen2.5-3B-Instruct-4bit"
 _OLLAMA_MODEL = "qwen2.5:3b"
+# voicebridge-managed MLX venv (built by install.sh, exactly like the Kokoro
+# venv) so the user never runs pip. Served warm on a per-uid port like the
+# Kokoro/whisper servers.
+MLX_VENV = core.STATE_DIR / "mlx-venv"
+_MLX_PORT = int(os.environ.get("VB_MLX_PORT") or (6100 + os.getuid() % 1000))
 
 # Summarized-output mode is OPT-IN: presence of this flag == on. Full is the
 # spoken default. An embedder (Friday) never sets this, so it always gets full.
@@ -65,8 +71,10 @@ def _apple_ready() -> bool:
 
 
 def _mlx_ready() -> bool:
-    import importlib.util
-    return oslayer.IS_MAC and importlib.util.find_spec("mlx_lm") is not None
+    # "provisioned" == the managed venv exists (install.sh built it). The warm
+    # server starts on demand; its first launch downloads the model in the
+    # background and summaries fall back to full until it is ready.
+    return oslayer.IS_MAC and (MLX_VENV / "bin" / "python").exists()
 
 
 def _ollama_ready() -> bool:
@@ -106,16 +114,51 @@ def _run_apple(prompt: str) -> str:
         return ""
 
 
-_MLX = {}   # cache the loaded model+tokenizer for the process lifetime (warm)
+def _mlx_up() -> bool:
+    try:
+        import urllib.request
+        urllib.request.urlopen(f"http://127.0.0.1:{_MLX_PORT}/v1/models",
+                               timeout=1).read()
+        return True
+    except Exception:
+        return False
+
+
+def start_mlx_server() -> None:
+    """Launch the warm mlx-lm server from the managed venv (fire-and-forget).
+    The FIRST launch downloads the model (~2GB) in the background; until it is
+    ready, summaries fall back to the full reply. No user pip ever, and the
+    server stays warm for the process lifetime so later summaries are fast."""
+    if not _mlx_ready() or _mlx_up():
+        return
+    try:
+        subprocess.Popen(
+            [str(MLX_VENV / "bin" / "python"), "-m", "mlx_lm.server",
+             "--model", _MLX_MODEL, "--port", str(_MLX_PORT)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except Exception as e:
+        core.log(f"mlx server start failed: {e}")
 
 
 def _run_mlx(prompt: str) -> str:
+    # Never block the speak path: if the warm server isn't up yet, kick it in
+    # the background and fall back to the full reply for this turn.
+    if not _mlx_up():
+        start_mlx_server()
+        return ""
     try:
-        from mlx_lm import generate, load
-        if "m" not in _MLX:
-            _MLX["m"], _MLX["t"] = load(_MLX_MODEL)
-        return generate(_MLX["m"], _MLX["t"], prompt=prompt,
-                        max_tokens=160, verbose=False).strip()
+        import json
+        import urllib.request
+        body = json.dumps({
+            "model": _MLX_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 160, "temperature": 0.2}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{_MLX_PORT}/v1/chat/completions", data=body,
+            headers={"Content-Type": "application/json"})
+        out = urllib.request.urlopen(req, timeout=40).read()
+        return json.loads(out)["choices"][0]["message"]["content"].strip()
     except Exception as e:
         core.log(f"summarize mlx failed: {e}")
         return ""
