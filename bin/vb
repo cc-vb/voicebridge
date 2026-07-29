@@ -218,6 +218,24 @@ def main(argv) -> int:
                 p = _td.STATE / extra
                 if p.exists():
                     p.unlink()
+            # Master stop must also take down the phone relay + tunnel and clear
+            # every phone opt-in: a public URL that can type into this Mac must
+            # never survive "stop everything, everywhere".
+            try:
+                from vb import call as _call
+                _call.off()
+            except Exception:
+                pass
+            if _td.PHONE.exists():
+                for f in _td.PHONE.iterdir():
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+            try:
+                _td.CALL_OWNER.unlink()
+            except OSError:
+                pass
         except Exception:
             pass
         _orb_hide(quiet=True)

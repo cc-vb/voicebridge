@@ -339,6 +339,56 @@ def _is_claude_pid(pid: int) -> bool:
     return os.path.basename(out.strip()) == "claude"
 
 
+def _pid_start(pid: int) -> str:
+    """A stable per-process start marker (ps lstart), used to tell a recycled
+    pid apart from the process that originally held it. '' if unknown."""
+    if pid <= 0:
+        return ""
+    try:
+        return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                              capture_output=True, text=True,
+                              timeout=3).stdout.strip()
+    except Exception:
+        return ""
+
+
+def _owner_of(sid: str):
+    """Parse OWNERS/sid into (pid, start_marker). Legacy records are pid-only
+    (start=''), which callers treat as best-effort (no start comparison)."""
+    try:
+        raw = (OWNERS / sid).read_text().strip()
+    except Exception:
+        return (0, "")
+    pid_s, _, start = raw.partition(":")
+    try:
+        return (int(pid_s), start)
+    except ValueError:
+        return (0, "")
+
+
+def owner_live(sid: str, require_claude: bool = True) -> bool:
+    """Is the process recorded for `sid` STILL that exact session? Requires the
+    pid to be alive, its start marker to match what we recorded (this is what
+    defeats pid reuse), and, unless disabled, to be a Claude process. Legacy
+    pid-only records skip the start check. This is what makes phone targeting
+    and the owner watchdog safe against a recycled pid owned by a DIFFERENT
+    session, the cross-session isolation break the registries must prevent."""
+    pid, start = _owner_of(sid)
+    if pid <= 0:
+        return False
+    if require_claude:
+        if not _is_claude_pid(pid):
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+    if start and _pid_start(pid) != start:
+        return False
+    return True
+
+
 def live_claude_pids() -> set:
     """Every running Claude Code process, in one `ps`. Callers asking about a
     dozen sessions at a time (the phone roster, polled every few seconds) get
@@ -381,7 +431,9 @@ def _record_owner(sid: str, pid: int) -> None:
         return
     try:
         OWNERS.mkdir(parents=True, exist_ok=True)
-        (OWNERS / sid).write_text(str(pid))
+        # Store pid AND its start marker so a later reader can reject a recycled
+        # pid that now belongs to a different process (pid-reuse safety).
+        (OWNERS / sid).write_text(f"{pid}:{_pid_start(pid)}")
     except OSError as e:
         core.log(f"talkd._record_owner failed: {e}")
 
@@ -392,10 +444,13 @@ def tty_for_sid(sid: str) -> str:
     session's tab even when several sessions are open. '' if unknown/dead."""
     if not sid:
         return ""
-    try:
-        pid = int((OWNERS / sid).read_text().strip())
-    except Exception:
+    # Reuse-safe: only resolve a tty if the recorded pid is STILL this exact
+    # Claude session. A stale OWNERS entry whose pid was recycled by a different
+    # session returns "" here, so a phone prompt can never land in a session
+    # that did not opt in.
+    if not owner_live(sid):
         return ""
+    pid, _ = _owner_of(sid)
     try:
         t = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)],
                            capture_output=True, text=True, timeout=3).stdout.strip()
@@ -418,7 +473,8 @@ def known_owners() -> dict:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
                 continue
-            out[f.name] = int(f.read_text().strip())
+            pid_s, _, _rest = f.read_text().strip().partition(":")
+            out[f.name] = int(pid_s)
         except (OSError, ValueError):
             pass
     return out
@@ -446,10 +502,16 @@ def owner_sid() -> str:
 def sid_alive(sid: str, live: set = None) -> bool:
     """Is this session still open? None when we've never seen it, so callers
     can fall back instead of declaring a session dead on no evidence."""
-    pid = known_owners().get(sid) if sid else None
+    pid, start = _owner_of(sid) if sid else (0, "")
     if not pid:
         return None
-    return pid in (live if live is not None else live_claude_pids())
+    livepids = live if live is not None else live_claude_pids()
+    if pid not in livepids:
+        return False
+    # pid is live, but confirm it is still the SAME process (not a reused pid).
+    if start and _pid_start(pid) != start:
+        return False
+    return True
 
 
 def session_alive(payload: dict) -> bool:
@@ -486,6 +548,10 @@ def session_closed(sid: str = "", why: str = "session closed") -> str:
         sid = (_read_json(ACTIVE) or {}).get("session_id", "")
     if sid:
         phone_disable(sid)   # a closed session can never be phone-controllable
+        try:
+            (OWNERS / sid).unlink()   # reap the ownership record (reuse-safe)
+        except OSError:
+            pass
     marker = (VOICED / sid) if sid else None
     was_voiced = bool(marker and marker.exists())
     done = []
@@ -689,12 +755,14 @@ def voice_off_all() -> str:
 
 
 def daemon_alive() -> bool:
+    # A recorded PID can be recycled by an unrelated process; a bare kill(pid,0)
+    # would then read "alive", and ensure_daemon skips starting a real daemon so
+    # the mic never opens. Confirm the pid is actually one of OUR talkd runners.
     try:
         pid = int(PID.read_text().strip())
-        os.kill(pid, 0)
-        return True
     except Exception:
         return False
+    return pid in _daemon_pids()
 
 
 def _code_version() -> str:

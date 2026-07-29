@@ -99,7 +99,10 @@ def whisper_bin() -> str:
 # a warm whisper-server. So we keep one server resident (mirrors the Kokoro
 # TTS server) and fall back to the CLI whenever the server isn't available,
 # so nothing breaks on installs without whisper-server.
-WHISPER_PORT = int(os.environ.get("VB_STT_PORT", "8799"))
+# Per-uid default so two accounts on one Mac don't collide on the whisper port
+# (any HTTP reply there reads as "up"). VB_STT_PORT wins; the server is launched
+# with --port WHISPER_PORT, so server and client always agree.
+WHISPER_PORT = int(os.environ.get("VB_STT_PORT") or (7000 + os.getuid() % 1000))
 
 
 def whisper_server_bin() -> str:

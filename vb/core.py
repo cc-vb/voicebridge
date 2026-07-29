@@ -1057,7 +1057,10 @@ def _recently_spoken(cleaned: str) -> bool:
 
 ENGINE_FILE = STATE_DIR / "engine"     # "say" (default) | "kokoro"
 SPEECH_PID = STATE_DIR / "speech.pid"  # pid of the current speech player
-KOKORO_PORT = int(os.environ.get("VB_TTS_PORT", "8798"))
+# Per-uid default so two accounts on one Mac don't share a TTS server (user B
+# would otherwise route synthesis through user A's process on a fixed port).
+# An explicit VB_TTS_PORT still wins; server and client both read this.
+KOKORO_PORT = int(os.environ.get("VB_TTS_PORT") or (6000 + os.getuid() % 1000))
 _KOKORO_VOICE_RE = re.compile(r"^[a-z]{2}_[a-z]+$")
 # Kokoro refuses outside 0.5-2.0 ("Speed should be between 0.5 and 2.0")
 # and returns no audio at all, so that is the ceiling for synthesis. Past
@@ -1329,7 +1332,9 @@ def ensure_kokoro_server(wait_s: float = 10.0) -> bool:
         p = subprocess.Popen([str(venv_py), str(server)],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+                             start_new_session=True,
+                             # bind the SAME per-uid port the client will use
+                             env={**os.environ, "VB_TTS_PORT": str(KOKORO_PORT)})
         (STATE_DIR / "tts.pid").write_text(str(p.pid))
     except Exception as e:
         log(f"kokoro autostart failed: {e}")
