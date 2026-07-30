@@ -1439,6 +1439,11 @@ def speak_chunks_blocking(text: str) -> None:
                 text = _brief
     except Exception as _e:
         log(f"summarize skipped: {_e}")
+    # Flatten markdown/code to spoken words on the FINAL text (full reply or
+    # briefing), the last step before audio. Without this the ear hears the
+    # markup itself: "asterisk asterisk" for **bold**, backticks for `code`,
+    # hash for headers, dashes for bullets, which is jarring for code replies.
+    text = _strip_for_speech(text)
     from . import oslayer
     if not oslayer.IS_MAC:
         # The chunked afplay/say pipeline below is macOS-only; the bare `say`

@@ -33,6 +33,19 @@ def test_leaves_real_text_untouched():
     assert core._strip_machinery(s) == s
 
 
+def test_markdown_is_flattened_not_spoken():
+    # bold/italic markers, headers, bullets and inline code must not survive as
+    # literal characters the voice would read out ("asterisk asterisk").
+    s = core._strip_for_speech(
+        "## Plan\n"
+        "Here is the **bold** and _emphasis_ and `inline_code`.\n"
+        "- first item\n"
+        "- second item\n")
+    assert "*" not in s and "#" not in s and "`" not in s
+    assert "bold" in s and "emphasis" in s
+    assert "- first" not in s and "first item" in s
+
+
 def test_clean_for_speech_drops_machinery_end_to_end():
     spoken = core.clean_for_speech(
         "Fixed the bug. <session-start-hook>starting up, loaded 5 memories"
@@ -44,5 +57,6 @@ def test_clean_for_speech_drops_machinery_end_to_end():
 if __name__ == "__main__":
     test_strips_hook_and_system_machinery()
     test_leaves_real_text_untouched()
+    test_markdown_is_flattened_not_spoken()
     test_clean_for_speech_drops_machinery_end_to_end()
     print("ok  speech filtering: machinery stripped, real text kept")
