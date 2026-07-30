@@ -28,6 +28,12 @@ from . import core, oslayer
 MIN_CHARS = 400
 # Keep well under a small model's context; trim very long replies before summary.
 MAX_INPUT_CHARS = 6000
+# Hard ceiling on a single briefing call. A warm 0.5B model answers in well
+# under a second, so this is pure headroom, its real job is to bound the WORST
+# case: the brief is computed on the reply path before the phone speaks, so a
+# cold/stuck backend must fail FAST to the full reply instead of leaving the
+# phone silent while it waits. 40s+ here reads to the listener as "not speaking".
+_CALL_TIMEOUT = float(os.environ.get("VB_SUMMARIZE_TIMEOUT") or 8)
 
 _PROMPT = (
     "You are the voice of a coding assistant briefing a developer who is "
@@ -113,7 +119,7 @@ def engine_available(prefer: str = "auto") -> str:
 def _run_apple(prompt: str) -> str:
     try:
         r = subprocess.run(["fm", "respond", prompt], capture_output=True,
-                           text=True, timeout=30)
+                           text=True, timeout=_CALL_TIMEOUT)
         return r.stdout.strip() if r.returncode == 0 else ""
     except Exception as e:
         core.log(f"summarize apple/fm failed: {e}")
@@ -163,7 +169,7 @@ def _run_mlx(prompt: str) -> str:
         req = urllib.request.Request(
             f"http://127.0.0.1:{_MLX_PORT}/v1/chat/completions", data=body,
             headers={"Content-Type": "application/json"})
-        out = urllib.request.urlopen(req, timeout=40).read()
+        out = urllib.request.urlopen(req, timeout=_CALL_TIMEOUT).read()
         return json.loads(out)["choices"][0]["message"]["content"].strip()
     except Exception as e:
         core.log(f"summarize mlx failed: {e}")
@@ -179,7 +185,7 @@ def _run_ollama(prompt: str) -> str:
         req = urllib.request.Request("http://127.0.0.1:11434/api/generate",
                                      data=body,
                                      headers={"Content-Type": "application/json"})
-        out = urllib.request.urlopen(req, timeout=30).read()
+        out = urllib.request.urlopen(req, timeout=_CALL_TIMEOUT).read()
         return json.loads(out).get("response", "").strip()
     except Exception as e:
         core.log(f"summarize ollama failed: {e}")
