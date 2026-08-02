@@ -51,6 +51,26 @@ def _append_local(where: str, exc: BaseException) -> None:
         pass
 
 
+def _append_msg(where: str, msg: str) -> None:
+    """Ledger a plain-message problem (no exception), so surfaced errors also
+    show up in `vb errors` alongside the caught-exception records."""
+    try:
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": time.time(), "where": where, "type": "error", "msg": msg[:500]}
+        lines = []
+        if ERR_LOG.exists():
+            lines = ERR_LOG.read_text(errors="ignore").splitlines()[-(_MAX_ERR_LINES - 1):]
+        lines.append(json.dumps(rec))
+        ERR_LOG.write_text("\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+
+def note(where: str, msg: str) -> None:
+    """Record a surfaced (already user-shown) problem to the local ledger."""
+    _append_msg(where, msg)
+
+
 def _remedy(exc: BaseException) -> str:
     m = str(exc).lower()
     for needle, hint in _REMEDIES:
@@ -82,7 +102,13 @@ def record(where: str, exc: BaseException) -> str:
             telemetry.send(telemetry.build_report(where, exc))   # Layer 3 (opt-in)
         except Exception:
             pass
-        return _remedy(exc)
+        # Surface it so the user actually KNOWS (phone toast + ledger; speak
+        # only when we have an actionable remedy, so internal hiccups don't
+        # talk over a session). Already ledgered above -> ledger=False.
+        hint = _remedy(exc)
+        msg = hint if hint else f"a problem with {where}"
+        core.surface_error(where, msg, speak=bool(hint), ledger=False)
+        return hint
     except Exception:
         return ""
 

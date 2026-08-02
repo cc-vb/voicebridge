@@ -23,7 +23,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -140,6 +140,24 @@ function kokoroSpeak(text: string, rate: string, voice: string): boolean {
   }
 }
 
+/* Surface a failure from THIS (separate) process to the phone, by appending to
+   the same mailbox the relay drains (core.ERROR_MAILBOX). Throttled per message
+   so a per-cycle failure can't spam the toast. */
+const _lastErr: Record<string, number> = {};
+function pushError(where: string, msg: string) {
+  const key = where + "|" + msg;
+  const now = Date.now();
+  if (now - (_lastErr[key] || 0) < 30000) return;
+  _lastErr[key] = now;
+  try {
+    const f = join(VB, "errors_pending.jsonl");
+    let lines: string[] = [];
+    try { lines = readFileSync(f, "utf8").split("\n").filter(Boolean).slice(-19); } catch {}
+    lines.push(JSON.stringify({ ts: now / 1000, where, msg }));
+    writeFileSync(f, lines.join("\n") + "\n");
+  } catch {}
+}
+
 function speak(text: string) {
   const t = cleanForSpeech(text);
   if (!t) return;
@@ -201,7 +219,11 @@ async function record(wav: string): Promise<boolean> {
 
 async function transcribe(wav: string): Promise<string> {
   const m = model();
-  if (!m) return "";
+  if (!m) {
+    // No speech model => every utterance is silently dropped. Say so instead.
+    pushError("transcribe", "Speech model missing. Run setup on the Mac.");
+    return "";
+  }
   const r = await runAsync(
     [WHISPER, "-m", m, "-f", wav, "-nt", "-np", "-l", "en"],
     120000,

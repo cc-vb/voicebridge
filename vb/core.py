@@ -33,6 +33,7 @@ SPEECH_POS = STATE_DIR / "speech_pos"        # index of the chunk playing now
 REPLIES_OFF = STATE_DIR / "replies_off"      # speak nothing while set (one key)
 PENDING_NOTICE = STATE_DIR / "pending_notice"   # Claude is waiting on you
 CALL_HEARTBEAT = STATE_DIR / "call_heartbeat"   # phone call is live right now
+ERROR_MAILBOX = STATE_DIR / "errors_pending.jsonl"  # surfaced errors -> phone toast
 STATS_FILE = STATE_DIR / "stats.json"           # rolling behaviour counters
 
 
@@ -215,6 +216,94 @@ def call_live(max_age: float = 15.0) -> bool:
         return time.time() - float(CALL_HEARTBEAT.read_text()) < max_age
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Error surfacing. voicebridge degrades gracefully (soft-fail everywhere), which
+# is right, but it also meant failures were INVISIBLE: the user never knew the
+# voice engine died or the summarizer had no backend. surface_error is the ONE
+# path that makes a failure noticeable: a red toast on the phone (via a mailbox
+# the relay drains) AND a short spoken cue on the Mac (unless a call owns the
+# audio), plus the on-machine ledger `vb errors` reads. Deduped so a per-tick
+# failure can't spam. Never raises, surfacing must never break the caller.
+# ---------------------------------------------------------------------------
+_MAILBOX_MAX = 20
+_last_surfaced: dict = {}
+
+
+def push_error(where: str, msg: str) -> None:
+    """Append a surfaced error to the phone mailbox (capped)."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        rec = json.dumps({"ts": time.time(), "where": where, "msg": msg[:240]})
+        lines = []
+        if ERROR_MAILBOX.exists():
+            lines = ERROR_MAILBOX.read_text(errors="ignore").splitlines()[-(_MAILBOX_MAX - 1):]
+        lines.append(rec)
+        ERROR_MAILBOX.write_text("\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+
+def errors_since(ts: float) -> list:
+    """Mailbox entries newer than `ts` (the relay's per-connection cursor)."""
+    out = []
+    try:
+        for ln in ERROR_MAILBOX.read_text(errors="ignore").splitlines():
+            if not ln.strip():
+                continue
+            try:
+                r = json.loads(ln)
+            except Exception:
+                continue
+            if float(r.get("ts", 0)) > ts:
+                out.append(r)
+    except Exception:
+        pass
+    return out
+
+
+def _voice_active() -> bool:
+    """Speak a Mac cue only when a voice session actually exists, so an error
+    never makes the laptop talk out of nowhere while voice is off."""
+    try:
+        from . import talkd
+        return talkd.daemon_alive()
+    except Exception:
+        return False
+
+
+def surface_error(where: str, msg: str, hint: str = "", speak: bool = True,
+                  ledger: bool = True) -> None:
+    """Make a failure visible/audible. `where` is a short area tag ('voice',
+    'transcribe', 'summarizer', 'relay'), `msg` a plain-English sentence, `hint`
+    an optional next step. Phone toast always; Mac spoken cue when speak and a
+    voice session is live and the phone isn't already carrying the audio. Set
+    ledger=False when the caller already recorded it (recover.record does)."""
+    try:
+        full = f"{msg} {hint}".strip()
+        key = f"{where}|{msg}"
+        now = time.time()
+        if now - _last_surfaced.get(key, 0.0) < 30.0:
+            return                       # seen recently: don't spam
+        _last_surfaced[key] = now
+        log(f"ERROR [{where}]: {full}")
+        push_error(where, full)          # -> phone toast
+        if ledger:                       # -> `vb errors` ledger
+            try:
+                from . import recover
+                recover.note(where, full)
+            except Exception:
+                pass
+        if speak and not call_live() and _voice_active():
+            try:
+                speak_fn = globals().get("speak")
+                if speak_fn:
+                    speak_fn(f"Heads up. {msg}")   # short cue, not the hint
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def classify_notice(message: str) -> str:
@@ -1474,6 +1563,12 @@ def speak_chunks_blocking(text: str) -> None:
                  and lang not in ("hindi", "हिंदी"))
     if kokoro_ok and not ensure_kokoro_server():
         log("speak fell back to say: kokoro server unavailable")
+        # speak=False: the robotic backup voice they're about to hear IS the
+        # audible signal, and a spoken cue would delay the reply. The phone
+        # toast + `vb errors` explain WHY the voice changed.
+        surface_error("voice",
+                      "The neural voice is down, using the backup voice.",
+                      hint="Run setup if it keeps happening.", speak=False)
         kokoro_ok = False
     if kokoro_ok:
         chunks = split_speech_chunks(text)

@@ -1898,6 +1898,10 @@ footer {
 #toast.show { opacity:1; transform:translate(-50%, 0); pointer-events:auto; }
 #toast .tdot { width:7px; height:7px; border-radius:50%; background:var(--amber); flex:none; }
 #toast .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* error variant: red, and allowed to wrap so a real message is fully readable */
+#toast.err { background:#2a1518; border-color:#7f2a2a; color:#ffd9d9; }
+#toast.err .tdot { background:#ff5c5c; }
+#toast.err .t { white-space:normal; overflow:visible; }
 
 /* ==== sheets ==== */
 #scrim { position:fixed; inset:0; background:rgba(4,6,10,.55); opacity:0;
@@ -4448,6 +4452,12 @@ function startEvents(){
     try{ showQuestion(JSON.parse(e.data)); }catch(x){}
   });
   es.addEventListener('question_clear', () => { answeredQid = ''; clearQuestion(); });
+  /* server-surfaced failures (voice engine, transcription, summarizer, relay)
+     -> a red error toast. Named 'alert', NOT 'error', so it never collides with
+     EventSource's built-in connection-error event. */
+  es.addEventListener('alert', e => {
+    try{ const d = JSON.parse(e.data); if(d && d.msg) toastErr(d.msg); }catch(x){}
+  });
 }
 startEvents();
 checkVersion();   // catch a stale tab on load
@@ -6139,12 +6149,24 @@ function toast(msg, sess){
   toastSess = sess || null;
   toastAction = null;
   toastText.textContent = msg;
+  toastEl.classList.remove('err');       // plain (amber) toast
   toastEl.classList.add('show');
   if(toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toastEl.classList.remove('show'), 4500);
 }
+/* An ERROR toast: red, holds a little longer, so a real failure reads as a
+   failure and not as a routine notice. Server pushes these over SSE 'alert';
+   the client also calls it directly for its own caught failures. */
+function toastErr(msg){
+  if(!msg) return;
+  toastSess = null; toastAction = null;
+  toastText.textContent = msg;
+  toastEl.classList.add('show', 'err');
+  if(toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show', 'err'), 6500);
+}
 toastEl.addEventListener('click', () => {
-  toastEl.classList.remove('show');
+  toastEl.classList.remove('show', 'err');
   const act = toastAction; toastAction = null;
   const s = toastSess; toastSess = null;
   if(act){ act(); return; }
@@ -6495,6 +6517,7 @@ class Handler(BaseHTTPRequestHandler):
                 emit("hello", {"uuid": last_u})
                 last_pend, last_size, ticks, last_tp = "", -1, 0, tp
                 last_sstate, last_qid, last_act = "", "", ""
+                last_err_ts, last_err_mt = time.time(), 0.0  # error-mailbox cursor
                 while True:
                     try:
                         ev = q.get(timeout=0.2)   # push acks instantly, else a
@@ -6573,6 +6596,21 @@ class Handler(BaseHTTPRequestHandler):
                             emit("question", qn)
                         else:
                             emit("question_clear", {})
+                    # Surfaced errors (from this relay AND other processes that
+                    # append to the mailbox: Kokoro, whisper, the voice channel,
+                    # hooks) -> a red toast on the phone. Only entries newer than
+                    # this connection's cursor, so nothing old replays on connect.
+                    try:
+                        emt = os.path.getmtime(core.ERROR_MAILBOX) \
+                            if core.ERROR_MAILBOX.exists() else 0.0
+                    except OSError:
+                        emt = 0.0
+                    if emt != last_err_mt:
+                        last_err_mt = emt
+                        for er in core.errors_since(last_err_ts):
+                            emit("alert", {"type": "alert", "msg": er.get("msg", ""),
+                                           "where": er.get("where", "")})
+                            last_err_ts = max(last_err_ts, float(er.get("ts", 0)))
                     ticks += 1
                     if ticks % 10 == 0:
                         self.wfile.write(b": ping\n\n")
