@@ -13,8 +13,11 @@ The engine is PLUGGABLE so quality-vs-latency can be compared during testing:
   - "mlx"    a small MLX model (needs a one-time download; predictable quality).
   - "ollama" an Ollama model (heaviest setup; convenient if already installed).
 Every backend fails SOFT to "" so the caller falls back to speaking the full
-reply, never an error. Nothing calls this yet; wiring into the voice flow and a
-Full/Summarized toggle come next.
+reply, never an error. summarize() tries each ready backend in priority order
+and uses the first that returns real text, so a broken preferred engine (e.g.
+`fm` present but Apple Intelligence off) never masks a working one. Wired into
+the voice flow at core.speak_chunks_blocking (Mac) and call.py's reply emit
+(phone), with a Full/Brief toggle on both.
 """
 
 import os
@@ -136,9 +139,36 @@ def _mlx_up() -> bool:
         return False
 
 
+def _warm_model() -> None:
+    """Force the model to load with ONE throwaway request, so the first REAL
+    reply doesn't pay the load cost (which would otherwise stall the phone's
+    spoken reply for several seconds). Runs in a background thread; harmless if
+    it fails, the reply path just falls back to full until the model is ready."""
+    import time
+    for _ in range(90):              # wait up to ~90s for the server to bind
+        if _mlx_up():
+            break
+        time.sleep(1)
+    else:
+        return
+    try:
+        import json
+        import urllib.request
+        body = json.dumps({
+            "model": _MLX_MODEL,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{_MLX_PORT}/v1/chat/completions", data=body,
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=120).read()   # blocks until loaded
+    except Exception as e:
+        core.log(f"mlx warm-up skipped: {e}")
+
+
 def start_mlx_server() -> None:
     """Launch the warm mlx-lm server from the managed venv (fire-and-forget).
-    The FIRST launch downloads the model (~2GB) in the background; until it is
+    The FIRST launch downloads the model (~290MB) in the background; until it is
     ready, summaries fall back to the full reply. No user pip ever, and the
     server stays warm for the process lifetime so later summaries are fast."""
     if not _mlx_ready() or _mlx_up():
@@ -151,6 +181,11 @@ def start_mlx_server() -> None:
             start_new_session=True)
     except Exception as e:
         core.log(f"mlx server start failed: {e}")
+        return
+    # Pre-warm off the caller's thread so cold-start latency never lands on a
+    # user-facing reply.
+    import threading
+    threading.Thread(target=_warm_model, daemon=True).start()
 
 
 def _run_mlx(prompt: str) -> str:
@@ -195,26 +230,48 @@ def _run_ollama(prompt: str) -> str:
 _RUN = {"apple": _run_apple, "mlx": _run_mlx, "ollama": _run_ollama}
 
 
+def _ready_engines(prefer: str = "auto") -> list:
+    """Ready backends in priority order (apple -> mlx -> ollama), or [prefer]
+    if a specific one is forced. Unlike engine_available (which returns only the
+    FIRST), this returns all ready ones so summarize() can FALL THROUGH: a Mac
+    with the `fm` binary but Apple Intelligence off no longer masks an installed
+    mlx engine, it just tries mlx next."""
+    checks = {"apple": _apple_ready, "mlx": _mlx_ready, "ollama": _ollama_ready}
+    order = ([prefer] if prefer in checks else ["apple", "mlx", "ollama"])
+    ready = []
+    for e in order:
+        try:
+            if checks[e]():
+                ready.append(e)
+        except Exception:
+            pass
+    return ready
+
+
 def summarize(text: str, engine: str = "auto") -> str:
     """Return a short spoken briefing of `text`, or '' to mean 'no summary,
     speak the full reply'. Never raises. '' when the text is already short, no
-    backend is available, or the backend failed."""
+    backend is available, or every ready backend failed/returned nothing."""
     text = (text or "").strip()
     if len(text) < MIN_CHARS:
         return ""
-    e = engine_available(engine)
-    if not e:
-        return ""
     prompt = _PROMPT + text[:MAX_INPUT_CHARS]
-    out = _RUN[e](prompt).strip()
-    if out and _dropped_question(text, out):
-        return ""   # safety net: speak the full reply rather than swallow a Q
-    return out
+    # Try each ready backend in order; the first that returns real text wins.
+    # A backend that yields "" (Apple Intelligence off, mlx model still warming,
+    # ollama model not pulled) does NOT end the search, we fall through.
+    for e in _ready_engines(engine):
+        out = _RUN[e](prompt).strip()
+        if out:
+            if _dropped_question(text, out):
+                return ""   # safety net: speak full rather than swallow a Q
+            return out
+    return ""
 
 
 def _dropped_question(full: str, brief: str) -> bool:
-    """If the reply ends with a question to the user but the briefing has none,
-    the summary likely dropped it. Better to speak the full reply than to
-    silently swallow a question you need to answer. Conservative (only the
-    trailing chunk) so it doesn't over-trigger on incidental '?' mid-reply."""
-    return "?" in full[-240:] and "?" not in brief
+    """If the reply ENDS with a question to the user but the briefing has none,
+    the summary likely dropped it, better to speak the full reply than silently
+    swallow a question you need to answer. Only fires when the reply's last
+    non-space character is '?', so an incidental '?' mid-reply (a ternary, a URL
+    query, a rhetorical aside) no longer discards an otherwise-good brief."""
+    return full.rstrip().endswith("?") and "?" not in brief

@@ -44,6 +44,8 @@ def test_markdown_is_flattened_not_spoken():
     assert "*" not in s and "#" not in s and "`" not in s
     assert "bold" in s and "emphasis" in s
     assert "- first" not in s and "first item" in s
+    # underscores in identifiers must survive (don't fuse "inline_code")
+    assert "inline_code" in s
 
 
 def test_clean_for_speech_drops_machinery_end_to_end():

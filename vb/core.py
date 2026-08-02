@@ -491,7 +491,11 @@ _FENCE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _URL = re.compile(r"https?://\S+")
-_MD_TOKENS = re.compile(r"[#>*_~|]")
+# Markdown punctuation to drop from speech. Underscore is deliberately NOT here:
+# stripping it fused code identifiers ("pytest_cache" -> "pytestcache"), which
+# hurt the exact coding replies this is meant to help. A stray markdown "_" in
+# prose is harmless to the ear.
+_MD_TOKENS = re.compile(r"[#>*~|]")
 _LIST_BULLET = re.compile(r"^\s*[-*]\s+", re.MULTILINE)
 _WS = re.compile(r"\s+")
 

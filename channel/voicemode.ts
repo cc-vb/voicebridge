@@ -47,10 +47,13 @@ const REC = bin("rec");
 const SAY = "/usr/bin/say";
 const AFPLAY = "/usr/bin/afplay";
 const CURL = bin("curl");
-// The Kokoro neural voice server (same one the phone uses), on its per-uid port
-// (6000 + uid % 1000), so the Mac voice matches the phone instead of the
-// robotic system `say`.
+// The Kokoro neural voice server (same one the phone uses). Honor VB_TTS_PORT
+// exactly like core.py; otherwise the per-uid port (6000 + uid % 1000). Without
+// this override, a user who sets VB_TTS_PORT would have the server bind the
+// override while this channel hit the default, so every synth would silently
+// fall back to the robotic `say`.
 const KOKORO_PORT =
+  parseInt(process.env.VB_TTS_PORT || "", 10) ||
   6000 + ((typeof process.getuid === "function" ? process.getuid() ?? 0 : 0) % 1000);
 const KOKORO_WAV = join(TMP, "kokoro-say.wav");
 // Kokoro voice ids look like af_heart / am_onyx / bf_emma; a `say` voice name
@@ -90,7 +93,7 @@ function cleanForSpeech(text: string): string {
   let t = text.replace(/```[\s\S]*?```/g, " code block ");
   t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
   t = t.replace(/https?:\/\/\S+/g, " a link ");
-  t = t.replace(/[`#>*_~|]/g, "").replace(/\s+/g, " ").trim();
+  t = t.replace(/[`#>*~|]/g, "").replace(/\s+/g, " ").trim();  // keep "_" (identifiers)
   return t.slice(0, 1200);
 }
 
@@ -117,15 +120,19 @@ function kokoroSpeak(text: string, rate: string, voice: string): boolean {
     const body = JSON.stringify({ text, voice: kv, speed });
     const r = spawnSync(
       CURL,
-      ["-sS", "-m", "20", "-o", KOKORO_WAV, "-X", "POST",
+      // -f: fail (non-zero, no body written) on any HTTP >=400 so an error
+      // response is never mistaken for audio.
+      ["-fsS", "-m", "20", "-o", KOKORO_WAV, "-X", "POST",
        `http://127.0.0.1:${KOKORO_PORT}/synth`,
        "-H", "Content-Type: application/json", "-d", body],
       { timeout: 25000 },
     );
     if (r.status !== 0) return false;
-    let ok = false;
-    try { ok = Bun.file(KOKORO_WAV).size > 1000; } catch { ok = false; }
-    if (!ok) return false;
+    // Confirm it is really a WAV (RIFF magic), not a >1KB error body, before
+    // handing it to afplay, mirroring core._kokoro_wav's guard.
+    let head: Buffer;
+    try { head = readFileSync(KOKORO_WAV); } catch { return false; }
+    if (head.length < 1000 || head.toString("latin1", 0, 4) !== "RIFF") return false;
     spawnSync(AFPLAY, [KOKORO_WAV], { timeout: 240000 }); // blocking: half-duplex
     return true;
   } catch {
@@ -141,11 +148,17 @@ function speak(text: string) {
   speaking = true;
   try {
     const rate = readState("rate") || "175";
-    const voice =
-      readState("voice") || VOICE_MAP[readState("lang").toLowerCase()] || "";
-    // Prefer Kokoro (matches the phone); fall back to system `say` only if the
-    // Kokoro server is down.
-    if (kokoroSpeak(t, rate, voice)) return;
+    const lang = readState("lang").toLowerCase();
+    const voice = readState("voice") || VOICE_MAP[lang] || "";
+    // Kokoro's voices are English-only, and the user can pick `say` explicitly.
+    // Mirror core.speak_chunks_blocking: any Devanagari text or a Hindi/Hinglish
+    // session, or a non-kokoro engine preference, MUST use `say` (with the right
+    // voice), not Kokoro, otherwise Hindi comes out in a wrong English voice.
+    const isHindi = /[ऀ-ॿ]/.test(t) || lang === "hindi" || lang === "hinglish";
+    const engine = readState("engine") || "kokoro";
+    // Prefer Kokoro (matches the phone) only when it's appropriate; otherwise
+    // fall straight to `say`. Fall back to `say` too if the Kokoro server is down.
+    if (!isHindi && engine === "kokoro" && kokoroSpeak(t, rate, voice)) return;
     const args = [SAY, "-r", rate];
     if (voice) args.push("-v", voice);
     args.push(t);

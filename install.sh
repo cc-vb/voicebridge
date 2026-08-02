@@ -140,8 +140,8 @@ fi
 say_step "Summarizer engine (optional; powers 'vb summarize on'; Apple Silicon)"
 # Summarized-voice mode is opt-in and OFF by default, so setup installs only the
 # small mlx-lm package into a voicebridge-managed venv (never system Python, no
-# user pip). The ~2GB model downloads automatically the first time the user runs
-# `vb summarize on`, so the base install stays lean. Set VB_MLX=0 to skip.
+# user pip). The ~290MB model downloads automatically the first time the user
+# runs `vb summarize on`, so the base install stays lean. Set VB_MLX=0 to skip.
 WANT_MLX="${VB_MLX:-1}"
 MLX_VENV="$STATE_DIR/mlx-venv"
 if [ "$WANT_MLX" = "1" ] && [ "$(uname -m)" = "arm64" ]; then

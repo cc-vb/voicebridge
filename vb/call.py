@@ -4782,7 +4782,14 @@ function toggleBrief(){
   const next = briefChip.dataset.on !== '1';
   setBriefChip(next);                          // optimistic
   jpost('/summarize', { on: next })
-    .then(r => r.json()).then(j => setBriefChip(!!j.on)).catch(() => {});
+    .then(r => r.json()).then(j => {
+      setBriefChip(!!j.on);
+      /* Brief mode with no summarizer installed just speaks full forever with
+         no signal, which reads as "it's broken". Say so out loud instead. */
+      if(j.on && !j.engine){
+        toast('No summarizer installed yet, run setup on the Mac. Speaking full replies.');
+      }
+    }).catch(() => {});
 }
 function syncModeFromStatus(raw){
   claudeMode = String(raw || '');

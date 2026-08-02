@@ -1412,7 +1412,8 @@ def main(argv) -> int:
         return 0
 
     elif cmd == "summarize":
-        # Testing tool for the summarized-output layer (not wired into voice yet).
+        # Inspect/compare the summarized-output layer (also wired into the live
+        # voice path: Mac speak + phone Brief chip).
         #   vb summarize engines                 what backends are available
         #   pbpaste | vb summarize               summarize stdin (auto engine)
         #   vb summarize --engine mlx < file.txt  force a backend to compare
