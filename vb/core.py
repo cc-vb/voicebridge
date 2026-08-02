@@ -1583,6 +1583,9 @@ def speak_chunks_blocking(text: str) -> None:
             or _kokoro_wav(chunks[0], out=slots[0])   # one retry
         if not cur:
             log("speak fell back to say: chunk synth failed")
+            surface_error("voice",
+                          "The neural voice hit a snag, using the backup voice.",
+                          speak=False)
         if cur:
             i = 0
             while i < len(chunks):

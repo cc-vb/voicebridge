@@ -450,6 +450,13 @@ def _inject_only(text: str) -> str:
                and time.time() - t0 < 45):
             time.sleep(0.6)
         if not adapters.for_sid(sid).send(sid, text):
+            # Already spoken back to the user as the reply, so just ledger it
+            # (a red toast on top would double the same message).
+            try:
+                from . import recover
+                recover.note("inject", "Couldn't type into the session (terminal not focused).")
+            except Exception:
+                pass
             return ("I couldn't type into the session, the terminal isn't the "
                     "focused window on your Mac. Bring it to the front, or "
                     "check the screen isn't locked, then try again.")
@@ -4275,7 +4282,7 @@ function sendAsk(id, text, attempt){
        human be the retry loop. Same idempotency key = safe to re-send. */
     if(!pendingSend){
       pendingSend = { id: id, text: text };
-      toast('connection is down, retrying automatically');
+      toastErr('Connection to the Mac is down, retrying automatically.');
       speakAside('The connection is down. I will keep trying to send that.');
       setState('thinking', 'retrying...');
       syncDelivery();
@@ -5632,8 +5639,8 @@ function uploadOne(a){
     a.state = 'bad';
     a.err = String(e && e.message || e);
     renderChips();
-    toast(a.err === 'too big' ? (a.name + ' is over the 25 MB limit')
-                              : ('could not upload ' + a.name));
+    toastErr(a.err === 'too big' ? (a.name + ' is over the 25 MB limit')
+                              : ('Could not upload ' + a.name + '.'));
   });
   return a.done;
 }
@@ -6219,6 +6226,7 @@ async function switchTo(s){
     await sleep(900);
   }else{
     switchMsg.textContent = 'could not switch; the session may have closed';
+    toastErr('Couldn\'t switch session, it may have closed.');
     pollSessions();
     await sleep(1900);
   }
@@ -6981,6 +6989,9 @@ class Handler(BaseHTTPRequestHandler):
                     # arrived" is diagnosable at a glance (empty = mic/whisper
                     # dropped it; text = a client dispatch problem).
                     core.log(f"stt heard: {text!r}")
+                else:
+                    core.surface_error(
+                        "transcribe", "Couldn't process the audio from your phone.")
             finally:
                 for p in (src, wav):
                     try:

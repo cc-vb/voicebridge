@@ -325,6 +325,10 @@ def transcribe_ex(wav: str) -> "tuple[str, float]":
     model, lang = stt_lang_mode()
     if not wb or not model.exists():
         core.log("transcribe: missing whisper binary or model")
+        # Otherwise the user talks and NOTHING happens, with no clue why.
+        core.surface_error(
+            "transcribe", "Speech recognition isn't set up.",
+            hint="Run setup on the Mac to install it.")
         return "", 0.0
     base = wav + ".vbout"
     cmd = [wb, "-m", str(model), "-f", wav, "-nt", "-np", "-l", lang,
