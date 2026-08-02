@@ -2961,7 +2961,8 @@ try{
   var _vn = localStorage.getItem('vbvoice_name');
   if(VOICE_IDS.indexOf(_vn) >= 0) voiceName = _vn;
 }catch(e){}
-let macDead=false;        // 2 consecutive failed Mac replies: stop trying this session
+let macDead=false;        // 2 consecutive failed Mac replies: back off the Mac voice
+let macDeadUntil=0;       // when to retry the Mac voice after a backoff (auto-heal)
 let macFails=0;           // consecutive reply-level /tts failures
 let macToastShown=false;  // the fallback toast shows once, then falls back silently
 let macSrc=null;          // the AudioBufferSourceNode currently playing Mac audio
@@ -3156,6 +3157,10 @@ function unlockAudio(){
 /* v6 dispatcher: every caller keeps using say(); the voice setting decides
    which engine speaks. Mac voice out of service falls through to the phone. */
 function say(text, done){
+  /* Auto-heal: a transient Mac-voice outage (e.g. Kokoro briefly unable to
+     synthesize while the disk was full) backs off for a cooldown, then retries,
+     instead of stranding the WHOLE session on the robotic phone voice. */
+  if(macDead && Date.now() >= macDeadUntil){ macDead = false; macFails = 0; }
   if(voicePref === 'mac' && !macDead){ sayMac(text, done); return; }
   sayPhone(text, done);
 }
@@ -3204,7 +3209,8 @@ function sayPhone(text, done){
    the accepted tradeoff for the natural voice. Failures (non-200, 4s
    timeout, decode error) fall back to the phone voice for the REST of the
    reply, silently except for a one-time toast; two consecutive failed
-   replies set macDead and the session stays on the phone voice. */
+   replies back off the Mac voice for a 60s cooldown, then it retries
+   (auto-heal), so a transient outage never strands the whole session. */
 function stopMacAudio(){
   if(macSrc){ try{ macSrc.onended = null; macSrc.stop(); }catch(e){} macSrc = null; }
 }
@@ -3293,7 +3299,7 @@ function sayMac(text, done){
       if(!buf){
         /* fall back to the phone voice for what remains of this reply */
         macFails++;
-        if(macFails >= 2) macDead = true;
+        if(macFails >= 2){ macDead = true; macDeadUntil = Date.now() + 60000; }
         if(!macToastShown){
           macToastShown = true;
           toast('Mac voice unavailable, using phone voice');

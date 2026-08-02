@@ -46,6 +46,16 @@ const WHISPER = bin("whisper-cli");
 const REC = bin("rec");
 const SAY = "/usr/bin/say";
 const AFPLAY = "/usr/bin/afplay";
+const CURL = bin("curl");
+// The Kokoro neural voice server (same one the phone uses), on its per-uid port
+// (6000 + uid % 1000), so the Mac voice matches the phone instead of the
+// robotic system `say`.
+const KOKORO_PORT =
+  6000 + ((typeof process.getuid === "function" ? process.getuid() ?? 0 : 0) % 1000);
+const KOKORO_WAV = join(TMP, "kokoro-say.wav");
+// Kokoro voice ids look like af_heart / am_onyx / bf_emma; a `say` voice name
+// (e.g. "Samantha") is not one, so fall back to the default in that case.
+const KOKORO_ID = /^[a-z][fm]_/;
 
 function readState(file: string): string {
   try {
@@ -84,14 +94,58 @@ function cleanForSpeech(text: string): string {
   return t.slice(0, 1200);
 }
 
+/* A phone call is live if its heartbeat (written by the relay every ~5s) is
+   fresh. While it is, the phone OWNS the audio, so this Mac channel stays
+   silent instead of double-speaking in a second voice. Mirrors core.call_live
+   (15s window) so both speak paths defer to the phone identically. */
+function callLive(): boolean {
+  try {
+    const t = parseFloat(readFileSync(join(VB, "call_heartbeat"), "utf8").trim());
+    return Number.isFinite(t) && Date.now() / 1000 - t < 15;
+  } catch {
+    return false;
+  }
+}
+
+/* Speak via the Kokoro neural voice (matches the phone). Synthesizes to a wav
+   through the local Kokoro server and plays it, blocking to keep half-duplex.
+   Returns false if Kokoro is unavailable so the caller can fall back to `say`. */
+function kokoroSpeak(text: string, rate: string, voice: string): boolean {
+  try {
+    const kv = KOKORO_ID.test(voice) ? voice : "af_heart";
+    const speed = Math.min(1.3, Math.max(0.7, (parseInt(rate, 10) || 175) / 175));
+    const body = JSON.stringify({ text, voice: kv, speed });
+    const r = spawnSync(
+      CURL,
+      ["-sS", "-m", "20", "-o", KOKORO_WAV, "-X", "POST",
+       `http://127.0.0.1:${KOKORO_PORT}/synth`,
+       "-H", "Content-Type: application/json", "-d", body],
+      { timeout: 25000 },
+    );
+    if (r.status !== 0) return false;
+    let ok = false;
+    try { ok = Bun.file(KOKORO_WAV).size > 1000; } catch { ok = false; }
+    if (!ok) return false;
+    spawnSync(AFPLAY, [KOKORO_WAV], { timeout: 240000 }); // blocking: half-duplex
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function speak(text: string) {
   const t = cleanForSpeech(text);
   if (!t) return;
+  // A live phone call owns the audio: stay silent and let the phone speak.
+  if (callLive()) return;
   speaking = true;
   try {
     const rate = readState("rate") || "175";
     const voice =
       readState("voice") || VOICE_MAP[readState("lang").toLowerCase()] || "";
+    // Prefer Kokoro (matches the phone); fall back to system `say` only if the
+    // Kokoro server is down.
+    if (kokoroSpeak(t, rate, voice)) return;
     const args = [SAY, "-r", rate];
     if (voice) args.push("-v", voice);
     args.push(t);
@@ -224,6 +278,13 @@ async function micLoop() {
     if (!existsSync(MIC_FLAG)) {
       announced = false;
       await sleep(400);
+      continue;
+    }
+    // Phone owns the audio while a call is live: yield the Mac mic to it so we
+    // don't capture the same speech twice.
+    if (callLive()) {
+      announced = false;
+      await sleep(500);
       continue;
     }
     if (!announced) {
