@@ -113,7 +113,7 @@ Primary recommendation: the first one (leads with the phone superpower).
 > Talk to Claude Code hands-free and hear replies in a natural neural voice, at
 > your desk or from your phone. Run many coding agents and steer them all with
 > one voice: ask which need you, switch between them, get told when one is done.
-> Local, free, open source.
+> Local, free, source-available.
 
 (258 chars.)
 
@@ -121,7 +121,7 @@ Primary recommendation: the first one (leads with the phone superpower).
 - Developer Tools
 - Artificial Intelligence
 - Productivity
-- Alternates if a slot opens: Accessibility, Open Source
+- Alternates if a slot opens: Accessibility, Privacy
 
 **Maker first comment (post immediately after launch goes live).**
 > Hi Product Hunt, Krish here.
@@ -140,7 +140,7 @@ Primary recommendation: the first one (leads with the phone superpower).
 >
 > Everything runs locally: whisper.cpp for speech-to-text, Kokoro neural TTS for
 > the voice. No cloud voice services, no per-minute fees. macOS today; it is
-> free and open source (MIT).
+> free to use, and source-available.
 >
 > It is genuinely useful if typing is the hard part for you (RSI, limited hand
 > mobility, low vision); there is an ACCESSIBILITY.md in the repo.
@@ -177,7 +177,7 @@ Recommendation: the second (tighter, and the fleet angle is the differentiator).
 > /voice dictation rather than replacing it.
 >
 > macOS only for now (it leans on say, osascript, and CoreAudio); Windows/Linux
-> are behind an OS layer but need a tester. MIT licensed.
+> are behind an OS layer but need a tester. Source-available.
 >
 > Honest limits: at the desk the voiced window has to stay focused for text to
 > land at the cursor, and headphones are strongly recommended on speakers so the
@@ -198,7 +198,7 @@ GIF to tweet 1 and the phone GIF to tweet 4.
 > Say "which agents need me?" and it tells you. Say "switch to jobhunt" and it
 > does. One voice, every agent.
 >
-> Local, free, open source. A thread:
+> Local, free, source-available. A thread:
 
 **2/6**
 > The part nothing else does: run many coding agents at once and steer them all
@@ -235,7 +235,7 @@ GIF to tweet 1 and the phone GIF to tweet 4.
 > /plugin install voicebridge@voicebridge
 > /voicebridge:setup
 >
-> macOS, MIT. Repo and demo: https://github.com/cc-vb/voicebridge
+> macOS, source-available. Repo and demo: https://github.com/cc-vb/voicebridge
 
 (Note: tweet 2 uses "->" only as shorthand inside a spoken example; replace with
 "then" if you prefer to keep the post arrow-free.)

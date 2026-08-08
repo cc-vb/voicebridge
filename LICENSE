@@ -1,21 +1,37 @@
-MIT License
+voicebridge Source-Available License
 
-Copyright (c) 2026 the voicebridge authors
+Copyright (c) 2026 Krish Ojha and the voicebridge contributors.
+All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+The source code of voicebridge is published so you can read it and run it. It is
+NOT open source, and the permissions below are the only ones granted.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+YOU MAY:
+  1. Install and run voicebridge for your own personal or internal use.
+  2. Read and inspect the source code.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+YOU MAY NOT, without prior written permission from the copyright holders:
+  1. Copy, redistribute, republish, host, sublicense, or sell this software or
+     any part of it, in original or modified form.
+  2. Modify it, create derivative works from it, or distribute your own version
+     of it, whether free or paid.
+  3. Use it to build or offer a product or service that competes with
+     voicebridge.
+  4. Remove or alter this license, the copyright notices, or the project name.
+
+TRADEMARKS: No rights are granted to the name "voicebridge" or any voicebridge
+logo or branding. You may not use them to name or promote your own software.
+
+Contributions submitted to this project are licensed to the copyright holders
+for inclusion under this same license.
+
+NO WARRANTY: This software is provided "as is", without warranty of any kind,
+express or implied, including but not limited to the warranties of
+merchantability, fitness for a particular purpose, and noninfringement. In no
+event shall the authors or copyright holders be liable for any claim, damages,
+or other liability, whether in an action of contract, tort, or otherwise,
+arising from, out of, or in connection with the software or its use.
+
+All rights not expressly granted here are reserved.
+
+To request permission for anything above, contact the copyright holders.

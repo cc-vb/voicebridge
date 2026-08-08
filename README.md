@@ -531,4 +531,6 @@ barge-in, decision-moment voice, mobile diff summary).
 
 ## License
 
-MIT
+Source-available. You can read the code and install and run it for your own
+use, but copying, redistributing, or shipping your own version is not permitted.
+See [LICENSE](LICENSE) for the full terms.
