@@ -449,6 +449,12 @@ def _inject_only(text: str) -> str:
     if not tp:
         return "I can't find an open session on the Mac."
     core.log(f"call you: {text}")
+    # An open AskUserQuestion is a MULTI-option choice, not a yes/no. Don't let a
+    # spoken "yes" press Enter (that silently picks the default) and don't paste
+    # prose into the picker: point the user at the option cards on the phone.
+    if core.pending_question(tp):
+        return ("Claude is asking you to pick an option. Tap the one you want "
+                "on your phone to answer.")
     pending = core.get_pending_notice(_active_sid())
     if pending:
         return _handle_pending(text, pending)   # '' when yes was delivered
@@ -6610,8 +6616,27 @@ class Handler(BaseHTTPRequestHandler):
                         if act and act.get("sig") and act["sig"] != last_act:
                             last_act = act["sig"]
                             emit("activity", act)
-                    # Only a real PERMISSION notice drives the yes/no card.
-                    pend = core.get_pending_notice(_active_sid())
+                    # An OPEN AskUserQuestion becomes in-chat OPTION cards.
+                    # NB: use a distinct name, NOT `q` (that is the subscriber
+                    # queue for this stream). Rebinding `q` here killed the SSE
+                    # loop after one tick (q.get on a dict) and leaked the real
+                    # queue past _SUBS.discard, silently disabling live push.
+                    # Detected BEFORE the yes/no notice below, because an
+                    # AskUserQuestion also trips Claude Code's Notification hook,
+                    # and if the yes/no card wins the phone shows Allow/Decline
+                    # instead of the real options (tapping Allow silently picks
+                    # the default). A question is NOT a yes/no.
+                    qn = core.pending_question(tp) if tp else {}
+                    qid = qn.get("id", "") if qn else ""
+                    if qid != last_qid:
+                        last_qid = qid
+                        if qid:
+                            emit("question", qn)
+                        else:
+                            emit("question_clear", {})
+                    # Only a real PERMISSION notice drives the yes/no card, and
+                    # never while an AskUserQuestion is open (that owns the UI).
+                    pend = "" if qid else core.get_pending_notice(_active_sid())
                     pend = (core.clean_for_speech(pend, max_chars=300)
                             if pend else "")
                     if pend != last_pend:
@@ -6624,19 +6649,6 @@ class Handler(BaseHTTPRequestHandler):
                     if sstate != last_sstate:
                         last_sstate = sstate
                         emit("sstate", {"state": sstate})
-                    # An OPEN AskUserQuestion becomes in-chat option cards.
-                    # NB: use a distinct name, NOT `q` (that is the subscriber
-                    # queue for this stream). Rebinding `q` here killed the SSE
-                    # loop after one tick (q.get on a dict) and leaked the real
-                    # queue past _SUBS.discard, silently disabling live push.
-                    qn = core.pending_question(tp) if tp else {}
-                    qid = qn.get("id", "") if qn else ""
-                    if qid != last_qid:
-                        last_qid = qid
-                        if qid:
-                            emit("question", qn)
-                        else:
-                            emit("question_clear", {})
                     # Surfaced errors (from this relay AND other processes that
                     # append to the mailbox: Kokoro, whisper, the voice channel,
                     # hooks) -> a red toast on the phone. Only entries newer than
@@ -6678,8 +6690,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(401, b"unauthorized", "text/plain")
                 return
             sid = _active_sid()
-            pend = core.get_pending_notice(sid)       # permission-only
             tp = _target_transcript()
+            qn = core.pending_question(tp) if tp else {}
+            # An open AskUserQuestion is NOT a yes/no permission: never report it
+            # as 'pending', or the phone's decision card (Allow/Decline) hides
+            # the real option cards and a tap silently picks the default.
+            pend = "" if qn else core.get_pending_notice(sid)
             try:
                 from . import summarize as _sum
                 _sum_on = _sum.is_on()
@@ -6688,12 +6704,12 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(200, json.dumps({
                 "pending": core.clean_for_speech(pend, max_chars=300)
                 if pend else "",
-                "kind": core.get_pending_kind(sid),
-                "notice": core.clean_for_speech(
+                "kind": "" if qn else core.get_pending_kind(sid),
+                "notice": "" if qn else core.clean_for_speech(
                     core.get_pending_message(sid), max_chars=300),
                 "state": core.active_session_state(tp) if tp else "idle",
                 "mode": core.current_permission_mode(tp) if tp else "",
-                "question": core.pending_question(tp) if tp else {},
+                "question": qn,
                 "update": core.update_status(),
                 "summarize": _sum_on,   # phone's Full/Brief chip reflects this
             }).encode(), "application/json")
