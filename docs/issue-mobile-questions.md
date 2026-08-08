@@ -59,6 +59,35 @@ keyboard does, not paste a sentence.
 - Free-text "Other" answers work.
 - If answering can't be delivered, the phone says so plainly instead of hanging.
 
+## UPDATE (live-tested): the real root cause is DETECTION, not answering
+A live probe polled `core.pending_question(transcript)` once a second for 35s
+while an AskUserQuestion was open on the phone: **0 detections**. Claude Code
+does NOT write the AskUserQuestion `tool_use` block to the session transcript
+until AFTER it is answered (the block count rose 17 -> 20 only once the test
+questions were answered). So the transcript-scrape approach can NEVER see an
+open question, which is why the phone only ever showed the permission card
+(from the Notification hook) and never the option cards.
+
+Consequence: the SSE/`/status` "suppress the yes/no while a question is open"
+change and the `/answer` keystroke path are correct groundwork but INERT, they
+depend on detecting the open question, which currently never happens.
+
+### The fix path: a PreToolUse hook
+voicebridge hooks today are SessionStart, SessionEnd, UserPromptSubmit, Stop,
+Notification, NOT PreToolUse. A **PreToolUse hook matching `AskUserQuestion`**
+receives the tool INPUT (the questions + options) BEFORE the tool blocks. Plan:
+1. Add a PreToolUse hook (matcher `AskUserQuestion`) that writes the questions
+   to a state file, e.g. `~/.voicebridge/open_question.json` (+ the tool_use id).
+2. The relay reads that file (not the transcript) to emit the `question` event
+   with real options -> phone renders the cards.
+3. Clear it via a PostToolUse hook on `AskUserQuestion` (and/or the existing
+   post-answer transcript detection) so the card goes away once answered.
+4. Then the `/answer` keystroke path (already built) actually gets exercised;
+   the single-select keystroke mapping still needs live confirmation.
+Requires registering the new hook (settings/plugin) + a Claude Code restart to
+take effect, so this is a build-and-verify task, not a hot fix. Park like brief
+mode until it genuinely works end to end.
+
 ## Notes
 - This is the highest-value interaction gap for the phone experience: a blocked
   question currently strands a remote user completely.
