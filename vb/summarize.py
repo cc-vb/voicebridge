@@ -21,6 +21,7 @@ the voice flow at core.speak_chunks_blocking (Mac) and call.py's reply emit
 """
 
 import os
+import re
 import shutil
 import subprocess
 
@@ -39,12 +40,11 @@ MAX_INPUT_CHARS = 6000
 _CALL_TIMEOUT = float(os.environ.get("VB_SUMMARIZE_TIMEOUT") or 8)
 
 _PROMPT = (
-    "You are the voice of a coding assistant briefing a developer who is "
-    "LISTENING, not reading. Summarize the assistant reply below in 2 to 3 "
-    "short sentences, in the plainest terms. You MUST preserve: any decision "
-    "made, any warning or caveat, any question directed at the user, and what "
-    "changed (files, commands, results). Describe code in words, never quote "
-    "it. Output ONLY the summary, nothing else.\n\nREPLY:\n")
+    "Summarize the assistant reply below for a developer who is LISTENING. "
+    "Write ONE or TWO short sentences, at most 40 words total, in plain terms. "
+    "Keep any decision, warning, and what changed (files, commands, results). "
+    "Do NOT repeat yourself, do NOT quote code, do NOT copy sentences from the "
+    "reply. Output ONLY the summary.\n\nREPLY:\n")
 
 # Summarizing into 2-3 sentences is an easy, instruction-following task, so
 # default to the smallest still-instruction-capable model to keep the one-time
@@ -261,17 +261,31 @@ def summarize(text: str, engine: str = "auto") -> str:
     # ollama model not pulled) does NOT end the search, we fall through.
     for e in _ready_engines(engine):
         out = _RUN[e](prompt).strip()
-        if out:
-            if _dropped_question(text, out):
-                return ""   # safety net: speak full rather than swallow a Q
-            return out
+        # A real summary is clearly SHORTER. Small models sometimes ramble or
+        # repeat until they produce something as long as (or longer than) the
+        # reply, which is worse than useless as a spoken brief. Reject those and
+        # fall through / speak full rather than read out padded garbage.
+        if out and len(out) <= len(text) * 0.66:
+            return _keep_trailing_question(text, out)
     return ""
 
 
-def _dropped_question(full: str, brief: str) -> bool:
-    """If the reply ENDS with a question to the user but the briefing has none,
-    the summary likely dropped it, better to speak the full reply than silently
-    swallow a question you need to answer. Only fires when the reply's last
-    non-space character is '?', so an incidental '?' mid-reply (a ternary, a URL
-    query, a rhetorical aside) no longer discards an otherwise-good brief."""
-    return full.rstrip().endswith("?") and "?" not in brief
+_QSENT = re.compile(r"([^.!?\n]*\?)\s*$")
+
+
+def _last_question(text: str) -> str:
+    """The reply's final sentence, if it is a question (ends with '?')."""
+    m = _QSENT.search(text.rstrip())
+    return m.group(1).strip() if m else ""
+
+
+def _keep_trailing_question(full: str, brief: str) -> str:
+    """Conversation replies almost always END with a question to the user, and a
+    tiny model often drops it when summarizing. Discarding the whole brief (the
+    old safety net) meant briefing NEVER fired in a live back-and-forth. Instead,
+    keep the summary AND re-attach the actual trailing question, so the spoken
+    brief is 'the gist, then the question you need to answer'."""
+    q = _last_question(full)
+    if not q or "?" in brief:
+        return brief
+    return f"{brief} {q}".strip()

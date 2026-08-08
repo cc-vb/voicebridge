@@ -70,14 +70,35 @@ def test_engine_available_priority_and_override():
          summarize._ollama_ready) = orig
 
 
-def test_dropped_question_only_fires_on_a_trailing_question():
-    dq = summarize._dropped_question
-    # reply ENDS with a question, brief has none -> discard (speak full)
-    assert dq("I did the work. Want me to proceed?", "I did the work.") is True
-    # incidental '?' mid-reply but ends on a statement -> keep the brief
-    assert dq("Is a > b? Then c runs. All done now.", "It runs c and finishes.") is False
-    # brief preserves the question -> keep the brief
-    assert dq("Should I proceed?", "Should I proceed with it?") is False
+def test_keeps_the_trailing_question_on_the_brief():
+    # a reply that ends in a question (most conversational replies do): the
+    # brief must keep it, not get discarded. Re-attach the real question.
+    long = ("I changed the parser and added a test for the expired-token path. " * 6
+            + "Want me to run the tests?")
+    orig_ready, orig_run = summarize._ready_engines, dict(summarize._RUN)
+    try:
+        summarize._ready_engines = lambda prefer="auto": ["mlx"]
+        summarize._RUN["mlx"] = lambda p: "Changed the parser and added a test."
+        out = summarize.summarize(long, "mlx")
+        assert out.endswith("Want me to run the tests?")   # question preserved
+        assert "parser" in out                             # brief body preserved
+    finally:
+        summarize._ready_engines = orig_ready
+        summarize._RUN.update(orig_run)
+
+
+def test_rejects_a_brief_that_isnt_actually_shorter():
+    # a small model that rambles until its "summary" is ~as long as the reply
+    # must be rejected (speak full) rather than read out padded garbage.
+    long = "The reply sentence here. " * 30                # ~750 chars
+    orig_ready, orig_run = summarize._ready_engines, dict(summarize._RUN)
+    try:
+        summarize._ready_engines = lambda prefer="auto": ["mlx"]
+        summarize._RUN["mlx"] = lambda p: "x" * 700        # not shorter
+        assert summarize.summarize(long, "mlx") == ""       # -> speak full
+    finally:
+        summarize._ready_engines = orig_ready
+        summarize._RUN.update(orig_run)
 
 
 def test_mode_toggle_default_off():
@@ -100,6 +121,7 @@ if __name__ == "__main__":
     test_no_backend_falls_back_to_empty()
     test_falls_through_a_broken_engine_to_the_next()
     test_engine_available_priority_and_override()
-    test_dropped_question_only_fires_on_a_trailing_question()
+    test_keeps_the_trailing_question_on_the_brief()
+    test_rejects_a_brief_that_isnt_actually_shorter()
     test_mode_toggle_default_off()
     print("ok  summarize: skip-short, backend selection, soft-fail, mode toggle")
