@@ -5,14 +5,14 @@ your intent, your words land in the real session (your files, your context),
 and Claude answers out loud in a natural neural voice. The superpower: drive
 your live coding sessions by voice from your phone, from anywhere.
 
-<!-- HERO VIDEO: paste the YouTube link to the 60-90s demo here once recorded.
-     Storyboard and full shot list live in docs/launch.md. Keep it embedded from
-     YouTube (a raw mp4 will not play inline on GitHub). Suggested markup:
-     [![voicebridge demo](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://youtu.be/VIDEO_ID) -->
+![voicebridge: talk to Claude Code from your phone, and it talks back](docs/media/hero.jpg)
 
-<!-- HERO GIF: drop a short (10s or less, 5MB or less) looping clip of the fleet
-     moment here so the page moves before anyone clicks play, e.g.:
-     ![control every agent by voice](docs/media/fleet.gif) -->
+![voicebridge in action: you speak, the prompt lands in your real session, Claude answers out loud](docs/media/demo.gif)
+
+**[Watch the 25-second demo (with sound)](docs/media/demo.mp4)**
+
+<!-- Upgrade the hero to a full video later: upload the demo to YouTube and embed
+     [![voicebridge demo](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://youtu.be/VIDEO_ID) -->
 
 ## What it does
 
@@ -31,6 +31,10 @@ your live coding sessions by voice from your phone, from anywhere.
 - **Works with any coding agent** (Codex, Cursor, Cline, Copilot): voice pastes
   into whatever is focused, replies are read back per agent, and it never talks
   over itself (echo guard plus dedup).
+
+<p align="center">
+  <img src="docs/media/phone.png" alt="voicebridge on the phone: the call screen with the live orb and controls" width="300">
+</p>
 
 ## Quickstart
 
