@@ -128,6 +128,36 @@ def press_enter(expect_app: str = "") -> bool:
     return True
 
 
+def pick_option(index: int = 0, expect_app: str = "") -> bool:
+    """Select option `index` (0-based) in an option picker: move the highlight
+    Down `index` times from the top, then press Return, all in ONE focus session
+    so the picker keeps keyboard focus throughout (flipping focus between the
+    Downs and the Return could drop the keys). Guards on expect_app like
+    press_enter. Returns whether the keys were sent."""
+    index = max(0, int(index))
+    if not oslayer.IS_MAC:
+        for _ in range(index):
+            oslayer._win_sendkeys("{DOWN}") if oslayer.IS_WIN else oslayer._xdotool("key", "Down")
+        oslayer._win_sendkeys("{ENTER}") if oslayer.IS_WIN else oslayer._xdotool("key", "Return")
+        return True
+    restore = ""
+    if expect_app:
+        front = frontmost_app()
+        if front.strip().casefold() != expect_app.casefold():
+            if not _activate_app(expect_app):
+                return False
+            restore = front
+            time.sleep(0.18)
+    for _ in range(index):
+        _osa('tell application "System Events" to key code 125')  # Down arrow
+        time.sleep(0.04)
+    _osa('tell application "System Events" to key code 36')        # Return
+    if restore:
+        time.sleep(0.05)
+        _activate_app(restore)
+    return True
+
+
 def frontmost_app() -> str:
     """Name of the app that will receive the paste; logged for diagnosis."""
     try:

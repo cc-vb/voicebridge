@@ -371,6 +371,24 @@ def _active_sid() -> str:
     return sid if _td.phone_is_enabled(sid) else ""
 
 
+def _answerable_index(questions: list, sel: list):
+    """The option index we can SAFELY answer by keystroke from the phone, or
+    None. Safe == exactly one question, single-select, exactly one pick, in
+    range. Everything else (multi-select, several questions, the free-text
+    'Other', no/none pick) returns None so the phone tells the user to finish it
+    on the Mac rather than blindly driving the picker to a wrong option."""
+    try:
+        if (len(questions) == 1 and not questions[0].get("multiSelect")
+                and len(sel) == 1 and len(sel[0]) == 1):
+            idx = int(sel[0][0])
+            opts = questions[0].get("options") or []
+            if 0 <= idx < len(opts):
+                return idx
+    except Exception:
+        pass
+    return None
+
+
 def _handle_pending(text: str, pending: str) -> str:
     """A decision is blocking the session. Spoken yes -> Enter (accept the
     highlighted default), spoken no -> Escape (dismiss). Anything else gets
@@ -4636,12 +4654,27 @@ function questionAnswer(){
 }
 function submitQuestion(){
   if(!activeQuestion || !live) return;
-  const ans = questionAnswer();
-  if(!ans){ toast('pick an option first'); return; }
-  answeredQid = activeQuestion.id;   // don't let the poll backstop re-add it
-  clearQuestion();
-  stopSpeaking(); stopListening();
-  startTurn(ans);                 // the exact same turn engine as speech/typing
+  const anyPicked = questionSel.some(s => s && s.length);
+  if(!anyPicked){ toast('pick an option first'); return; }
+  const id = activeQuestion.id;
+  const sel = questionSel.map(s => s || []);
+  answeredQid = id;                 // don't let the poll backstop re-add it
+  /* Drive the actual picker on the Mac (keystrokes), NOT a text turn: pasting
+     text never selected an option, which is why it used to just hang. The
+     server only does this for a single single-select question; anything else
+     comes back ok:false and we tell you to finish it on the Mac. */
+  jpost('/answer', { id: id, sel: sel })
+    .then(r => r.json()).then(j => {
+      if(j && j.ok){
+        clearQuestion();
+        stopSpeaking(); stopListening();
+        setState('thinking', 'answered');   // reply arrives on the stream
+      }else{
+        answeredQid = '';                    // let the card stay / retry on Mac
+        toastErr((j && j.reason) || 'Could not answer from here.');
+      }
+    })
+    .catch(() => { answeredQid = ''; toastErr('Could not send your answer.'); });
 }
 function buildQuestionCard(){
   const card = document.createElement('div');
@@ -6871,6 +6904,43 @@ class Handler(BaseHTTPRequestHandler):
             # you're away from the laptop).
             core.mark_call_live()
             self._reply(200, b"{}", "application/json")
+            return
+
+        if path == "/answer":   # answer an open AskUserQuestion from the phone
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                self._reply(400, b"bad request", "text/plain")
+                return
+            qid = str(body.get("id") or "")
+            sel = body.get("sel") or []       # [[idx,...], ...] per question
+            tp = _target_transcript()
+            q = core.pending_question(tp) if tp else {}
+            if not q or q.get("id") != qid:
+                # answered elsewhere, or a stale card: tell the phone to refresh.
+                self._reply(200, json.dumps(
+                    {"ok": False, "reason": "That question already closed."}).encode(),
+                    "application/json")
+                return
+            idx = _answerable_index(q.get("questions") or [], sel)
+            if idx is None:
+                # multi-select / multiple questions / bad pick: don't guess.
+                self._reply(200, json.dumps(
+                    {"ok": False,
+                     "reason": "Answer this one on the Mac for now."}).encode(),
+                    "application/json")
+                return
+            from . import adapters
+            ok = adapters.for_sid(_active_sid()).answer_question(_active_sid(), idx)
+            if not ok:
+                core.surface_error("answer",
+                                   "Couldn't reach the terminal to answer.",
+                                   hint="Bring the Mac window to the front.",
+                                   speak=False)
+            self._reply(200, json.dumps(
+                {"ok": bool(ok),
+                 "reason": "" if ok else "Couldn't reach the terminal."}).encode(),
+                "application/json")
             return
 
         if path == "/summarize":   # toggle summarized-voice mode from the phone

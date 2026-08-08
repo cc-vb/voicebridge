@@ -158,6 +158,10 @@ class TargetAdapter:
         """Advance the target's mode selector n steps (e.g. permission mode)."""
         raise NotImplementedError
 
+    def answer_question(self, sid: str, index: int) -> bool:
+        """Choose option `index` (0-based) in a single-select question picker."""
+        raise NotImplementedError
+
 
 class ClaudeCodeAdapter(TargetAdapter):
     """Claude Code running in a terminal. Delivery is a focus-free paste into
@@ -203,6 +207,17 @@ class ClaudeCodeAdapter(TargetAdapter):
             if i + 1 < n:
                 _t.sleep(0.18)   # let each Shift+Tab register before the next
         return ok
+
+    def answer_question(self, sid: str, index: int) -> bool:
+        """Select option `index` in a single-select AskUserQuestion picker by
+        driving the SAME keys you'd press: Down to the option, then Return.
+        Assumes the picker opens with the first option highlighted and uses
+        arrow-key navigation (confirmed for single-select). The relay restricts
+        this to the single-question single-select case, it never guesses at
+        multi-select or the free-text 'Other' path, which aren't verified."""
+        from . import inject
+        from .talkd import bound_app
+        return inject.pick_option(index, expect_app=bound_app())
 
 
 # The registry is the extension point: map a target `kind` to its adapter.
