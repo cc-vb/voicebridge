@@ -2526,11 +2526,6 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
     </span>
     <span class="mclbl" id="modeChipLbl">Mode</span>
   </button>
-  <button id="briefChip" type="button" class="mchip" data-on="0"
-          aria-label="Spoken length: full or brief"
-          title="Spoken replies: Full, or a short Brief">
-    <span class="mclbl" id="briefChipLbl">Full</span>
-  </button>
 </header>
 
 <main>
@@ -2564,6 +2559,14 @@ body.chat-full #orb, body.chat-full #orbscale, body.chat-full .ripple {
       </svg>
     </button>
     <span class="ctllbl" id="muteLbl">Mute</span>
+  </div>
+  <div class="ctlwrap" id="stopWrap" style="display:none">
+    <button class="ctl" id="stopBtn" aria-label="Stop Claude">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="6" y="6" width="12" height="12" rx="2.5"/>
+      </svg>
+    </button>
+    <span class="ctllbl">Stop</span>
   </div>
   <div class="ctlwrap">
     <button class="ctl" id="replayBtn" aria-label="Replay the last reply" disabled>
@@ -2841,6 +2844,7 @@ const statusEl=$('status'), stateWord=$('stateWord'), pillName=$('pillName'),
       closedName=$('closedName'), closedBody=$('closedBody'),
       clipBtn=$('clipBtn'), pickFile=$('pickFile'), chipsEl=$('chips'),
       modeChip=$('modeChip'), modeChipLbl=$('modeChipLbl'),
+      stopWrap=$('stopWrap'), stopBtn=$('stopBtn'),
       briefChip=$('briefChip'), briefChipLbl=$('briefChipLbl'),
       chatModeChip=$('chatModeChip'), chatModeChipLbl=$('chatModeChipLbl');
 const VB_PAGE_VERSION = "__VB_VERSION__";   // server stamps the real version
@@ -3006,6 +3010,9 @@ function setState(s, label){
     chatStateEl.textContent = detail ? (w + ' \u00b7 ' + detail) : w;
   }
   syncMicChip();   // the composer mic reflects listening/muted live
+  // Stop button: only while Claude is actually working (a prompt is in flight),
+  // so you can kill a turn that went in too early or that you want to cancel.
+  if(stopWrap) stopWrap.style.display = (s === 'thinking') ? '' : 'none';
   if(typeof updateModeChipVis === 'function') updateModeChipVis();
 }
 function urlFor(path){
@@ -5108,11 +5115,12 @@ async function listenWhisper(){
       spoke = true; quiet = 0;
       if(stitchTimer) holdStitchOnSpeech();   // resumed inside the window
     } else if(spoke) quiet++;
-    /* ~1.0s of RMS silence ends the utterance (5 x 200ms). This is the
-       end-of-speech detector: once you have been quiet this long you have
-       stopped, so the prompt should go. Shorter thinking pauses stay inside
-       ONE segment; a longer pause means "send it" (tap the orb to add more). */
-    if((spoke && quiet >= 5) || (!spoke && ++idle > 250)){ clearInterval(iv); mr.stop(); }
+    /* ~1.6s of RMS silence ends the utterance (8 x 200ms). More forgiving than
+       1.0s so a natural thinking pause between clauses ("add validation... and
+       run the tests") no longer sends the prompt before you've finished. Tune
+       via VB, higher = more patient (less cut-off, more wait); lower = snappier.
+       Shorter pauses stay inside ONE segment; a longer pause means "send it". */
+    if((spoke && quiet >= 8) || (!spoke && ++idle > 250)){ clearInterval(iv); mr.stop(); }
   }, 200);
   mr.onstop = () => {
     src.disconnect(); recActive = false;
@@ -5273,6 +5281,22 @@ function toggleMute(){
   } /* muted flipped during working/speaking: the turn loop checks it after */
 }
 muteBtn.addEventListener('click', toggleMute);
+
+/* ---- Stop: cancel the turn Claude is working on (sends the same Escape you'd
+   press in the TUI). For when a prompt went in before you finished, or you just
+   want it to stop. Also kills any local playback and drops back to listening. */
+function stopClaude(){
+  if(!live) return;
+  stopSpeaking();
+  jpost('/interrupt', {}).then(r => r.json()).then(j => {
+    if(!j || !j.ok) toastErr('Could not reach the Mac to stop it.');
+  }).catch(() => toastErr('Could not reach the Mac to stop it.'));
+  toast('Stopping...');
+  turnActive = false; pendingSend = null;
+  if(!muted) setState('listening'); else setState('muted');
+  if(live && !muted) listen();
+}
+if(stopBtn) stopBtn.addEventListener('click', stopClaude);
 
 /* ---- Replay: re-read the LAST reply on demand. Mute silences what's coming;
    Replay brings back what you just missed (a passing car, a lost moment). It
@@ -6871,6 +6895,14 @@ class Handler(BaseHTTPRequestHandler):
             # you're away from the laptop).
             core.mark_call_live()
             self._reply(200, b"{}", "application/json")
+            return
+
+        if path == "/interrupt":   # phone Stop button -> stop the current turn
+            from . import adapters
+            sid = _active_sid()
+            ok = adapters.for_sid(sid).interrupt(sid)   # sends Escape to Claude
+            self._reply(200, json.dumps({"ok": bool(ok)}).encode(),
+                        "application/json")
             return
 
         if path == "/summarize":   # toggle summarized-voice mode from the phone
