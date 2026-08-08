@@ -88,6 +88,24 @@ Requires registering the new hook (settings/plugin) + a Claude Code restart to
 take effect, so this is a build-and-verify task, not a hot fix. Park like brief
 mode until it genuinely works end to end.
 
+## HARD REQUIREMENT (from the user, do not violate)
+Never choose an option FOR the user. When Claude asks a multiple-choice question
+and we can't let the user pick the specific option, we must STOP and just show
+"Claude needs your input", never auto-select the default (tapping Allow, or a
+spoken/typed answer landing in the open picker, silently picking the first/middle
+option is unacceptable, it decides for the user).
+
+Current state after reverting the phone answer feature (2.20.33):
+- An AskUserQuestion notice is "Claude is waiting for your input" -> classified
+  "idle" -> NO yes/allow decision card. Good: a tap can't pick an option.
+- RESIDUAL RISK: a prompt SPOKEN or TYPED while a question is still open is
+  injected as text and can land in the open picker (selecting the default). We
+  can't prevent this yet because we can't reliably detect an open question.
+- The PreToolUse hook (above) is what makes both the safe behavior AND real
+  option cards possible: once we KNOW a question is open we can (a) show real
+  option cards, and (b) refuse to inject a stray prompt into the picker, showing
+  "Claude needs your input" instead. Until then: answer questions on the Mac.
+
 ## Notes
 - This is the highest-value interaction gap for the phone experience: a blocked
   question currently strands a remote user completely.
