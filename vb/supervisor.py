@@ -34,15 +34,25 @@ def tick(state: dict, speak=None, now: float = 0.0) -> list:
                          spoken_at=state["spoken_at"])
     if now:
         ctx["now"] = now
+    # The session you are voiced in is one you are demonstrably present in: its
+    # replies are already spoken to you there, so announcing it would repeat
+    # yourself. Treat it exactly like the agent you are looking at.
+    voiced = state.get("_voiced_sid")
+    if voiced and not ctx.get("focused_sid"):
+        ctx["focused_sid"] = voiced
 
     for ev in events:
         d = attention.decide(ev, ctx, stakes=_stakes(ev))
         core.log(f"friday: {ev['kind']} {ev['label']} -> {d['action']} "
                  f"({d['reason']})")
-        if d["action"] == attention.SPEAK_NOW:
-            state["pending"].append(d)
-        elif d["action"] == attention.QUEUE:
-            state["pending"].append(d)
+        if d["action"] in (attention.SPEAK_NOW, attention.QUEUE):
+            # Never queue the same thing twice. Saying "jobhunt finished. And
+            # jobhunt finished." in one breath is the kind of small stupidity
+            # that makes people mute a product.
+            dup = any(p.get("kind") == d["kind"] and p.get("sid") == d["sid"]
+                      for p in state["pending"])
+            if not dup:
+                state["pending"].append(d)
         elif d["action"] == attention.DIGEST:
             state["digest"].append(d)
         # DISCARD: logged above, and that is the whole point of it

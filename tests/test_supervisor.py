@@ -109,6 +109,24 @@ def test_dangerous_sounding_requests_are_treated_as_high_stakes():
     assert supervisor._stakes({"detail": ""}) == "low"
 
 
+def test_the_session_you_are_voiced_in_is_never_announced_to_you():
+    # its replies are already spoken to you there; announcing it repeats yourself
+    _fake_world([[_ev("finished", sid="me", label="this-one")]])
+    st = supervisor.new_state()
+    st["_voiced_sid"] = "me"
+    assert supervisor.tick(st, now=NOW) == []
+
+
+def test_the_same_news_is_never_queued_twice():
+    same = _ev("finished", sid="a", label="jobhunt")
+    _fake_world([[same], [same], []])       # the same event arrives repeatedly
+    st = supervisor.new_state()
+    supervisor.tick(st, now=NOW)
+    supervisor.tick(st, now=NOW + 1)
+    said = supervisor.tick(st, now=NOW + at.BATCH_WINDOW + 2)
+    assert said == ["jobhunt finished."]     # not "... And jobhunt finished."
+
+
 if __name__ == "__main__":
     import types
     orig = (fleet.poll, signals.gather)

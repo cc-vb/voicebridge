@@ -1490,7 +1490,8 @@ def run_daemon() -> int:
     announced: set = set()
     follow_until = 0.0   # wake mode: window after "hey Claude" alone
     queued = ""          # barge-in captured while a reply was speaking
-    fleet_states = {}    # sid -> state, for idle alerts
+    fleet_states = {}
+    _fleet_state = None    # sid -> state, for idle alerts
     fleet_next = 0.0     # next fleet-check time
     first_fleet = True   # skip alerts on the very first scan (no baseline)
     unfocused_since = 0.0   # when the bound app lost focus (0.0 = focused)
@@ -1557,18 +1558,23 @@ def run_daemon() -> int:
         # finished (working -> idle), so you hear "jobhunt is ready" without
         # watching terminals. Skipped while speaking.
         if alerts_on() and time.time() >= fleet_next and not _any_speech_playing():
-            from . import sessions as _sess
-            # Never announce the session you're voiced in (sid): its reply is
-            # already spoken, and announcing it fired "X is ready" every turn.
-            fresh, fleet_states = _sess.newly_idle(fleet_states, exclude_sid=sid)
             fleet_next = time.time() + 12
-            others = [n for n in fresh if n]  # labels only
-            if fleet_states and others and not first_fleet:
-                names = ", ".join(others[:4])
-                core.speak(f"Heads up: {names} "
-                           f"{'is' if len(others) == 1 else 'are'} ready for "
-                           f"you.", blocking=True)
-            first_fleet = False
+            # The supervisor decides IF this is worth your ear, not just that
+            # something happened. It sees more than "finished" (blocked on a
+            # question, erroring, stuck), and it applies the gates the old loop
+            # had none of: debounce, never about the agent you are watching, a
+            # budget, batching into one sentence, and your "quiet".
+            try:
+                from . import supervisor as _sup
+                if _fleet_state is None:
+                    _fleet_state = _sup.new_state()
+                # You are IN this session: its replies are already spoken here,
+                # so it must never be announced to you (the old exclude_sid).
+                _fleet_state["_voiced_sid"] = sid
+                _sup.tick(_fleet_state,
+                          speak=lambda t: core.speak(t, blocking=True))
+            except Exception as e:
+                core.log(f"fleet supervisor tick failed: {e}")
 
         # 1) Speak every reply we have not spoken yet, oldest first.
         #
