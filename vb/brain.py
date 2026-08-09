@@ -28,7 +28,20 @@ import urllib.request
 from . import core
 
 MODEL_DIR = core.STATE_DIR / "models"
-MODEL_NAME = "qwen3-4b-instruct-2507-q4_k_m.gguf"
+
+# The reflex tier. This model does NOT need to be clever: its jobs are a binary
+# danger call, a two-sentence compression, and plain wording. Speed and staying
+# resident matter more than depth, and real reasoning goes to a big brain
+# (Claude) which is already on the machine, per the two-tier design.
+#
+# Swappable with one env var, because "is 4B enough?" is a question to settle by
+# measuring on your own work, not by argument:
+#   VB_BRAIN_MODEL=qwen3-8b-instruct-q4_k_m.gguf    smarter, ~5GB, fits 16GB
+#   VB_BRAIN_MODEL=qwen3-1.7b-instruct-q4_k_m.gguf  faster, ~1.1GB, 8GB Macs
+# Anything ~14B and up will swap and thermally throttle on a fanless Air, which
+# makes it both slower AND worse: not a trade worth taking.
+MODEL_NAME = (os.environ.get("VB_BRAIN_MODEL")
+              or "qwen3-4b-instruct-2507-q4_k_m.gguf")
 MODEL_PATH = MODEL_DIR / MODEL_NAME
 
 # Per-uid so two accounts on one Mac never fight over a port (kokoro is 6000+,
