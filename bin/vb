@@ -1523,6 +1523,24 @@ def main(argv) -> int:
                   f"{tail}")
         return 0
 
+    elif cmd == "friday":
+        # The supervisor: watch every agent and speak up only when one really
+        # needs you.  vb friday --dry  prints what it WOULD say (how you tune
+        # it without listening to a day of alerts).
+        from vb import supervisor as _sup
+        if rest and rest[0] == "why":
+            # "why did you say that?" must always have an answer.
+            import datetime as _dt
+            from vb import fleet as _fl
+            for e in _fl.recent_events(20):
+                t = _dt.datetime.fromtimestamp(e.get("ts", 0)).strftime("%H:%M:%S")
+                print(f"  {t}  {e.get('kind', '?'):<11} {e.get('label', '?')}")
+            print("\n  decisions (with the rule that fired) are in: vb log")
+            return 0
+        return _sup.run(dry=("--dry" in rest),
+                        interval=float(next((r.split("=")[1] for r in rest
+                                             if r.startswith("--interval=")), 3)))
+
     elif cmd == "summarize":
         # Inspect/compare the summarized-output layer (also wired into the live
         # voice path: Mac speak + phone Brief chip).
