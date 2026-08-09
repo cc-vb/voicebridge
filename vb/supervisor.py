@@ -16,7 +16,7 @@ anyone having to listen to a day of alerts.
 
 import time
 
-from . import attention, core, fleet, routing, signals
+from . import attention, brain, core, fleet, routing, signals
 
 
 def new_state() -> dict:
@@ -75,17 +75,25 @@ def tick(state: dict, speak=None, now: float = 0.0) -> list:
 def _stakes(ev: dict) -> str:
     """How consequential is what the agent is asking?
 
-    The local model does this properly (that is one of the two jobs it has
-    here). Until it is wired, a keyword pass catches the cases that actually
-    matter: anything destructive or irreversible is high stakes, everything
-    else is low. Being wrong low-side only delays a question by 45 seconds;
-    being wrong high-side interrupts you, so the list stays deliberately short."""
+    The local model judges this when it is available (one of its three jobs).
+    A keyword pass is the floor underneath it, and it also OVERRIDES a 'low'
+    verdict: if the text plainly says "drop table" we do not care that a 4B
+    model felt relaxed about it. Being wrong low-side only delays a question by
+    45 seconds; being wrong high-side interrupts you for nothing."""
     text = f"{ev.get('detail', '')}".lower()
     danger = ("delete", "drop ", "drop table", "rm -rf", "force push",
               "force-push", "reset --hard", "revoke", "production", "prod ",
               "migrate", "truncate", "overwrite", "credentials", "secret",
               "deploy")
-    return "high" if any(d in text for d in danger) else "low"
+    if any(d in text for d in danger):
+        return "high"                     # never overridable, it is in the text
+    verdict = ""
+    try:
+        if ev.get("kind") in ("blocked", "permission"):
+            verdict = brain.stakes(ev.get("detail", ""))
+    except Exception:
+        verdict = ""
+    return verdict or "low"
 
 
 def run(dry: bool = False, interval: float = 3.0, once: bool = False) -> int:

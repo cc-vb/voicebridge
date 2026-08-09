@@ -1540,6 +1540,16 @@ def main(argv) -> int:
             _att.unhush()
             print("friday: listening again.")
             return 0
+        if rest and rest[0] == "brain":
+            from vb import brain as _br
+            st = _br.status()
+            print(f"  server : {'yes' if st['server'] else 'MISSING (brew install llama.cpp)'}")
+            print(f"  model  : {'ready' if st['model'] else 'not downloaded yet'}")
+            print(f"  running: {'yes on :' + str(st['port']) if st['up'] else 'no (starts on demand)'}")
+            if not st["up"] and st["model"] and st["server"]:
+                print("  starting it now (first load takes a few seconds)...")
+                print("  up:", _br.start(wait_s=45))
+            return 0
         if rest and rest[0] == "why":
             # "why did you say that?" must always have an answer.
             import datetime as _dt
