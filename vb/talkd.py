@@ -1565,6 +1565,11 @@ def run_daemon() -> int:
             # had none of: debounce, never about the agent you are watching, a
             # budget, batching into one sentence, and your "quiet".
             try:
+                from . import attention as _att
+                # Friday owns alerts while it is running: otherwise the user
+                # hears every event twice, once here and once in its thread.
+                if _att.supervisor_owner():
+                    raise StopIteration
                 from . import supervisor as _sup
                 if _fleet_state is None:
                     _fleet_state = _sup.new_state()
@@ -1573,6 +1578,8 @@ def run_daemon() -> int:
                 _fleet_state["_voiced_sid"] = sid
                 _sup.tick(_fleet_state,
                           speak=lambda t: core.speak(t, blocking=True))
+            except StopIteration:
+                pass                      # Friday has it
             except Exception as e:
                 core.log(f"fleet supervisor tick failed: {e}")
 

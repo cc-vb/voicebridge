@@ -43,6 +43,11 @@ DISCARD = "discard"
 
 SCORES_FILE = core.STATE_DIR / "attention_scores.json"
 QUIET_FILE = core.STATE_DIR / "friday_quiet"
+# Friday (the app) runs its own supervisor. When it is up, IT owns proactive
+# alerts and voicebridge's daemon must stand down, or every event is announced
+# twice: once spoken by the daemon, once in Friday's thread.
+OWNER_FILE = core.STATE_DIR / "supervisor_owner"
+OWNER_TTL = 20.0
 
 # How long "quiet" lasts before Friday resumes on its own. Long enough to get
 # through a meeting or a deep-work block, short enough that you do not silently
@@ -98,6 +103,25 @@ def save_scores(scores: dict) -> None:
         SCORES_FILE.write_text(json.dumps(scores))
     except Exception:
         pass
+
+
+def claim_supervisor(who: str = "friday") -> None:
+    """Say 'I am delivering the alerts now'. Refresh it like a heartbeat."""
+    try:
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        OWNER_FILE.write_text(f"{who}:{time.time()}")
+    except Exception:
+        pass
+
+
+def supervisor_owner() -> str:
+    """Who currently owns alert delivery, or '' if nobody. Stale claims expire,
+    so a crashed app can never permanently silence the daemon."""
+    try:
+        who, ts = OWNER_FILE.read_text().strip().rsplit(":", 1)
+        return who if time.time() - float(ts) < OWNER_TTL else ""
+    except Exception:
+        return ""
 
 
 def hush(seconds: float = QUIET_FOR) -> float:
