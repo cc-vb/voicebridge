@@ -76,6 +76,9 @@ def tick(state: dict, speak=None, now: float = 0.0) -> list:
             # to use Redis") reaches the agent that actually asked.
             state["focus"] = routing.note_spoken(state["focus"], ready,
                                                  now=ctx["now"])
+            # Expose what was just announced, so an embedder (Friday) can route
+            # a bare reply back to whichever agent asked.
+            state["_last_spoken"] = list(ready)
             if speak:
                 speak(text)
         state["pending"] = [p for p in state["pending"] if p not in ready]
