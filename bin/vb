@@ -40,6 +40,9 @@ Usage:
                              list all with: say -v '?'
   vb doctor                  full health check: deps, model, hooks, commands,
                              mic + Accessibility permissions, with fixes
+  vb fleet [events|watch]    every agent and what it is doing. "events" lists
+                             what was detected (finished, asking, stuck);
+                             "watch" prints them live as they happen.
   vb stt                     show speech-to-text readiness
   vb listen [--send] [--delay=N]
                              record you, transcribe locally (whisper.cpp),
@@ -1409,6 +1412,59 @@ def main(argv) -> int:
                 e.get("ts", 0)).strftime("%m-%d %H:%M")
             print(f"  {t}  [{e.get('where', '?')}] "
                   f"{e.get('type', '?')}: {e.get('msg', '')[:120]}")
+        return 0
+
+    elif cmd == "fleet":
+        # See what the fleet sensor sees. `vb fleet` prints every agent and its
+        # state; `vb fleet events` shows recent detected events; `vb fleet
+        # watch` polls and prints events live (the sensing layer, out loud on
+        # your terminal instead of in your ear).
+        import datetime as _dt
+        from vb import fleet as _fl
+        sub = (rest[0] if rest else "").lower()
+
+        if sub == "events":
+            evs = _fl.recent_events(30)
+            if not evs:
+                print("no events recorded yet.")
+            for e in evs:
+                t = _dt.datetime.fromtimestamp(
+                    e.get("ts", 0)).strftime("%m-%d %H:%M:%S")
+                print(f"  {t}  {e.get('kind', '?'):<11} "
+                      f"{e.get('label', '?'):<18} {e.get('detail', '')[:70]}")
+            return 0
+
+        if sub == "watch":
+            import time as _t
+            print("watching the fleet (ctrl-c to stop)...")
+            state = {}
+            try:
+                while True:
+                    evs, state = _fl.poll(state)
+                    for e in evs:
+                        t = _dt.datetime.now().strftime("%H:%M:%S")
+                        print(f"  {t}  {e['kind']:<11} {e['label']:<18} "
+                              f"{e['detail'][:70]}")
+                    _t.sleep(3)
+            except KeyboardInterrupt:
+                print("\nstopped.")
+            return 0
+
+        snap = _fl.snapshot()
+        if not snap:
+            print("no agents found.")
+            return 0
+        src = {r.get("source") for r in snap.values()}
+        print(f"{len(snap)} agent(s)   [source: {', '.join(sorted(src))}]")
+        for r in sorted(snap.values(), key=lambda x: x.get("label", "")):
+            flags = []
+            if r.get("question"):
+                flags.append("ASKING")
+            if r.get("permission"):
+                flags.append("NEEDS-APPROVAL")
+            tail = ("  " + " ".join(flags)) if flags else ""
+            print(f"  {r.get('label', '?'):<20} {r.get('status', '?'):<9}"
+                  f"{tail}")
         return 0
 
     elif cmd == "summarize":
