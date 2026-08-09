@@ -190,6 +190,13 @@ _STAKES_PROMPT = (
     "which library, formatting, where to put a file). Answer with the schema.")
 
 
+def _clean(text: str) -> str:
+    """Normalize model punctuation. Small models love em-dashes, which read as
+    an odd stumble in TTS and look wrong in the chat; commas say the same thing."""
+    return (text.replace("\u2014", ", ").replace("\u2013", ", ")
+                .replace(" ,", ",").replace(",,", ",").strip())
+
+
 def stakes(question: str) -> str:
     """'high' | 'low' | '' (no opinion). Advisory only: the rule table may
     promote on 'high', but it never silences a question on 'low'."""
@@ -226,7 +233,7 @@ def brief(text: str, min_chars: int = 400) -> str:
                  {"role": "user", "content": t[:6000]}],
                 TIMEOUT_SLOW, max_tokens=120)
     if out and len(out) <= len(t) * 0.66:
-        return out
+        return _clean(out)
     return ""
 
 
@@ -236,11 +243,16 @@ _SAY_PROMPT = (
     "Most important first. No preamble, no lists, no markdown.")
 
 
-def phrase(items_text: str) -> str:
-    """Optionally reword a batched utterance. '' means keep the template, which
-    is already correct, just plainer."""
+def phrase(items_text: str, enabled: bool = False) -> str:
+    """Optionally reword a batched utterance. '' means keep the template.
+
+    OFF BY DEFAULT, on measurement rather than principle: asked to reword three
+    separate alerts, the 4B ran them together into one confusing sentence
+    ("api hit an error, build failed, jobhunt finished") where the template kept
+    them cleanly apart. The templates are plainer and clearer, so they win. Kept
+    behind a flag for when a stronger model is swapped in."""
     t = (items_text or "").strip()
-    if not t:
+    if not enabled or not t:
         return ""
     out = _chat([{"role": "system", "content": _SAY_PROMPT},
                  {"role": "user", "content": t[:1200]}],
@@ -248,7 +260,7 @@ def phrase(items_text: str) -> str:
     # Guard against a model that invents facts or rambles: a rewrite may not be
     # much longer than what it was given.
     if out and len(out) <= max(120, len(t) * 1.4):
-        return out
+        return _clean(out)
     return ""
 
 
