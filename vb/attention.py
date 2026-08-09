@@ -303,12 +303,27 @@ def compose(items: list, digest: list = None) -> str:
     return head.strip()
 
 
+# Boilerplate the notification system emits that carries no information. Read
+# aloud it produces "permtest needs your approval: Claude needs your
+# permission", which says the same thing twice and teaches the listener that
+# our alerts are padding. If the detail is only this, say the short form.
+_GENERIC = ("claude needs your permission", "claude needs your input",
+            "needs your permission", "needs your input", "permission required",
+            "waiting for your input", "claude is waiting for your input")
+
+
+def _informative(detail: str) -> str:
+    """The detail, or '' when it is boilerplate that adds nothing."""
+    d = (detail or "").strip().rstrip(".").lower()
+    return "" if (not d or d in _GENERIC) else detail.strip()
+
+
 def _phrase(item: dict) -> str:
     """One item, in plain spoken English. Template-based so it works with no
     model at all; the local model can rewrite these when it is available."""
     label = item.get("label") or "an agent"
     kind = item.get("kind")
-    detail = (item.get("detail") or "").strip().rstrip(".")
+    detail = _informative(item.get("detail")).rstrip(".")
 
     def end(s):
         # An agent's question already ends in "?"; adding a full stop after it

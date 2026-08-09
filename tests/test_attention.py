@@ -194,6 +194,23 @@ def test_offers_to_mute_after_repeated_ignores():
     assert at.should_offer_mute(mixed, "finished") is False
 
 
+def test_boilerplate_detail_is_not_read_aloud():
+    """Live testing produced 'permtest needs your approval: Claude needs your
+    permission.' The tail is the same sentence again. Padding like that teaches
+    people our alerts are noise."""
+    generic = {"tier": at.P0, "kind": "permission", "label": "permtest",
+               "detail": "Claude needs your permission"}
+    assert at.compose([generic]) == "permtest needs your approval."
+    real = dict(generic, detail="Run: rm -rf build")
+    assert "rm -rf build" in at.compose([real])
+
+
+def test_a_generic_question_still_says_someone_is_waiting():
+    g = {"tier": at.P1, "kind": "blocked", "label": "api",
+         "detail": "Claude is waiting for your input"}
+    assert at.compose([g]) == "api needs an answer."
+
+
 # ---- the kill switch -----------------------------------------------------
 def test_quiet_silences_absolutely_even_urgent_news():
     d = at.decide(ev("error"), ctx(quiet=True))
