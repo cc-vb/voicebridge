@@ -425,11 +425,18 @@ def mic_active() -> bool:
     (voicemode channel mic, or an active talkd session). Hooks and the
     watcher stay silent then, so nothing is spoken twice.
 
-    MIC_FLAG only counts while a voicemode channel process is actually
-    running, so a stale flag (e.g. a failed `vb session` launch) can never
-    silence the hooks."""
+    Both signals are LIVENESS-checked, because a stale file here is silently
+    catastrophic: it makes every hook think the mic is owned, so replies stop
+    being spoken and the product looks dead for no visible reason. An
+    active.json left behind by a crashed or killed daemon (or a machine that
+    slept) must not count."""
     if (STATE_DIR / "talk" / "active.json").exists():
-        return True
+        try:
+            from . import talkd
+            if talkd.daemon_alive():
+                return True
+        except Exception:
+            return True      # cannot tell: assume owned, the safer error
     if MIC_FLAG.exists():
         r = subprocess.run(["pgrep", "-f", "channel/voicemode.ts"],
                            capture_output=True)
