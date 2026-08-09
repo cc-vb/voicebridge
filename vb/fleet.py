@@ -70,6 +70,36 @@ def agents_json(timeout: float = 5.0) -> list:
     return rows
 
 
+def other_users() -> dict:
+    """Claude sessions belonging to OTHER accounts on this Mac: {user: count}.
+
+    We can see that they exist (process list), and deliberately nothing more:
+    another user's home is unreadable by design, and it should stay that way.
+    Reporting "3 sessions under nikhilbajaj, which I can't see into" is honest
+    and useful; pretending they do not exist is neither, and pretending to read
+    them would be a privacy breach dressed up as a feature."""
+    import getpass
+    me = getpass.getuser()
+    out = {}
+    try:
+        r = subprocess.run(["ps", "-axo", "user=,command="],
+                           capture_output=True, text=True, timeout=5)
+        for line in (r.stdout or "").splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) != 2:
+                continue
+            user, cmd = parts
+            if user == me:
+                continue
+            # the interactive CLI, not our own helpers or greps
+            first = cmd.split()[0].rsplit("/", 1)[-1] if cmd.split() else ""
+            if first == "claude":
+                out[user] = out.get(user, 0) + 1
+    except Exception:
+        pass
+    return out
+
+
 def _norm_status(s: str) -> str:
     """Claude's status vocabulary -> ours ('working' | 'idle')."""
     s = (s or "").lower()
