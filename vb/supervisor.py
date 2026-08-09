@@ -16,12 +16,13 @@ anyone having to listen to a day of alerts.
 
 import time
 
-from . import attention, core, fleet, signals
+from . import attention, core, fleet, routing, signals
 
 
 def new_state() -> dict:
     return {"fleet": {}, "pending": [], "spoken_at": [],
-            "scores": attention.load_scores(), "history": [], "digest": []}
+            "scores": attention.load_scores(), "history": [], "digest": [],
+            "focus": routing.new_focus()}
 
 
 def tick(state: dict, speak=None, now: float = 0.0) -> list:
@@ -61,6 +62,10 @@ def tick(state: dict, speak=None, now: float = 0.0) -> list:
                                          "ignored": None})
             state["history"] = state["history"][-50:]
             state["digest"] = []
+            # Remember who we just mentioned, so an unqualified reply ("tell it
+            # to use Redis") reaches the agent that actually asked.
+            state["focus"] = routing.note_spoken(state["focus"], ready,
+                                                 now=ctx["now"])
             if speak:
                 speak(text)
         state["pending"] = [p for p in state["pending"] if p not in ready]
