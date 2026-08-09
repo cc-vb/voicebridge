@@ -1528,6 +1528,18 @@ def main(argv) -> int:
         # needs you.  vb friday --dry  prints what it WOULD say (how you tune
         # it without listening to a day of alerts).
         from vb import supervisor as _sup
+        from vb import attention as _att
+        if rest and rest[0] in ("quiet", "hush"):
+            import datetime as _dt
+            until = _att.hush()
+            print("friday: quiet until "
+                  + _dt.datetime.fromtimestamp(until).strftime("%H:%M")
+                  + " (nothing will be spoken; say `vb friday resume` to undo)")
+            return 0
+        if rest and rest[0] in ("resume", "unquiet"):
+            _att.unhush()
+            print("friday: listening again.")
+            return 0
         if rest and rest[0] == "why":
             # "why did you say that?" must always have an answer.
             import datetime as _dt

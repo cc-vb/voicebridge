@@ -147,4 +147,5 @@ def gather(sids=(), scores=None, spoken_at=()) -> dict:
         spoken_at=list(spoken_at),
         typed_at=typed_at(),
         scores=scores if scores is not None else attention.load_scores(),
+        quiet=attention.is_quiet(),
     )

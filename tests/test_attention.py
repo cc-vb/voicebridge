@@ -194,6 +194,29 @@ def test_offers_to_mute_after_repeated_ignores():
     assert at.should_offer_mute(mixed, "finished") is False
 
 
+# ---- the kill switch -----------------------------------------------------
+def test_quiet_silences_absolutely_even_urgent_news():
+    d = at.decide(ev("error"), ctx(quiet=True))
+    assert d["action"] == at.DIGEST and "quiet" in d["reason"]
+
+
+def test_quiet_holds_news_rather_than_losing_it():
+    # digest, not discard: when quiet lifts you still learn what happened
+    d = at.decide(ev("blocked", ts=NOW - 120), ctx(quiet=True))
+    assert d["action"] != at.DISCARD
+
+
+def test_quiet_expires_so_it_can_never_mute_the_product_forever():
+    import time as _t
+    at.unhush()
+    assert at.is_quiet() is False
+    at.hush(0.5)
+    assert at.is_quiet() is True
+    _t.sleep(0.6)
+    assert at.is_quiet() is False      # self-clearing
+    at.unhush()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

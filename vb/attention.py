@@ -42,6 +42,12 @@ DIGEST = "digest"      # only surfaces inside another utterance or on request
 DISCARD = "discard"
 
 SCORES_FILE = core.STATE_DIR / "attention_scores.json"
+QUIET_FILE = core.STATE_DIR / "friday_quiet"
+
+# How long "quiet" lasts before Friday resumes on its own. Long enough to get
+# through a meeting or a deep-work block, short enough that you do not silently
+# lose the supervisor for a week and wonder why it went dead.
+QUIET_FOR = 3600.0
 
 # Deliver-by deadlines per tier (seconds). Bounded deferral: a held item is
 # never forgotten, it becomes due.
@@ -94,10 +100,47 @@ def save_scores(scores: dict) -> None:
         pass
 
 
+def hush(seconds: float = QUIET_FOR) -> float:
+    """One word, and it stops. No argument, no "are you sure", no negotiation.
+    Anything queued becomes digest rather than being lost, so nothing is
+    forgotten, it just stops being spoken. Returns when it will resume."""
+    until = time.time() + seconds
+    try:
+        core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        QUIET_FILE.write_text(str(until))
+    except Exception:
+        pass
+    return until
+
+
+def unhush() -> None:
+    try:
+        QUIET_FILE.unlink()
+    except Exception:
+        pass
+
+
+def quiet_until(now: float = 0.0) -> float:
+    """Timestamp Friday is silent until, or 0. Expired files clean themselves
+    up, so a forgotten 'quiet' can never mute the product permanently."""
+    try:
+        until = float(QUIET_FILE.read_text().strip())
+    except Exception:
+        return 0.0
+    if (now or time.time()) >= until:
+        unhush()
+        return 0.0
+    return until
+
+
+def is_quiet(now: float = 0.0) -> bool:
+    return quiet_until(now) > 0
+
+
 def context(now: float = 0.0, focused_sid: str = "", mic_busy: bool = False,
             user_speaking: bool = False, dnd: bool = False,
             spoken_at: list = None, typed_at: dict = None,
-            scores: dict = None) -> dict:
+            scores: dict = None, quiet: bool = False) -> dict:
     """A snapshot of the world at decision time. Kept as a plain dict so tests
     can construct any situation without touching the machine."""
     return {
@@ -109,6 +152,7 @@ def context(now: float = 0.0, focused_sid: str = "", mic_busy: bool = False,
         "spoken_at": list(spoken_at or []),   # timestamps of recent utterances
         "typed_at": dict(typed_at or {}),     # sid -> last keystroke time
         "scores": dict(scores or _default_scores()),
+        "quiet": quiet,                   # you said "quiet": absolute silence
     }
 
 
@@ -158,6 +202,11 @@ def decide(ev: dict, ctx: dict, stakes: str = "") -> dict:
                 "settled": now if settled is None else settled,
                 "kind": kind, "sid": sid,
                 "label": ev.get("label", ""), "detail": ev.get("detail", "")}
+
+    # 0. You said quiet. That is absolute: nothing speaks, not even an error.
+    #    Items still queue, so when it lifts you get the news, not a gap.
+    if ctx.get("quiet"):
+        return out(DIGEST, "you asked me to be quiet")
 
     # 1. The user is already on it. Watching or typing into that very agent
     #    means they have seen it; telling them is pure noise.
