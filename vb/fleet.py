@@ -23,6 +23,7 @@ Nothing here speaks, injects, or blocks: it observes and reports.
 import json
 import subprocess
 import time
+from pathlib import Path
 
 from . import core
 
@@ -127,6 +128,17 @@ def snapshot() -> dict:
     for sid, row in out.items():
         row["question"] = ""
         row["permission"] = ""
+        # WHAT THE SESSION IS ABOUT. Claude's own names are generated from the
+        # username ("krishojha-7f"), so they are meaningless to a human and give
+        # a model nothing to reason with, which is exactly how "what is it
+        # working on" turned into invention. The first real thing the user asked
+        # is the honest answer.
+        row["topic"] = ""
+        try:
+            if row["path"]:
+                row["topic"] = first_prompt(row["path"])
+        except Exception:
+            pass
         try:
             if row["path"]:
                 q = core.pending_question(row["path"])
@@ -205,6 +217,50 @@ def detect_events(prev: dict, cur: dict, now: float = 0.0,
             events.append(_ev(STUCK, row, f"no progress for {mins} minutes"))
 
     return events
+
+
+_TOPIC_MAX = 90
+
+
+def first_prompt(transcript_path: str, max_chars: int = _TOPIC_MAX) -> str:
+    """What this session is ABOUT, taken from the first substantial thing the
+    human asked. Read from the HEAD of the file (cheap: we stop as soon as we
+    find one), because the opening request is what a person remembers a session
+    by, far better than a generated id."""
+    p = Path(transcript_path)
+    if not p.exists():
+        return ""
+    try:
+        with open(p, "r", errors="ignore") as f:
+            for _ in range(400):                 # bounded: never scan a huge file
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line or '"user"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("type") != "user":
+                    continue
+                content = (rec.get("message") or {}).get("content")
+                text = ""
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    text = " ".join(b.get("text", "") for b in content
+                                    if isinstance(b, dict) and b.get("type") == "text")
+                text = " ".join(text.split())
+                # Skip machinery and slash commands: they say nothing about the work
+                if (not text or text.startswith("/") or text.startswith("<")
+                        or len(text) < 12):
+                    continue
+                return text[:max_chars] + ("…" if len(text) > max_chars else "")
+    except Exception:
+        pass
+    return ""
 
 
 def _ev(kind: str, row: dict, detail: str) -> dict:
