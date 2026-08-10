@@ -524,6 +524,35 @@ Voice and chat on your phone, driving your live session. See `mobile/`:
 - **Vapi true call** (real-time): [mobile/vapi/](mobile/vapi/)
 - Notifications-only baseline (Claude app + Remote Control): [MOBILE.md](MOBILE.md)
 
+## Staying current
+
+voicebridge tells you when a newer version is published: one line in the status
+line with the exact command for your install. It asks GitHub at most once every
+six hours, caches the answer, times out after two seconds, and says nothing when
+you are already current or when it cannot reach the network. Opt out entirely
+with `VB_NO_UPDATE_CHECK=1` (it also honours Claude Code's `DISABLE_AUTOUPDATER`).
+
+**If you installed the clone:**
+
+    vb update          # pulls, refreshes the slash commands, restarts voice
+
+**If you installed the plugin**, the files live in Claude Code's cache and
+cannot update themselves, so it is three commands:
+
+    /plugin marketplace update voicebridge
+    /plugin install voicebridge@voicebridge
+    /reload-plugins
+
+**Plugin users: turn auto-update on, once.** Claude Code enables auto-update by
+default only for Anthropic's own marketplaces. voicebridge is third-party, so a
+plugin install never updates itself until you switch it on: `/plugin`,
+Marketplaces, voicebridge, Enable auto-update. This is the single biggest reason
+people end up weeks behind and hitting bugs that are already fixed.
+
+`vb version` and `vb doctor` both compare your version to the published one, and
+`vb doctor` reports staleness first, because every other check is meaningless if
+the code being checked is old.
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the full phased plan (STT input,

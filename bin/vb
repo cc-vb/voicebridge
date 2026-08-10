@@ -651,13 +651,15 @@ def main(argv) -> int:
             is_clone = (repo / ".git").is_dir()
             daemon_stale = (_td.VER.exists()
                             and _td.VER.read_text().strip() != _td._code_version())
-            flagged = (core.STATE_DIR / "update_available").exists()
+            # The flag this reads was never written by anything until #10:
+            # there was no version check in the codebase at all, so this whole
+            # branch was dead code and testers stayed weeks behind.
+            from vb import update as _up
+            said = _up.nudge()
             if is_clone and daemon_stale:
                 update_cmd = "update ready: /voice-off then /voice-on"
-            elif is_clone and flagged:
-                update_cmd = "update: run  vb update"
-            elif flagged:   # plugin install
-                update_cmd = "update: /plugin marketplace update voicebridge"
+            elif said:
+                update_cmd = said
         except Exception:
             pass
         seg = core.render_statusline(h, update_cmd=update_cmd)
@@ -1244,6 +1246,16 @@ def main(argv) -> int:
             print("This is a plugin install (version-pinned). Update with:")
             print("  /plugin marketplace update voicebridge")
             print("  /plugin install voicebridge@voicebridge")
+            print("  /reload-plugins")
+            try:
+                from vb import update as _up
+                info = _up.check_latest(force=True)
+                if info.get("behind"):
+                    print(f"\nYou are on {info['local']}; "
+                          f"{info['latest']} is published.")
+                print("\n" + _up.auto_update_hint())
+            except Exception:
+                pass
             return 0
         before = subprocess.run(["git", "-C", repo, "rev-parse", "--short",
                                  "HEAD"], capture_output=True, text=True).stdout.strip()
@@ -1271,7 +1283,17 @@ def main(argv) -> int:
             (cmds / src.name).write_text(body)
         from vb import talkd as _td
         _td.stop_daemon()
-        print(f"updated {before} -> {after}. Restart voice with /voice-on.")
+        # Report the VERSION, not just the commit: "updated 6eb1828 -> c728388"
+        # tells a tester nothing about whether they now have the fix they were
+        # promised. Also clears the update flag so the nudge stops immediately.
+        try:
+            from vb import update as _up
+            newv = _up.local_version()
+            _up.check_latest(force=True)
+            print(f"updated to {newv} ({before} -> {after}). "
+                  f"Restart voice with /voice-on.")
+        except Exception:
+            print(f"updated {before} -> {after}. Restart voice with /voice-on.")
         return 0
 
     elif cmd == "version":
@@ -1287,6 +1309,21 @@ def main(argv) -> int:
         head = subprocess.run(["git", "-C", repo, "rev-parse", "--short",
                                "HEAD"], capture_output=True, text=True).stdout.strip()
         print(f"voicebridge {v}" + (f" ({head})" if head else ""))
+        try:
+            from vb import update as _up
+            info = _up.check_latest()
+            if info.get("latest") and info.get("behind"):
+                print(f"  latest published: {info['latest']}  ->  "
+                      f"{_up.how_to_update()}")
+            elif info.get("latest"):
+                print("  up to date.")
+            else:
+                print("  (couldn't reach GitHub to check for a newer one)")
+            hint = _up.auto_update_hint()
+            if hint:
+                print("  " + hint)
+        except Exception:
+            pass
         return 0
 
     elif cmd == "doctor":
@@ -1301,6 +1338,25 @@ def main(argv) -> int:
                   ("" if ok else f"  -> {hint}"))
 
         print("voicebridge doctor")
+        # Staleness first: every other result is meaningless if the code being
+        # checked is weeks old, which is how testers reported bugs we had
+        # already fixed (#10).
+        try:
+            from vb import update as _up
+            _info = _up.check_latest(force=True)
+            if _info.get("latest") and _info.get("behind"):
+                check(f"version ({_info['local']})", False,
+                      f"{_info['latest']} is out: {_up.how_to_update()}")
+            elif _info.get("latest"):
+                check(f"version ({_info['local']}, current)", True)
+            else:
+                check(f"version ({_info['local']})", True,
+                      "couldn't reach GitHub to compare")
+            _hint = _up.auto_update_hint()
+            if _hint:
+                print("        " + _hint)
+        except Exception:
+            pass
         deps = _stt.have_deps()
         check("whisper-cli", bool(deps["whisper"]), "brew install whisper-cpp")
         check("sox / rec", bool(deps["rec"]), "brew install sox")

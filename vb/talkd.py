@@ -1459,6 +1459,13 @@ def run_daemon() -> int:
         VER.write_text(_code_version())    # record the code this daemon runs
     except Exception:
         pass
+    # Ask once, in the background, whether this copy is current. Cached for
+    # hours, so the status line can read the answer for free (#10).
+    try:
+        from . import update as _update
+        _update.check_in_background()
+    except Exception:
+        pass
     # Warm the Kokoro server in the background so the FIRST reply doesn't pay
     # the model-load wait (and never silently drops to the robotic voice).
     if core.get_engine() == "kokoro":
