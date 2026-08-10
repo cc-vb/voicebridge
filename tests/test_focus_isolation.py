@@ -112,9 +112,22 @@ def test_paste_delivered_to_the_bound_app(monkeypatch, spy):
     assert any("key code 36" in s for s in spy.scripts)   # Return pressed
 
 
-def test_unbound_paste_still_works(monkeypatch, spy):
-    monkeypatch.setattr(inject, "frontmost_app", lambda: "Google Chrome")
+def test_unbound_paste_reaches_a_terminal_you_are_looking_at(monkeypatch, spy):
+    """`vb talk` while sitting in the terminal has no bound app, and must keep
+    working."""
+    monkeypatch.setattr(inject, "frontmost_app", lambda: "Ghostty")
     assert inject.paste_text("hello", send=True) is True
+
+
+def test_unbound_paste_into_anything_else_is_refused(monkeypatch, spy):
+    """Issue #8: with nothing named the guard was skipped entirely, so a prompt
+    typed into Chrome, or Slack, and pressed Return. Being unbound is the normal
+    state of a phone-only session that never ran /voice-on."""
+    monkeypatch.setattr(inject, "frontmost_app", lambda: "Google Chrome")
+    assert inject.paste_text("hello", send=True) is False
+    assert spy.scripts == []
+    monkeypatch.setattr(inject, "frontmost_app", lambda: "Slack")
+    assert inject.paste_text("hello", send=True) is False
 
 
 def test_empty_text_is_never_pasted(monkeypatch, spy):

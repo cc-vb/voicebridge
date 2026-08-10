@@ -202,7 +202,22 @@ def run_daemon() -> int:
                 _send_text(chat, f"heard: {text}")
             prev = core.last_assistant_text(tp)
             core.log(f"remote you: {text}")
-            inject.paste_text(text, send=True)
+            # Named target, always. Unqualified, this pasted into whatever had
+            # the cursor: a phone prompt could type into Slack and press Return.
+            _app, _tty = "", ""
+            try:
+                from pathlib import Path as _P
+                from .talkd import bound_app as _ba, tty_for_sid as _tfs
+                # A transcript is named for its session, so the tty of the tab
+                # to type into is one lookup away.
+                _app, _tty = _ba(), _tfs(_P(tp).stem)
+            except Exception:
+                pass
+            if not inject.paste_text(text, send=True, expect_app=_app,
+                                     target_tty=_tty):
+                _send_text(chat, "I couldn't reach the session to type that, "
+                                 "so nothing was sent.")
+                continue
 
             # Wait for the reply; keep the phone informed on long turns.
             t0 = time.time()

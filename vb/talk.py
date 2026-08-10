@@ -113,7 +113,17 @@ def run(transcript: str = "") -> int:
                 break
 
             print(f"you: {text}")
-            inject.paste_text(text, send=True)   # fire and forget
+            # Named target: unqualified this typed into the frontmost window,
+            # whatever it was, and pressed Return.
+            _app = ""
+            try:
+                from .talkd import bound_app as _ba
+                _app = _ba()
+            except Exception:
+                _app = ""
+            if not inject.paste_text(text, send=True, expect_app=_app):
+                print("  (couldn't reach the session; nothing was sent)")
+                continue
             _beep(THINK)
             time.sleep(1.5)
             if not rebound:

@@ -179,8 +179,12 @@ class ClaudeCodeAdapter(TargetAdapter):
 
     def interrupt(self, sid: str) -> bool:
         from . import inject
-        inject.press_escape()
-        return True
+        from .talkd import bound_app, tty_for_sid
+        # Named target: an unguarded Escape went to whatever had the cursor,
+        # which closes somebody's dialog and leaves the agent you meant to stop
+        # still running while you believe you stopped it.
+        return inject.press_escape(expect_app=bound_app(),
+                                   target_tty=tty_for_sid(sid))
 
     def approve(self, sid: str) -> bool:
         from . import inject
@@ -189,8 +193,9 @@ class ClaudeCodeAdapter(TargetAdapter):
 
     def decline(self, sid: str) -> bool:
         from . import inject
-        inject.press_escape()
-        return True
+        from .talkd import bound_app, tty_for_sid
+        return inject.press_escape(expect_app=bound_app(),
+                                   target_tty=tty_for_sid(sid))
 
     def cycle_mode(self, sid: str, n: int = 1) -> bool:
         from . import inject

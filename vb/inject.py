@@ -39,6 +39,30 @@ def _osa(script: str) -> None:
         core.log(f"osascript failed: {e}")
 
 
+# The apps a prompt may land in when nothing was named. Everything else, and
+# especially a browser or a chat window, is refused: that is how speech ends up
+# in a DM.
+_TERMINALS = ("terminal", "iterm", "ghostty", "alacritty", "kitty", "wezterm",
+              "warp", "hyper", "tabby", "rio")
+
+
+def _is_terminal(app: str) -> bool:
+    low = (app or "").strip().casefold()
+    return bool(low) and any(t in low for t in _TERMINALS)
+
+
+def _osa_out(script: str, timeout: float = 8.0) -> str:
+    """Run AppleScript and return its output. _osa discards it, which is fine
+    for keystrokes and useless for anything that has to be CHECKED."""
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True,
+                           text=True, timeout=timeout)
+        return (r.stdout or "").strip() if r.returncode == 0 else ""
+    except Exception as e:
+        core.log(f"osascript failed: {e}")
+        return ""
+
+
 def _activate_app(name: str) -> bool:
     """Bring a specific app (by its process name, what frontmost_app returns)
     to the front, so a keystroke/paste lands in IT and not in whatever the
@@ -59,15 +83,83 @@ def _activate_app(name: str) -> bool:
         return False
 
 
-def press_escape() -> None:
-    """Send Escape to the focused app, Claude Code's own key for stopping
-    the current generation. This is the REAL interrupt: not just muting the
-    voice, but telling Claude to stop thinking, exactly what Esc does when
-    you press it in the TUI yourself."""
+def press_escape(expect_app: str = "", target_tty: str = "") -> bool:
+    """Send Escape to a NAMED target: Claude Code's own key for stopping.
+
+    This used to be unguarded, so it went to whatever had the cursor. Escape in
+    the wrong place is not harmless: it closes dialogs, discards what somebody
+    was typing, and leaves the agent you meant to stop still running while you
+    believe you stopped it.
+
+    Returns whether it was delivered, so a caller can say "I couldn't stop it"
+    instead of reporting success it did not have."""
     if not oslayer.IS_MAC:
         oslayer.press_escape()
-        return
+        return True
+    target = (expect_app or "").strip()
+    tty = (target_tty or "").strip()
+    if not target and not tty:
+        core.log("escape: refusing, no target app or tty was given")
+        return False
+    front = frontmost_app()
+    restore = ""
+    if tty:
+        # Raise the exact tab first, so Escape cannot land in another window of
+        # the same app. Checking the app name alone let the wrong tab pass.
+        if not _select_tty(tty):
+            core.log(f"escape: refusing, couldn't select tty {tty}")
+            return False
+        if front and target and front.strip().casefold() != target.casefold():
+            restore = front
+    elif front and front.strip().casefold() != target.casefold():
+        if not _activate_app(target):
+            core.log(f"escape: couldn't front {target} (was {front}); refusing")
+            return False
+        restore = front
+        time.sleep(0.18)
     _osa('tell application "System Events" to key code 53')
+    if restore:
+        time.sleep(0.12)
+        _activate_app(restore)
+    return True
+
+
+def _select_tty(tty: str) -> bool:
+    """Bring the terminal tab on `tty` to the front. True if it was found."""
+    esc = tty.replace('"', '\\"')
+    out = _osa_out(f'''
+tell application "Terminal"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if tty of t is "{esc}" then
+        set selected tab of w to t
+        set index of w to 1
+        activate
+        return "ok"
+      end if
+    end repeat
+  end repeat
+end tell
+return "no"''')
+    if "ok" in (out or ""):
+        return True
+    out = _osa_out(f'''
+tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with sn in sessions of t
+        if tty of sn is "{esc}" then
+          select t
+          select w
+          activate
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end repeat
+end tell
+return "no"''')
+    return "ok" in (out or "")
 
 
 def press_shift_tab(expect_app: str = "") -> bool:
@@ -164,7 +256,7 @@ def _claude_terminal_tty() -> str:
         return ""
 
 
-def _terminal_inject(text: str, tty: str) -> bool:
+def _terminal_inject(text: str, tty: str, submit: bool = True) -> bool:
     """Type text (and submit) into the Terminal tab on `tty` WITHOUT bringing
     Terminal to the front, so a phone prompt lands in the session while the
     user stays on YouTube/Slack, no focus flicker at all. `do script ... in
@@ -180,9 +272,8 @@ def _terminal_inject(text: str, tty: str) -> bool:
         'repeat with t in tabs of w\n'
         f'if tty of t is "{tty}" then\n'
         f'do script "{esc}" in t\n'
-        'delay 0.35\n'
-        'do script "" in t\n'
-        'return "ok"\n'
+        + ('delay 0.35\ndo script "" in t\n' if submit else '')
+        + 'return "ok"\n'
         'end if\n'
         'end repeat\n'
         'end repeat\n'
@@ -211,19 +302,48 @@ def paste_text(text: str, send: bool = False, expect_app: str = "",
         return oslayer.paste_text(text, send)   # real success, not blind True
     front = frontmost_app()
     target = (expect_app or "").strip()
+    # With no app and no tty there was no guard at all, only the docstring:
+    # every caller that had not been given a target pasted into whatever had the
+    # cursor and pressed Return. Two callers were in exactly that state.
+    #
+    # A flat refusal would break the legitimate case, which is `vb talk` while
+    # you are sitting in the terminal. So the rule is narrower: with nothing
+    # named, deliver only into a TERMINAL, never into a browser or a chat app.
+    # If a tty can be worked out for the tab you are looking at, use it, because
+    # that is exact rather than "whatever is in front".
+    if not target and not (target_tty or "").strip():
+        if not _is_terminal(front):
+            core.log(f"paste: refusing, nothing was named and {front or 'that'} "
+                     f"is not a terminal")
+            return False
+        try:
+            from . import signals
+            target_tty = signals.frontmost_tty() or ""
+        except Exception:
+            target_tty = ""
+        core.log(f"paste: no target named, delivering to the focused terminal "
+                 f"{front}" + (f" ({target_tty})" if target_tty else ""))
     # FOCUS-FREE fast path: if the bound app is Terminal, write straight into
     # the session's tab by tty, no activation, no flicker, and it can't hit
     # the wrong window. Only when submitting (the phone always submits).
     # target_tty (the SELECTED session's tty, from OWNERS) is preferred so a
     # prompt lands in THE RIGHT session's tab when several are open; else fall
     # back to "the one claude tab" heuristic.
-    if send and target.casefold() == "terminal":
-        tty = (target_tty or "").strip() or _claude_terminal_tty()
-        if tty and _terminal_inject(text, tty):
+    tty = (target_tty or "").strip()
+    if tty or (send and target.casefold() == "terminal"):
+        tty = tty or _claude_terminal_tty()
+        if tty and _terminal_inject(text, tty, submit=send):
             core.log(f"focus-free inject -> Terminal {tty}"
                      + (" (session-targeted)" if target_tty else ""))
             return True
-        # else fall through to the activate-restore path below
+        # A named tty that could not be written to must NOT become a blind
+        # paste into the frontmost window: the whole point of knowing the tty is
+        # that a second tab of the same app is a different session. The guard
+        # checked the app NAME, so the wrong tab passed it.
+        if (target_tty or "").strip():
+            core.log(f"paste: refusing, couldn't reach tty {target_tty} and "
+                     f"will not type into whatever is in front instead")
+            return False
     restore = ""
     if target and front and front.strip().casefold() != target.casefold():
         # Deliver to the BOUND terminal even though the user is in another app
