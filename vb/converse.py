@@ -20,6 +20,7 @@ Design:
 import os
 import shutil
 import subprocess
+import threading
 import time
 
 from . import core, stt
@@ -129,17 +130,40 @@ def run(project_dir: str = "") -> int:
                blocking=True)
 
     wav = str(core.STATE_DIR / "rec.wav")
+    # Warm the transcriber in the background. Without this the FIRST utterance
+    # of every agent-mode session pays a cold model and backend load, which was
+    # measured at 1.7 to 2.1 seconds, on top of everything else. The daemon path
+    # has always done this; this path never did.
+    threading.Thread(target=stt.ensure_whisper_server, daemon=True).start()
+    # Imported here, not at the top: talkd imports from this module, so a
+    # module-level import would be circular.
+    from . import talkd
     first = True
     empties = 0
     try:
         while True:
             _beep(START_TINK)
             time.sleep(0.35)  # let the Tink finish so it's not your first word
-            ok = stt.record(wav, silence_stop=2.0)
+            # Use the same pause the rest of voicebridge uses, which the user
+            # can tune with `vb pause`, rather than a hardcoded two seconds.
+            # Two seconds is paid on EVERY turn, and the daemon path settled on
+            # one second plus a lexical window years ago.
+            ok = stt.record(wav, silence_stop=talkd.get_pause())
             _beep(STOP_POP)
             if not ok:
                 continue
             text = stt.transcribe(wav)
+            if text:
+                # "and", "so", "but" mean somebody is mid-thought. The daemon
+                # path has judged this from the words for a long time; here a
+                # fixed timer cut people off mid-sentence or made everyone wait
+                # for the slowest case.
+                extra = talkd.followup_window(text)
+                if extra >= 2.0 and stt.record(wav, silence_stop=extra,
+                                               max_secs=12):
+                    more = stt.transcribe(wav)
+                    if more:
+                        text = (text.rstrip() + " " + more.lstrip()).strip()
             if not text:
                 empties += 1
                 if empties >= 3:
