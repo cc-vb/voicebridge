@@ -14,7 +14,7 @@ tail -f ~/.voicebridge/log
 
 ```
 python3 - <<'PY'
-import sys; sys.path.insert(0,"/Users/krishojha/voicebridge")
+import os, sys; sys.path.insert(0, os.path.expanduser("~/voicebridge"))
 from vb import core, stt, talkd, sessions, adapters, inject, oslayer
 print("imports OK")
 print("wake  :", talkd.wake_match("hey cloud fix it")[0], talkd.wake_match("the weather is cloudy")[0])
