@@ -21,7 +21,39 @@ MODEL = os.path.join(HOME, ".voicebridge", "models", "kokoro-v1.0.onnx")
 VOICES = os.path.join(HOME, ".voicebridge", "models", "voices-v1.0.bin")
 PORT = int(os.environ.get("VB_TTS_PORT", "8798"))
 
-kokoro = Kokoro(MODEL, VOICES)
+def _load():
+    """Kokoro on the fastest backend this Mac actually has.
+
+    kokoro_onnx defaults to CPU, which was costing about a third of every
+    synthesis: measured here at 1.04s warm on CPU against 0.68s on CoreML for
+    the same sentence, and time-to-first-audio is the whole felt latency of a
+    spoken reply. CoreML takes longer to load (3.3s against 0.8s) but that
+    happens once, in the background, at startup.
+
+    It falls back rather than failing: CoreML claims only about a thousand of
+    the model's 2476 nodes, and it has been reported broken on some macOS
+    versions. A slower voice is much better than no voice.
+    """
+    want = os.environ.get("ONNX_PROVIDER", "")
+    if not want:
+        try:
+            import onnxruntime as rt
+            if "CoreMLExecutionProvider" in rt.get_available_providers():
+                want = "CoreMLExecutionProvider"
+        except Exception:
+            want = ""
+    if want:
+        os.environ["ONNX_PROVIDER"] = want
+        try:
+            return Kokoro(MODEL, VOICES)
+        except Exception as e:
+            print(f"kokoro: {want} failed ({str(e)[:80]}), using CPU",
+                  flush=True)
+            os.environ["ONNX_PROVIDER"] = "CPUExecutionProvider"
+    return Kokoro(MODEL, VOICES)
+
+
+kokoro = _load()
 
 
 class H(BaseHTTPRequestHandler):
