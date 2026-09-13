@@ -90,9 +90,43 @@ def _first_prompt(path: str, words: int = 4) -> str:
     return ""
 
 
+# How far back to look for the last few records. A JSONL turn is rarely more
+# than a few KB, so this holds far more than the twelve asked for, and a file
+# smaller than the window is simply read whole.
+_TAIL_BYTES = 256 * 1024
+
+
 def _last_records(path: str, n: int = 12) -> list:
+    """The last few records, WITHOUT reading the whole file.
+
+    It used to be `read_text().splitlines()[-n:]`, which to get twelve records
+    read the entire transcript into one string and then built a list holding
+    every line in it as a separate object. On this machine the biggest
+    transcript is 83MB and roster() runs over every recent one, so a single
+    fleet read allocated about 280MB and did it again every few seconds.
+
+    That memory was never handed back. macOS malloc keeps large freed blocks,
+    so RSS climbed and stayed: vmmap showed MALLOC_LARGE (empty) holding 1.8GB
+    resident with 1.5GB swapped out, on a 16GB laptop. tracemalloc showed
+    nothing, because by then Python had genuinely freed it all.
+
+    The cost of that was not really the memory. The machine is fanless, so a
+    swapping, busy laptop throttles, and the local model's generation rate
+    falls by nearly half. Reading twelve lines badly was making the model
+    slow."""
     try:
-        lines = Path(path).read_text(errors="ignore").splitlines()[-n:]
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > _TAIL_BYTES:
+                f.seek(size - _TAIL_BYTES)
+                blob = f.read()
+                # The first line in the window is almost certainly cut in
+                # half, and half a JSON record parses as nothing.
+                nl = blob.find(b"\n")
+                blob = blob[nl + 1:] if nl >= 0 else b""
+            else:
+                blob = f.read()
+        lines = blob.decode("utf-8", "ignore").splitlines()[-n:]
     except Exception:
         return []
     out = []
