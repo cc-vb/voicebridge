@@ -119,10 +119,23 @@ def mic_busy() -> bool:
 
 
 def user_speaking() -> bool:
-    """True while the person is mid-utterance on the phone call."""
+    """True while the person is mid-utterance, so we never talk over them.
+
+    Two faults lived here and both failed silently, which is the worst way for
+    a gate like this to break: it reports "nobody is talking" and we speak over
+    someone. `core.get_hud` has never existed (it is `read_hud`), so the whole
+    body was swallowed by the except and this was permanently False. And the
+    phase test only accepted `listening`, which is the mic-open-but-quiet state,
+    so the one phase that literally means "we can hear them right now" was the
+    one it rejected.
+    """
     try:
-        hud = core.get_hud()
-        return str(hud.get("phase", "")) == "listening" and hud.get("level", 0) > 0.02
+        hud = core.read_hud()
+        phase = str(hud.get("phase", ""))
+        if phase == "hearing":
+            return True                       # loud enough to have crossed the bar
+        # Below the `hearing` threshold but not silent: they have just started.
+        return phase == "listening" and float(hud.get("level", 0)) > 0.02
     except Exception:
         return False
 
