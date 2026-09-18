@@ -123,6 +123,12 @@ final class Gesture {
     func closeIfHeld(reason: String) {
         if isHeld { up(reason: reason) }
     }
+
+    /// The hold we believe is open, in milliseconds, or nil if none.
+    var heldForMs: Double? {
+        guard let d = downAt else { return nil }
+        return Date().timeIntervalSince(d) * 1000
+    }
 }
 
 let gesture = Gesture()
@@ -228,6 +234,30 @@ Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
     if !CGEvent.tapIsEnabled(tap: t) {
         gesture.closeIfHeld(reason: "UP")
         CGEvent.tapEnable(tap: t, enable: true)
+    }
+}
+
+// A tap that is disabled mid-hold never delivers the key-up, so the utterance
+// would run forever with the microphone open. Re-arming the tap does not
+// synthesise the release we missed, so nothing above catches this.
+//
+// `CGEventSource.keyState` is the reliable reading here. Its sibling
+// `flagsState` is a snapshot of the last event's flags and goes stale, which
+// is why we ask about the key rather than the modifier.
+let HARD_CAP_MS: Double = 120_000
+
+Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+    guard let held = gesture.heldForMs else { return }
+
+    if held > HARD_CAP_MS {
+        gesture.closeIfHeld(reason: "UP")     // nobody speaks for two minutes
+        return
+    }
+    let stillDown = CGEventSource.keyState(.combinedSessionState,
+                                           key: CGKeyCode(opts.keyCode))
+    if !stillDown {
+        // We believe it is held and the hardware disagrees. Trust the hardware.
+        gesture.closeIfHeld(reason: "UP")
     }
 }
 

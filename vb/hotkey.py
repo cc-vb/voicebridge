@@ -12,6 +12,13 @@ It speaks a one-line-per-gesture protocol on stdout:
     UP <held_ms>      key up: stop and transcribe
     CANCEL <held_ms>  another key joined, or the press was too short to be
                       speech. Discard whatever was warmed.
+
+                      Note the second case is NOT invisible to the user. A
+                      release that short is a clean tap, which is exactly the
+                      gesture macOS acts on, so with the Globe key set to Show
+                      Emoji (the common default) an aborted press opens the
+                      emoji palette. We are listen-only and cannot prevent
+                      that. The floor decides only whether WE transcribe.
     LOCKED            the screen locked mid-hold
     BYE               exiting, any open hold already closed
 
@@ -57,8 +64,14 @@ def build(force: bool = False) -> str:
     return ""
 
 
-def listen(key: str = "fn", min_hold_ms: int = 120):
+def listen(key: str = "fn", min_hold_ms: int = 0):
     """Start the listener. Returns a Popen whose stdout yields the protocol
+
+    min_hold_ms defaults to 0, i.e. no mis-press floor. A very short hold
+    transcribes to nothing and inserts nothing, which is genuinely silent,
+    whereas a floor buys nothing (the OS has already acted on the tap) and
+    costs us a real utterance whenever someone speaks faster than the
+    threshold. Raise it only with data.
     above, or None. The caller owns the process and MUST terminate it; the
     listener closes any open hold on SIGTERM so we can never be left believing
     the key is still down."""
