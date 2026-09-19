@@ -274,5 +274,66 @@ for sig in [SIGINT, SIGTERM, SIGHUP] {
     signalSources.append(src)
 }
 
+// Prove the tap can actually RECEIVE, not merely that it was created. The two
+// are different and the difference is invisible: without Accessibility for THIS
+// process, tapCreate succeeds and then nothing ever arrives. That is the whole
+// failure mode of running from launchd, where the process is no longer the
+// terminal the permission was granted to.
+//
+// A synthetic F16 (unmapped on a stock Mac, so harmless) posted to ourselves
+// settles it in a few milliseconds.
+var sawSelfTest = false
+let probeTap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
+                                 options: .listenOnly,
+                                 eventsOfInterest: CGEventMask(1 << CGEventType.keyDown.rawValue),
+                                 callback: { _, _, ev, _ in
+    if ev.getIntegerValueField(.keyboardEventKeycode) == 106 { sawSelfTest = true }
+    return Unmanaged.passUnretained(ev)
+}, userInfo: nil)
+if let pt = probeTap {
+    CFRunLoopAddSource(CFRunLoopGetCurrent(),
+                       CFMachPortCreateRunLoopSource(kCFAllocatorDefault, pt, 0),
+                       .commonModes)
+    CGEvent.tapEnable(tap: pt, enable: true)
+    let src = CGEventSource(stateID: .hidSystemState)
+    CGEvent(keyboardEventSource: src, virtualKey: 106, keyDown: true)?.post(tap: .cghidEventTap)
+    CGEvent(keyboardEventSource: src, virtualKey: 106, keyDown: false)?.post(tap: .cghidEventTap)
+    CFRunLoopRunInMode(.defaultMode, 0.4, false)
+    CGEvent.tapEnable(tap: pt, enable: false)
+}
+// AXIsProcessTrusted is the one that decides whether HARDWARE events arrive.
+// The synthetic probe above cannot tell you: a process can always see events
+// it posted itself, so it proves the tap is alive and nothing more.
+let trusted = AXIsProcessTrusted()
+FileHandle.standardError.write(
+    "vb-hotkey: accessibility trusted = \(trusted)\n".data(using: .utf8)!)
+if !trusted {
+    FileHandle.standardError.write("""
+
+    Hardware key presses will NOT reach this process.
+
+    macOS grants Accessibility per application, and when this runs at login it
+    is not the terminal you granted. Add the thing that starts it:
+      System Settings > Privacy & Security > Accessibility
+      +  and add:  /usr/bin/env     (or your python3)
+
+    A grant is only honoured by a NEW process, so restart it afterwards:
+      vb always off && vb always on
+
+    """.data(using: .utf8)!)
+}
+if !sawSelfTest {
+    FileHandle.standardError.write("""
+    vb-hotkey: the event tap was created but receives NOTHING.
+
+    macOS grants Accessibility per application, and this process is not the
+    terminal you granted it to. Add the program that STARTS it:
+      System Settings > Privacy & Security > Accessibility
+
+    A fresh grant is only honoured for a NEW process, so restart after adding.
+
+    """.data(using: .utf8)!)
+}
+
 emit("READY \(opts.keyName)")
 CFRunLoopRun()

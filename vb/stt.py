@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from . import core
@@ -17,6 +18,49 @@ MODEL_DIR = core.STATE_DIR / "models"
 # English-only models are more accurate for English; the multilingual model
 # handles Hindi/Hinglish and everything else.
 _EN_MODELS = ["ggml-small.en.bin", "ggml-base.en.bin"]
+# Hindi mixed with English needs a MULTILINGUAL model. The .en models are not
+# merely worse at it, they cannot represent it: asked for English they render
+# Hindi speech as an English translation, so you say one sentence and a
+# different one appears.
+# turbo FIRST, and this reverses an earlier decision that was measured on the
+# wrong thing. small won on synthesised speech; on Krish's actual voice, same
+# sentence, the gap is not close:
+#
+#   said  "ab ek asli Hinglish line bol ke dekho, mila jula, English words
+#          ke saath"
+#   small  ab aslee english laeen bolke deko mila jula english vrts ke saath
+#   turbo  ab asali english line bol ke dekho mila jula english words ke saath
+#
+# small mangles both halves ("vrts" for "words", "laeen" for "line"); turbo
+# gets the Hindi AND keeps the English words as English. It costs about 2s
+# more per utterance, which is worth it for a transcript you do not have to
+# repair by hand.
+#
+# The lesson worth keeping: TTS audio is not a proxy for a real voice, and
+# every conclusion drawn from it here needed re-testing on a real recording.
+_ML_MODELS = ["ggml-large-v3-turbo.bin", "ggml-small.bin", "ggml-base.bin"]
+
+# Whisper has no token for Hindi written in English letters, so no language
+# flag can ask for it. What it does have is a prompt, which conditions the
+# style of what follows, and a prompt written in the script you want is enough
+# to pull the output into that script. Measured 3 times out of 3 on this
+# machine, with a prompt sharing no words with the test sentences.
+#
+# Deliberately written in the register it is steering: casual work Hinglish,
+# Latin letters, English technical words left as English. That last part is
+# what stops "deployment" coming back as a transliterated Devanagari spelling.
+# Density, not length, is what makes this work. The previous prompt put this
+# after a paragraph of English coding vocabulary, so only a quarter of it was
+# Hinglish and the steer lost to the acoustic prior. Pure romanized Hinglish,
+# with the coding words woven in rather than bolted on in English.
+_HINGLISH_STEER = (
+    "haan bhai main abhi us feature pe kaam kar raha hoon. thoda sa refactor "
+    "karna padega phir main PR bhej deta hoon. kal meeting mein discuss kar "
+    "lenge tab tak tum review kar lena. arey yaar ye wala test fail ho raha "
+    "hai, mujhe samajh nahi aa raha kyun. tum zara dekh lo aur batao kya "
+    "karna chahiye. maine kal raat ko hi wo change push kar diya tha, branch "
+    "pe rebase bhi kar diya hai."
+)
 _MULTI_MODELS = ["ggml-small.bin", "ggml-base.bin"]
 MODEL_URL = (
     "https://huggingface.co/ggerganov/whisper.cpp/"
@@ -59,13 +103,61 @@ def whisper_prompt() -> str:
     except Exception:
         pass
     p = (_BASE_PROMPT + " " + extra).strip() if extra else _BASE_PROMPT
+    # The Hinglish steer is deliberately NOT applied, and this is a retraction.
+    #
+    # The idea was sound and it worked on synthetic speech: a prompt written in
+    # romanized Hinglish pulls the output into Latin script, measured 3 times
+    # out of 3. On the user's own voice it does the opposite of help. Same
+    # audio, same model, one word spoken:
+    #
+    #     -l auto, no steer  ->  "English"
+    #     -l auto, + steer   ->  "hing lish."
+    #
+    # It splits words and mangles them, because it biases the decoder toward
+    # Hindi phonetics for audio that is not Hindi. Script control is worth
+    # nothing if the words underneath are wrong, and a change that helps on
+    # generated speech while hurting on real speech is a change that was
+    # measured on the wrong thing.
+    #
+    # Script belongs to the MODEL, not to a prompt. See the plan: a natively
+    # romanizing checkpoint is the real fix.
+    # No Hinglish steer, and this is the second retraction of it.
+    #
+    # A steer weak enough to leave English alone let Devanagari through. A
+    # steer strong enough to stop the leaking turned spoken English into
+    # Hindi: he said "are you able to understand everything now and rebase
+    # this branch" and got "iss branj ko rebase kar do aur fit test chala
+    # dena". There is no setting of one static prompt that serves both, because
+    # the prompt applies to an utterance before anyone knows what language it
+    # was.
+    #
+    # So the script is imposed afterwards instead of asked for. See vb/roman.py.
     return p[:800]   # whisper caps ~224 tokens; stay well under
 
 
+def language() -> str:
+    """What the user asked for: "english" or "hinglish"."""
+    try:
+        want = (core.STATE_DIR / "lang").read_text().strip().lower()
+    except Exception:
+        return "english"
+    return "hinglish" if want.startswith("hing") else "english"
+
+
 def stt_lang_mode() -> "tuple":
-    """(model_path, whisper -l arg). English-only for now: the English model
-    is the most accurate for English and avoids mis-detecting English speech
-    as another language. (Multilingual support is parked; see git history.)"""
+    """(model_path, whisper -l arg).
+
+    English stays the default and stays on the .en model, which is the most
+    accurate for English and cannot mis-detect English as something else.
+
+    Hinglish needs the opposite of both. It needs the multilingual model,
+    because the .en models translate Hindi into English rather than writing it
+    down. And it needs `auto` rather than `hi`, because `hi` produces
+    Devanagari, which is unusable in a terminal or an editor. Neither flag can
+    ask for Hindi-in-English-letters, because Whisper has no such language;
+    the prompt does that part."""
+    if language() == "hinglish":
+        return _best_model(_ML_MODELS), "auto"
     return _best_model(_EN_MODELS), "en"
 
 
@@ -121,12 +213,59 @@ def whisper_up() -> bool:
         return False
 
 
+def _server_matches() -> bool:
+    """Is the server that is listening the one we actually want?
+
+    The model and the -l flag are baked in when whisper-server launches, and
+    nothing in the per-request payload can override them. So a server started
+    weeks ago keeps answering with whatever it was started with.
+
+    This check exists because it did exactly that: a server launched on 21 Aug
+    with ggml-small.en and -l en was still serving a month later, while the
+    language had since been switched to Hinglish. `vb lang` had become a no-op
+    on the warm path, every utterance went to an English-only 244M model, and
+    nothing anywhere said so. The Hinglish it produced was that model
+    phonetically approximating a language it cannot represent."""
+    want_model, want_lang = stt_lang_mode()
+    try:
+        pid = int((core.STATE_DIR / "stt.pid").read_text().strip())
+        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return False
+    return want_model.name in cmd and f"-l {want_lang}" in cmd
+
+
+def _stop_whisper_server() -> None:
+    """Stop the one we started, and anything else holding the port."""
+    try:
+        pid = int((core.STATE_DIR / "stt.pid").read_text().strip())
+        os.kill(pid, 15)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["pkill", "-f", f"whisper-server.*--port {WHISPER_PORT}"],
+                       capture_output=True, timeout=10)
+    except Exception:
+        pass
+    for _ in range(20):
+        if not whisper_up():
+            return
+        time.sleep(0.15)
+
+
 def ensure_whisper_server(wait_s: float = 20.0) -> bool:
-    """Start a resident whisper-server if one isn't already up; wait for it.
+    """Start a resident whisper-server if the RIGHT one isn't already up.
+
     Returns False (and callers fall back to the CLI) if the binary or model
     is missing, so this is always safe to call."""
     if whisper_up():
-        return True
+        if _server_matches():
+            return True
+        # Wrong model or wrong language. Replacing it costs one reload; not
+        # replacing it costs every transcription until someone reboots.
+        core.log("whisper server is running the wrong model, restarting it")
+        _stop_whisper_server()
     srv = whisper_server_bin()
     model, lang = stt_lang_mode()
     if not srv or not model.exists():
@@ -225,6 +364,49 @@ def ensure_model() -> bool:
         return False
 
 
+# ---- who has the microphone -------------------------------------------------
+# The indicator must never be able to say "closed" while a mic is open, so it
+# does not ask us: it checks CoreAudio for whether a device is capturing, and
+# checks this lock for whether the open device is OURS. The kernel drops an
+# flock when the holder dies, including on SIGKILL, so an orphaned recorder
+# cannot leave a stale "we own the mic" claim behind. That is the whole reason
+# it is a lock and not a flag file.
+_MIC_LOCK = core.STATE_DIR / "mic.lock"
+
+
+def _hold_mic_lock_while(proc) -> None:
+    """Hold the lock for exactly as long as `proc` is recording.
+
+    Runs on a daemon thread so no caller has to change. Best-effort: failing to
+    take the lock must never stop a recording, it only means the indicator
+    falls back to hiding, which is the safe direction.
+    """
+    import fcntl
+    import threading
+
+    def keep():
+        try:
+            core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+            f = open(_MIC_LOCK, "w")
+        except Exception:
+            return
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except Exception:
+            f.close()          # somebody else is recording; not ours to claim
+            return
+        try:
+            while proc.poll() is None:
+                time.sleep(0.1)
+        finally:
+            try:
+                fcntl.flock(f, fcntl.LOCK_UN)
+            finally:
+                f.close()
+
+    threading.Thread(target=keep, daemon=True).start()
+
+
 def record(wav: str, max_secs: int = 30,
            silence_stop: float = 2.0) -> bool:
     """Record mic to a 16kHz mono wav, stopping after silence.
@@ -246,8 +428,10 @@ def record(wav: str, max_secs: int = 30,
         "norm", "-1",
     ]
     try:
-        subprocess.run(cmd, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        _hold_mic_lock_while(p)
+        p.wait()
         return os.path.exists(wav) and os.path.getsize(wav) > 1000
     except Exception as e:
         core.log(f"record failed: {e}")
@@ -273,10 +457,45 @@ def record_start(wav: str, max_secs: int = 30,
         "silence", "1", "0.05", "0.3%", "1", str(silence_stop), "1.5%",
     ]
     try:
-        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        _hold_mic_lock_while(p)
+        return p
     except Exception as e:
         core.log(f"record_start failed: {e}")
+        return None
+
+
+def record_hold(wav: str, max_secs: int = 120):
+    """Record until told to stop. For push-to-talk, where YOU are the boundary.
+
+    `record` and `record_start` both hand the boundaries to sox: `silence`
+    trims leading quiet and ends the take after a pause. That is right when
+    nobody is holding a key, and wrong here in two ways. Trimming the lead can
+    eat the first word, because you start speaking as you press. And stopping
+    on a pause cuts you off mid-thought every time you stop to think, while
+    still holding the key down to say you have not finished.
+
+    So: no silence effect at all. It records from the instant it starts until
+    the caller kills it, which is the moment you let go."""
+    rec = _find("rec")
+    if not rec:
+        core.log("record_hold: sox `rec` not found")
+        return None
+    cmd = [rec, "-q", "-c", "1", "-r", "16000", "-b", "16", wav,
+           "trim", "0", str(max_secs)]
+    try:
+        # sox's stderr is kept, not discarded. When a recording comes back
+        # empty, sox has almost always said why ("can't open input device",
+        # a permission refusal, a device that vanished), and throwing that
+        # away turns a one-line answer into an afternoon. The same mistake in
+        # the key listener is what made the Accessibility problem invisible.
+        errf = open(core.STATE_DIR / "rec.err", "w")
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=errf)
+        _hold_mic_lock_while(p)
+        return p
+    except Exception as e:
+        core.log(f"record_hold failed: {e}")
         return None
 
 
@@ -307,12 +526,107 @@ def live_level(wav: str, tail_ms: int = 200) -> float:
         return 0.0
 
 
+# Parakeet cannot write Devanagari, and for Hinglish that turns out to be a
+# feature rather than a limitation. Measured on this machine:
+#
+#   said     "is branch ko rebase kar do phir tests chala dena"
+#   whisper  इस ध्राँच को रिबेस कर दो फिर टेस्ट्स चला देना
+#   parakeet Is bronchku rebase kardu fair tests chaladena
+#
+# Whisper mangles every English technical word into Devanagari (टेस्ट्स for
+# "tests"), which is the failure the vendor we are chasing documents as its
+# own. Parakeet leaves them exactly as English because it has no other script
+# to put them in, and phonetically romanises the Hindi around them. For a
+# coding tool the English terms ARE the payload, so this trade is the right
+# way round. Its Hindi spelling is worse; its Hindi is still readable.
+_PARAKEET = MODEL_DIR / "ggml-parakeet-tdt-0.6b-v3-q8_0.bin"
+
+
+def parakeet_ready() -> bool:
+    return _PARAKEET.exists() and bool(_find("parakeet-cli"))
+
+
+def _parakeet(wav: str) -> str:
+    """Transcribe with Parakeet. Empty string if it cannot, so the caller
+    falls back rather than failing."""
+    exe = _find("parakeet-cli")
+    if not exe or not _PARAKEET.exists():
+        return ""
+    try:
+        r = subprocess.run([exe, "-m", str(_PARAKEET), "-f", wav, "-np"],
+                           capture_output=True, text=True, timeout=120)
+        return " ".join((r.stdout or "").split())
+    except Exception as e:
+        core.log(f"parakeet failed: {e}")
+        return ""
+
+
+def _parakeet_lost(text: str) -> bool:
+    """Did Parakeet fail because the sentence had no English in it?
+
+    It has no Hindi at all, which is a feature when you are speaking Hinglish:
+    it leaves the English technical words as English instead of burying them in
+    Devanagari. But given a sentence with NO English to anchor on, it spells
+    the Hindi phonetically and runs the words together:
+
+        "kya tumko sab kuch samajh aa raha hai"
+          -> "Kyatungko Sabkuch Samach Arahahe"
+
+    That signature is what this looks for. Real speech, English or Hinglish,
+    does not produce a run of very long tokens."""
+    words = [w for w in (text or "").split() if w.isalpha()]
+    if len(words) < 3:
+        return False
+    # Two signatures together, because either alone has false positives.
+    # Long tokens: it fuses syllables it cannot segment ("Arahahe").
+    mean_len = sum(len(w) for w in words) / len(words)
+    # Title Case on every word: with no language model for what it is hearing,
+    # it treats each fused blob as a proper noun. Ordinary speech, English or
+    # Hinglish, does not come back capitalised word by word.
+    capped = sum(1 for w in words[1:] if w[:1].isupper()) / max(1, len(words) - 1)
+    return mean_len >= 6.0 and capped >= 0.6
+
+
+def _romanise(text: str) -> str:
+    """Devanagari out, English letters in, when the user asked for Hinglish.
+
+    Here rather than in one caller, because every voice path in the product
+    goes through transcribe_ex: dictation, voice-on, agent mode, wake word,
+    the phone bridge and the remote relay. Putting it in dictate.py meant the
+    key got readable Hinglish and every other way of talking to the tool still
+    got Devanagari, which is the same product behaving two ways depending on
+    how you reached it."""
+    if not text or language() != "hinglish":
+        return text
+    try:
+        from . import roman
+        return roman.to_latin(text) if roman.has_devanagari(text) else text
+    except Exception:
+        return text        # never lose a transcript to the cosmetic step
+
+
 def transcribe(wav: str) -> str:
     """Run whisper.cpp on a wav and return cleaned text."""
     return transcribe_ex(wav)[0]
 
 
 def transcribe_ex(wav: str) -> "tuple[str, float]":
+    # Hinglish goes to Parakeet when it is available, for the reason above: it
+    # keeps the English technical words as English instead of burying them in
+    # Devanagari, and for a coding tool those words are the whole point.
+    # Parakeet on the ENGLISH path only.
+    #
+    # It is faster than whisper and more verbatim (whisper quietly substitutes
+    # plausible words and drops repetitions). But it has no Hindi at all, so on
+    # a mixed sentence it fuses the Hindi into blobs: "asli" came back as
+    # "Busley", "ke saath" as "kesaty". Turbo gets both halves right on the same
+    # audio, so Hinglish goes there instead and Parakeet keeps the job it is
+    # actually best at.
+    if language() != "hinglish" and parakeet_ready():
+        got = _parakeet(wav)
+        if got and not _parakeet_lost(got):
+            return got, 0.9
+
     """Transcribe and also return whisper's confidence (mean token
     probability, 0..1). Real directed speech scores ~0.7+; background
     chatter, mumble, and noise score low, which lets callers drop them."""
@@ -320,7 +634,7 @@ def transcribe_ex(wav: str) -> "tuple[str, float]":
     # CLI if it's not up or didn't answer, so behavior is identical otherwise.
     served = _transcribe_server(wav)
     if served is not None:
-        return served
+        return _romanise(served[0]), served[1]
     wb = whisper_bin()
     model, lang = stt_lang_mode()
     if not wb or not model.exists():
@@ -362,7 +676,7 @@ def transcribe_ex(wav: str) -> "tuple[str, float]":
             os.remove(jpath)
         except OSError:
             pass
-    return cleaned.strip(), conf
+    return _romanise(cleaned.strip()), conf
 
 
 def loudness(wav: str) -> float:

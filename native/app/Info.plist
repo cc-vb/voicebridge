@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Voicebridge Dictation</string>
+  <key>CFBundleDisplayName</key><string>Voicebridge Dictation</string>
+  <key>CFBundleIdentifier</key><string>com.voicebridge.dictation</string>
+  <key>CFBundleExecutable</key><string>VoicebridgeDictation</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <!-- No Dock icon and no menu bar: this is a key, not a window. -->
+  <key>LSUIElement</key><true/>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <!-- These strings ARE the permission dialog. macOS shows them verbatim, so
+       they have to answer "why does this want that" in one sentence. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>To hear what you say while you hold the dictation key.</string>
+  <key>NSInputMonitoringUsageDescription</key>
+  <string>To notice when you hold the dictation key.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>To type what you said into whichever app you were using.</string>
+</dict>
+</plist>

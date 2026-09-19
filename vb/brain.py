@@ -146,10 +146,29 @@ def start(wait_s: float = 0.0) -> bool:
     return up()
 
 
+# Why the last call came back empty, for a caller that wants to tell a
+# truncation apart from a refusal. Kept beside the call rather than returned,
+# because every caller expects a string and none of them should have to change
+# to get an honest one.
+last_stop = ""
+
+
 def _chat(messages: list, timeout: float, schema: dict = None,
           max_tokens: int = 200) -> str:
     """One call. Returns '' on any failure, which every caller treats as
-    'no answer, use the template'."""
+    'no answer, use the template'.
+
+    That conflation has one dangerous case. A reasoning-tuned model emits its
+    thinking BEFORE the schema-constrained answer, and the schema binds the
+    answer, not how long it thinks first. So a small max_tokens can be spent
+    entirely on reasoning, returning finish_reason 'length' with EMPTY content
+    -- which arrives here as '' and is read downstream as "that was just
+    ordinary conversation". The sentence then falls through silently, and
+    nothing anywhere says a model call was cut off.
+
+    Still returns a string, so nothing breaks. But the reason is recorded in
+    `last_stop` and a truncation is logged, because a failure that looks
+    exactly like a decision is the worst kind to have."""
     if not up():
         start()          # warm it for next time; this call falls back
         return ""
@@ -169,8 +188,21 @@ def _chat(messages: list, timeout: float, schema: dict = None,
             data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"})
         raw = urllib.request.urlopen(req, timeout=timeout).read()
-        return (json.loads(raw)["choices"][0]["message"]["content"] or "").strip()
+        global last_stop
+        d = json.loads(raw)
+        choice = (d.get("choices") or [{}])[0]
+        last_stop = choice.get("finish_reason") or ""
+        out = ((choice.get("message") or {}).get("content") or "").strip()
+        if not out and last_stop == "length":
+            # Not "no answer". Cut off mid-thought, and the caller cannot tell.
+            thought = len(((choice.get("message") or {}).get(
+                "reasoning_content") or ""))
+            core.log(f"brain: TRUNCATED at max_tokens={max_tokens} with no "
+                     f"answer ({thought} chars of reasoning). Raise max_tokens "
+                     f"or add few-shot examples to suppress thinking.")
+        return out
     except Exception as e:
+        last_stop = "error"
         core.log(f"brain call failed: {e}")
         return ""
 

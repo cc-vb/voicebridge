@@ -30,9 +30,16 @@ import QuartzCore
 
 // ---------------------------------------------------------------- geometry
 
-let ORB: CGFloat = 16          // the disc
-let PAD: CGFloat = 3           // breathing room inside the window
-let WIN: CGFloat = ORB + PAD * 2
+// Sized to be NOTICED. 16pt was small enough to miss entirely, which for an
+// indicator whose whole job is telling you the microphone is open is the same
+// as not existing. A capsule rather than a circle: it reads as a deliberate
+// object at a glance, and the extra width gives the level something to move
+// across instead of only in and out.
+let ORB_W: CGFloat = 54        // capsule width
+let ORB_H: CGFloat = 20        // capsule height
+let PAD: CGFloat = 4           // breathing room inside the window
+let WIN_W: CGFloat = ORB_W + PAD * 2
+let WIN_H: CGFloat = ORB_H + PAD * 2
 
 extension NSScreen {
     /// The dead camera-housing rect, or nil on a screen without a notch.
@@ -62,8 +69,8 @@ extension NSScreen {
             centreX = frame.midX
             topY = frame.maxY - menuBarHeight
         }
-        return NSPoint(x: (centreX - WIN / 2).rounded(),
-                       y: (topY - gap - WIN).rounded())
+        return NSPoint(x: (centreX - WIN_W / 2).rounded(),
+                       y: (topY - gap - WIN_H).rounded())
     }
 }
 
@@ -181,7 +188,7 @@ enum Look { case idle, capturing, working }
 
 final class OrbView: NSView {
     private let disc = CAShapeLayer()
-    private let core = CAShapeLayer()
+    private var bars: [CAShapeLayer] = []
     private let ring = CAShapeLayer()
     private var link: CADisplayLink?
     private var level: CGFloat = 0          // smoothed
@@ -203,7 +210,6 @@ final class OrbView: NSView {
         wantsLayer = true
         layer?.addSublayer(disc)
         layer?.addSublayer(ring)
-        layer?.addSublayer(core)
         build()
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
@@ -214,36 +220,67 @@ final class OrbView: NSView {
     required init?(coder: NSCoder) { nil }
 
     private func build() {
-        let c = CGPoint(x: bounds.midX, y: bounds.midY)
-
-        disc.path = CGPath(ellipseIn: CGRect(x: c.x - ORB / 2, y: c.y - ORB / 2,
-                                             width: ORB, height: ORB), transform: nil)
-        disc.fillColor = NSColor.black.withAlphaComponent(opaqueBG ? 1.0 : 0.92).cgColor
-        // A hairline edge so the disc still reads against a black window.
-        disc.strokeColor = NSColor.white.withAlphaComponent(0.12 + boost * 2).cgColor
+        let r = NSRect(x: PAD, y: PAD, width: ORB_W, height: ORB_H)
+        disc.path = CGPath(roundedRect: r, cornerWidth: ORB_H / 2,
+                           cornerHeight: ORB_H / 2, transform: nil)
+        disc.fillColor = NSColor.black.withAlphaComponent(opaqueBG ? 1.0 : 0.88).cgColor
+        disc.strokeColor = NSColor.white.withAlphaComponent(0.14 + boost).cgColor
         disc.lineWidth = 0.5
 
-        core.fillColor = NSColor.white.cgColor
-        core.position = c
+        // Bars, not a dot. A row of them shows the SHAPE of what you are
+        // saying, not just that something is happening, and it stays legible
+        // at a glance from the corner of your eye.
+        bars.forEach { $0.removeFromSuperlayer() }
+        bars.removeAll()
+        let n = 7
+        let bw: CGFloat = 3
+        let gap = (ORB_W - CGFloat(n) * bw) / CGFloat(n + 1)
+        for i in 0..<n {
+            let b = CAShapeLayer()
+            b.fillColor = NSColor.white.withAlphaComponent(0.92).cgColor
+            let x = PAD + gap + CGFloat(i) * (bw + gap)
+            b.frame = NSRect(x: x, y: PAD, width: bw, height: ORB_H)
+            b.path = CGPath(roundedRect: NSRect(x: 0, y: 0, width: bw, height: ORB_H),
+                            cornerWidth: bw / 2, cornerHeight: bw / 2, transform: nil)
+            // Scale about the middle so a bar grows both ways, like a meter.
+            b.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            b.position = CGPoint(x: x + bw / 2, y: PAD + ORB_H / 2)
+            b.bounds = NSRect(x: 0, y: 0, width: bw, height: ORB_H)
+            layer?.addSublayer(b)
+            bars.append(b)
+        }
+        setBars(0)
 
-        ring.path = CGPath(ellipseIn: CGRect(x: -6, y: -6, width: 12, height: 12), transform: nil)
+        ring.path = CGPath(ellipseIn: CGRect(x: -7, y: -7, width: 14, height: 14),
+                           transform: nil)
         ring.fillColor = nil
         ring.strokeColor = NSColor.white.cgColor
-        ring.lineWidth = 1
-        ring.position = c
+        ring.lineWidth = 1.5
+        ring.position = CGPoint(x: bounds.midX, y: bounds.midY)
         ring.opacity = 0
     }
 
-    /// The pupil, drawn at a given radius. Everything the eye reads is here.
-    private func setCore(_ r: CGFloat) {
-        core.path = CGPath(ellipseIn: CGRect(x: -r, y: -r, width: r * 2, height: r * 2),
-                           transform: nil)
+    /// Bars at a given level. The middle ones react most, which is what a
+    /// voice actually looks like and what stops it reading as a progress bar.
+    private func setBars(_ lvl: CGFloat) {
+        let n = bars.count
+        guard n > 0 else { return }
+        let mid = CGFloat(n - 1) / 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (i, b) in bars.enumerated() {
+            let d = abs(CGFloat(i) - mid) / max(mid, 1)          // 0 centre, 1 edge
+            let shape = 1.0 - d * 0.55
+            let h = 0.16 + 0.84 * min(1, lvl * 1.35) * shape      // fraction of height
+            b.transform = CATransform3DMakeScale(1, max(0.16, h), 1)
+        }
+        CATransaction.commit()
     }
 
     func apply(_ new: Look, force: Bool = false) {
         guard new != look || force else { return }
         look = new
-        core.removeAllAnimations()
+        bars.forEach { $0.removeAllAnimations() }
         ring.removeAllAnimations()
         stopLink()
 
@@ -251,30 +288,28 @@ final class OrbView: NSView {
         case .idle:
             // The dominant state, so it must be free. One committed animation
             // handed to the render server costs this process nothing ongoing.
-            setCore(2.0)
+            setBars(0)
             ring.opacity = 0
-            if reduceMotion {
-                core.opacity = 0.45
-            } else {
-                core.opacity = 0.45
+            bars.forEach { $0.opacity = 0.45 }
+            if !reduceMotion {
                 let breathe = CABasicAnimation(keyPath: "opacity")
-                breathe.fromValue = 0.30
-                breathe.toValue = 0.65
+                breathe.fromValue = 0.28
+                breathe.toValue = 0.60
                 breathe.duration = 1.6
                 breathe.autoreverses = true
                 breathe.repeatCount = .infinity
                 breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                core.add(breathe, forKey: "breathe")
+                bars.forEach { $0.add(breathe, forKey: "breathe") }
             }
 
         case .capturing:
-            core.opacity = 1
+            bars.forEach { $0.opacity = 1 }
             ring.opacity = 0
             startLink()          // real audio each frame, so this one earns its cost
 
         case .working:
-            setCore(2.2)
-            core.opacity = 0.7
+            setBars(0.25)
+            bars.forEach { $0.opacity = 0.55 }
             ring.opacity = Float(0.8 + boost)
             if reduceMotion {
                 // A full static ring still separates this from the other two.
@@ -308,10 +343,7 @@ final class OrbView: NSView {
         // Fast attack so it feels instant, slow release so it does not strobe.
         let coeff: CGFloat = target > level ? 0.55 : 0.12
         level += (target - level) * coeff
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        setCore(2.5 + 4.5 * level)
-        CATransaction.commit()
+        setBars(level)
     }
 
     func pause() { stopLink() }
@@ -326,16 +358,26 @@ final class App: NSObject, NSApplicationDelegate {
     private var presence: MicPresence!
     private var poll: Timer?
     private var lock: Int32 = -1
+    private let debug = ProcessInfo.processInfo.environment["VB_ORB_DEBUG"] != nil
+    private var lastDebug = ""
 
-    func applicationDidFinishLaunching(_ n: Notification) {
+    /// Called directly, not from applicationDidFinishLaunching.
+    ///
+    /// A binary that is not inside a .app bundle does not reliably get that
+    /// callback: NSApplication delivers it as part of a launch sequence a
+    /// bare executable never completes. So the orb ran, stayed alive, and did
+    /// nothing at all, with no error anywhere, because its entire setup lived
+    /// in a method that was never called.
+    func start() {
         holdOurOwnLock()
 
-        view = OrbView(frame: NSRect(x: 0, y: 0, width: WIN, height: WIN))
+        view = OrbView(frame: NSRect(x: 0, y: 0, width: WIN_W, height: WIN_H))
         makeWindow()
-        buildRest()
+        wire()
+        evaluate()
     }
 
-    private func buildRest() {
+    private func configure() {
         win.isOpaque = false
         win.backgroundColor = .clear
         win.hasShadow = false
@@ -355,6 +397,10 @@ final class App: NSObject, NSApplicationDelegate {
         win.contentView = view
         place()
 
+    }
+
+    /// Once, for the life of the process.
+    private func wire() {
         presence = MicPresence { [weak self] in self?.evaluate() }
 
         let nc = NSWorkspace.shared.notificationCenter
@@ -383,7 +429,6 @@ final class App: NSObject, NSApplicationDelegate {
         poll = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.evaluate()
         }
-        evaluate()
     }
 
     /// Held for our whole life so the daemon can verify we exist before it
@@ -395,10 +440,15 @@ final class App: NSObject, NSApplicationDelegate {
         if lock >= 0 { flock(lock, LOCK_EX | LOCK_NB) }
     }
 
+    /// Builds the window and nothing else. This runs again on every show, so
+    /// anything else put here runs again on every show: the observers and the
+    /// poll timer used to live here, and one of them called evaluate(), which
+    /// called show(), which came straight back. The orb spun instead of
+    /// drawing, stayed alive, and reported nothing.
     private func makeWindow() {
-        win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: WIN, height: WIN),
+        win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: WIN_W, height: WIN_H),
                        styleMask: [.borderless], backing: .buffered, defer: false)
-        buildRest()
+        configure()
     }
 
     private func place() {
@@ -424,8 +474,37 @@ final class App: NSObject, NSApplicationDelegate {
         if win.isVisible { win.orderOut(nil) }
     }
 
+    /// Show it regardless of the microphone, so "does it draw" can be tested
+    /// apart from "does it decide correctly". Those failed together and looked
+    /// identical: nothing on screen.
+    private let forced = ProcessInfo.processInfo.environment["VB_ORB_TEST"] != nil
+
     private func evaluate() {
-        guard presence.isHot, weOwnTheMic() else { return hide() }
+        if forced {
+            view.apply(.capturing)
+            view.feed(0.7)
+            show()
+            if debug, lastDebug != "forced" {
+                lastDebug = "forced"
+                let f = win.frame
+                FileHandle.standardError.write(
+                    "orb: FORCED on \(pickScreen()?.localizedName ?? "?") at \(f), visible=\(win.isVisible), level=\(win.level.rawValue)\n"
+                        .data(using: .utf8)!)
+            }
+            return
+        }
+        let hot = presence.isHot
+        let ours = weOwnTheMic()
+        if debug {
+            let now = "\(hot)/\(ours)"
+            if now != lastDebug {
+                lastDebug = now
+                FileHandle.standardError.write(
+                    "orb: mic hot=\(hot) ours=\(ours) -> \(hot && ours ? "SHOW" : "hide")\n"
+                        .data(using: .utf8)!)
+            }
+        }
+        guard hot, ours else { return hide() }
         let d = readDetail()
         // Hot but stale: we know for certain the mic is open and not what it is
         // doing, so claim the most-open state. Over-report, never under-report.
@@ -446,4 +525,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let delegate = App()
 app.delegate = delegate
+delegate.start()        // before run(), because the callback may never come
 app.run()
