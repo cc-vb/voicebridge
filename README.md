@@ -14,6 +14,26 @@ your live coding sessions by voice from your phone, from anywhere.
 <!-- Upgrade the hero to a full video later: upload the demo to YouTube and embed
      [![voicebridge demo](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://youtu.be/VIDEO_ID) -->
 
+## Two things, and you may only want one
+
+**1. Hold a key and talk, in any app on your Mac.** Not just Claude Code:
+Slack, a browser, your editor, a text field in something nobody has heard of.
+Hold **Fn**, say it, let go, and the words appear where your cursor already
+was. It never presses Return, so nothing sends itself.
+
+```
+vb always on        # on now, and after every restart
+vb lang hinglish    # if you speak Hindi or a mix
+vb always off       # stop
+```
+
+It runs entirely on your machine. Hindi mixed with English works, and English
+technical words stay English rather than being mangled into Devanagari, which
+is the thing most dictation tools get wrong for Indian users.
+
+**2. Voice for Claude Code**, below: replies read aloud, spoken prompts, your
+phone as a mic. Everything from here down is about that.
+
 ## What it does
 
 - **Drive coding sessions from your phone.** `/voice-phone` prints a QR, scan
@@ -404,18 +424,30 @@ automatically falls back to `say`, nothing breaks.
 
 ### Speaking Hindi / Hinglish (or other languages)
 
-**Language is auto-detected by default**: speak English, Hindi, or
-Hinglish, switch mid-conversation, and both recognition and the reply
-language follow you (Hindi replies are even spoken by the Mac's Hindi
-voice automatically). Requires the multilingual model, one-time download:
+`vb lang hinglish` switches the whole stack, not just the reply language:
+
+- **English** goes to a model that is faster and more verbatim than whisper
+  (whisper quietly substitutes plausible words and drops repetitions).
+- **Hinglish** goes to the multilingual model, which keeps your English
+  technical words as English instead of burying them in Devanagari.
+- **Any Devanagari that does come back is rewritten into English letters**
+  afterwards, from a lexicon, so nothing arrives in a script you cannot use in
+  a terminal. This happens after transcription rather than being asked for in
+  the prompt, because a prompt strong enough to control the script also turns
+  spoken English into Hindi.
+
+The multilingual model is a one-time download if you do not have it:
 
 ```
-curl -fSL -o ~/.voicebridge/models/ggml-small.bin --create-dirs \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+curl -fSL -o ~/.voicebridge/models/ggml-large-v3-turbo.bin --create-dirs \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
 ```
 
-Pinning instead of auto: `vb lang english` (slightly better pure-English
-accuracy), `vb lang hindi` (force Devanagari), `vb lang auto` (default).
+Back to English only: `vb lang english`.
+
+**Honest about where this is:** the script is right and the English words are
+right. Hindi spellings are still rough ("asali" for "asli"). That needs a
+cleanup pass, which is the next thing being built.
 Control words ("stop listening", "hey Claude") remain English. If Hinglish
 captures get dropped, loosen the gate with `vb sens relaxed`.
 

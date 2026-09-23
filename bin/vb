@@ -79,6 +79,18 @@ def _orb_show(quiet: bool = False) -> None:
         return
     except Exception:
         pass
+    # Prefer the native indicator: it verifies the microphone through CoreAudio
+    # and a lock rather than trusting the daemon's own state file, so it cannot
+    # sit showing "idle" while a mic is open. The Tkinter one stays as the
+    # fallback for a machine with no Swift toolchain.
+    try:
+        from vb import orbnative
+        if orbnative.show():
+            if not quiet:
+                print("orb showing")
+            return
+    except Exception:
+        pass
     script = Path(SELF).parent.parent / "scripts" / "vb_orb.py"
     try:
         p = subprocess.Popen([sys.executable, str(script)],
@@ -95,6 +107,11 @@ def _orb_show(quiet: bool = False) -> None:
 def _orb_hide(quiet: bool = False) -> None:
     import os
     import signal
+    try:
+        from vb import orbnative
+        orbnative.hide()
+    except Exception:
+        pass
     orb_pid = core.STATE_DIR / "orb.pid"
     try:
         os.kill(int(orb_pid.read_text().strip()), signal.SIGTERM)
@@ -584,6 +601,62 @@ def main(argv) -> int:
             _orb_hide()
         else:
             _orb_show()
+
+    elif cmd == "always":
+        # Dictation as a login item, so the key just works without a command.
+        from vb import always as _al
+        if rest and rest[0] == "build":
+            # Build the .app without starting anything. The installer calls
+            # this so the named permission prompt exists before the user is
+            # ever asked for it.
+            app = _al.build_app()
+            print(f"built {app}" if app else "could not build (needs swiftc)")
+        elif rest and rest[0] == "off":
+            print(_al.off())
+        elif rest and rest[0] in ("status", ""):
+            print(_al.status())
+        elif rest and rest[0] == "on" or not rest:
+            key = "fn"
+            for a in rest:
+                if a in ("fn", "rightcmd", "rightopt", "leftcmd"):
+                    key = a
+            print(_al.on(key))
+        else:
+            print("vb always on [fn|rightcmd] | off | status")
+
+    elif cmd == "dictate":
+        # System-wide dictation: hold the key anywhere, speak, and the words
+        # land wherever your cursor is. No per-app integration, because there
+        # is nothing to integrate with: it pastes the way you would have typed.
+        from vb import dictate as _dic
+        key = "fn"
+        for a in rest:
+            if a in ("fn", "rightcmd", "rightopt", "leftcmd"):
+                key = a
+        sys.exit(_dic.run(key, send="--send" in rest,
+                          debug="--quiet" not in rest))
+
+    elif cmd == "hotkey":
+        # Hold one key to talk. `vb hotkey test` runs a trial so you can see
+        # the gestures land and learn your own natural hold duration.
+        from vb import hotkey as _hk
+        key = "fn"
+        for a in rest:
+            if a in _hk.KEYS:
+                key = a
+        if rest and rest[0] == "build":
+            print(_hk.build(force=True) or "build failed; see `vb log`")
+        elif rest and rest[0] in ("test", "measure"):
+            secs = _int_flag(rest, "secs", 30)
+            _hk.measure(key, secs)
+        else:
+            print("vb hotkey test [fn|rightcmd|rightopt|leftcmd] [secs=30]")
+            print("vb hotkey build")
+            print()
+            print("Hold the key and talk. Hold-only by design: macOS runs the")
+            print("Globe key's own action on a clean TAP and ignores a HOLD,")
+            print("so holding collides with nothing and needs no System")
+            print("Settings change.")
 
     elif cmd == "meter":
         # A LIVE, self-refreshing "am I listening?" meter for a second
@@ -1522,6 +1595,46 @@ def main(argv) -> int:
             print(f"  {r.get('label', '?'):<20} {r.get('status', '?'):<9}"
                   f"{tail}")
         return 0
+
+    elif cmd == "friday":
+        # The supervisor: watch every agent and speak up only when one really
+        # needs you.  vb friday --dry  prints what it WOULD say (how you tune
+        # it without listening to a day of alerts).
+        from vb import supervisor as _sup
+        from vb import attention as _att
+        if rest and rest[0] in ("quiet", "hush"):
+            import datetime as _dt
+            until = _att.hush()
+            print("friday: quiet until "
+                  + _dt.datetime.fromtimestamp(until).strftime("%H:%M")
+                  + " (nothing will be spoken; say `vb friday resume` to undo)")
+            return 0
+        if rest and rest[0] in ("resume", "unquiet"):
+            _att.unhush()
+            print("friday: listening again.")
+            return 0
+        if rest and rest[0] == "brain":
+            from vb import brain as _br
+            st = _br.status()
+            print(f"  server : {'yes' if st['server'] else 'MISSING (brew install llama.cpp)'}")
+            print(f"  model  : {'ready' if st['model'] else 'not downloaded yet'}")
+            print(f"  running: {'yes on :' + str(st['port']) if st['up'] else 'no (starts on demand)'}")
+            if not st["up"] and st["model"] and st["server"]:
+                print("  starting it now (first load takes a few seconds)...")
+                print("  up:", _br.start(wait_s=45))
+            return 0
+        if rest and rest[0] == "why":
+            # "why did you say that?" must always have an answer.
+            import datetime as _dt
+            from vb import fleet as _fl
+            for e in _fl.recent_events(20):
+                t = _dt.datetime.fromtimestamp(e.get("ts", 0)).strftime("%H:%M:%S")
+                print(f"  {t}  {e.get('kind', '?'):<11} {e.get('label', '?')}")
+            print("\n  decisions (with the rule that fired) are in: vb log")
+            return 0
+        return _sup.run(dry=("--dry" in rest),
+                        interval=float(next((r.split("=")[1] for r in rest
+                                             if r.startswith("--interval=")), 3)))
 
     elif cmd == "summarize":
         # Inspect/compare the summarized-output layer (also wired into the live

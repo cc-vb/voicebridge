@@ -5930,12 +5930,13 @@ function homeCard(s){
   /* a DIV, not a button: it now holds a nested Replay button, and a button
      inside a button is invalid. role/tabindex/keydown keep it operable. */
   const b = document.createElement('div');
-  b.className = 'hcard' + (closed ? ' closed' : (s.pending ? ' needs' : ''));
+  const wants = s.pending || !!s.asking;   /* a question needs you as much as a permission does */
+  b.className = 'hcard' + (closed ? ' closed' : (wants ? ' needs' : ''));
   b.setAttribute('role', 'button');
   b.setAttribute('tabindex', '0');
   b.setAttribute('aria-label', closed
     ? ((s.name || 'session') + ', closed, read only')
-    : ('Call ' + (s.name || 'session') + (s.pending ? ', needs you' : '')));
+    : ('Call ' + (s.name || 'session') + (wants ? ', needs you' : '')));
 
   const r1 = document.createElement('div'); r1.className = 'r1';
   /* deterministic colored monogram: different projects tellable at a glance */
@@ -5964,16 +5965,25 @@ function homeCard(s){
   const r2 = document.createElement('div'); r2.className = 'r2';
   const dot = document.createElement('span');
   dot.className = 'sdot' + (closed ? ' closed'
-    : (s.pending ? ' needs' : (isWorkingState(s.state) ? ' working' : '')));
+    : (wants ? ' needs' : (isWorkingState(s.state) ? ' working' : '')));
   r2.appendChild(dot);
   if(closed){
     const lbl = document.createElement('span');
     lbl.className = 'lbl closed'; lbl.textContent = 'closed, read-only';
     r2.appendChild(lbl);
-  }else if(s.pending){
+  }else if(wants){
     const badge = document.createElement('span');
-    badge.className = 'badge needs'; badge.textContent = 'needs you';
+    badge.className = 'badge needs';
+    badge.textContent = s.asking ? 'asking you' : 'needs you';
     r2.appendChild(badge);
+    /* say WHAT it wants, so the board answers 'who needs me, and
+       for what' without opening anything */
+    if(s.asking){
+      const q = document.createElement('span');
+      q.className = 'lbl'; q.textContent = s.asking;
+      q.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%';
+      r2.appendChild(q);
+    }
   }else{
     const lbl = document.createElement('span');
     const working = isWorkingState(s.state);
@@ -6058,7 +6068,7 @@ function sessionCard(s){
     : ((s.current ? 'On call with ' : 'Move the call to ') + (s.name || 'session')));
   const dot = document.createElement('span');
   dot.className = 'sdot' + (closed ? ' closed'
-    : (s.pending ? ' needs' : (isWorkingState(s.state) ? ' working' : '')));
+    : (wants ? ' needs' : (isWorkingState(s.state) ? ' working' : '')));
   const meta = document.createElement('span'); meta.className = 'meta';
   const n = document.createElement('span'); n.className = 'n'; n.textContent = s.name || 'session';
   const c = document.createElement('span'); c.className = 'c'; c.textContent = stateLabel(s);
@@ -6491,6 +6501,17 @@ class Handler(BaseHTTPRequestHandler):
             from . import sessions as _sess
             active = (_read_json(ACTIVE) or {}).get("session_id", "")
             now = time.time()
+            # Open questions per session, from the fleet sensor. Best-effort:
+            # the roster must still render if the sensor is unavailable.
+            _needs = {}
+            try:
+                from . import fleet as _fl
+                for _sid, _row in _fl.snapshot().items():
+                    q = _row.get("question") or _row.get("permission") or ""
+                    if q:
+                        _needs[_sid] = q[:120]
+            except Exception:
+                pass
             # phone_only=True: default-deny, only sessions opted into phone
             # control are ever enumerated across the tunnel.
             rows = [{"id": r.get("sid", ""), "name": r.get("label", ""),
@@ -6500,6 +6521,10 @@ class Handler(BaseHTTPRequestHandler):
                      "enabled": True,
                      "pending": bool(core.get_pending_notice(
                          r.get("sid", "") or "-")),
+                     # What the agent actually NEEDS, not just whether it is
+                     # busy. This is what turns a session list into a
+                     # supervision board: at a glance, who is waiting on you.
+                     "asking": _needs.get(r.get("sid", ""), ""),
                      "last": _sess.last_preview(r.get("path", "")),
                      "ago": int(max(0, now - r.get("mtime", now)))}
                     for r in _sess.roster(phone_only=True)]
