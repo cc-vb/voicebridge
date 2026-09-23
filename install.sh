@@ -227,7 +227,7 @@ else
   cat <<'MSG'
   The dictation key is a separate product and is not installed.
 
-    git clone <dictator repo> ~/dictator
+    git clone https://github.com/KrishOjha1810/dictator.git ~/dictator
     ~/dictator/install.sh
 
   Everything else in voicebridge works without it. Only the hold-to-talk key

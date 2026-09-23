@@ -25,7 +25,8 @@ _PLACES = (
 
 MISSING = (
     "The dictation key is a separate product called dictator.\n"
-    "  Install it:  git clone <dictator repo> ~/dictator && ~/dictator/install.sh\n"
+    "  Install it:  git clone https://github.com/KrishOjha1810/dictator.git ~/dictator\n"
+    "               && ~/dictator/install.sh\n"
     "  Then:        dictator on"
 )
 
