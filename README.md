@@ -23,13 +23,19 @@ was. It never presses Return, so nothing sends itself.
 
 ```
 vb always on        # on now, and after every restart
-vb lang hinglish    # if you speak Hindi or a mix
 vb always off       # stop
 ```
 
 It runs entirely on your machine. Hindi mixed with English works, and English
 technical words stay English rather than being mangled into Devanagari, which
 is the thing most dictation tools get wrong for Indian users.
+
+The key is its own product, called **dictator**. voicebridge speaks back to
+you; dictator only listens, and plenty of people want the second without the
+first. voicebridge uses it rather than keeping its own copy, so `vb always on`
+and `dictator on` are the same thing, and everything dictator learns (the
+words you correct by hand, the language routing) applies here too. The
+installer sets it up; if you only want the key, install dictator on its own.
 
 **2. Voice for Claude Code**, below: replies read aloud, spoken prompts, your
 phone as a mic. Everything from here down is about that.

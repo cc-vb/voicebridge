@@ -213,38 +213,28 @@ fi
 
 say_step "8/9 Hold-to-talk dictation (the Fn key, works in EVERY app)"
 # This is the piece most people end up using most, so it is set up by default
-# rather than hidden behind a flag. The model is the one that keeps English
-# technical words as English on mixed speech, which matters more than raw WER
-# for anyone dictating into a terminal.
-PARAKEET="$HOME/.voicebridge/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin"
-if [ -f "$PARAKEET" ]; then
-  echo "  dictation model already here"
+# rather than hidden behind a flag. It is also its own product now, called
+# dictator: voicebridge speaks back to you and dictator only listens, and
+# plenty of people want the second without the first. voicebridge uses it
+# rather than keeping a second copy that drifts.
+DICTATOR_DIR="$HOME/dictator"
+if [ -x "$DICTATOR_DIR/install.sh" ]; then
+  echo "  found dictator at $DICTATOR_DIR"
+  "$DICTATOR_DIR/install.sh" || echo "  (dictator setup reported a problem)"
+elif command -v dictator >/dev/null 2>&1; then
+  echo "  dictator already installed"
 else
-  echo "  fetching the dictation model (~670MB, one time)..."
-  mkdir -p "$HOME/.voicebridge/models"
-  if curl -fSL --progress-bar -o "$PARAKEET" \
-      https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-q8_0.bin; then
-    echo "  ok"
-  else
-    rm -f "$PARAKEET"
-    echo "  download failed; dictation will fall back to whisper (slower)"
-  fi
+  cat <<'MSG'
+  The dictation key is a separate product and is not installed.
+
+    git clone <dictator repo> ~/dictator
+    ~/dictator/install.sh
+
+  Everything else in voicebridge works without it. Only the hold-to-talk key
+  needs it.
+MSG
 fi
 
-# The .app bundle is what makes the permission prompt say "Voicebridge
-# Dictation" with a reason, once, instead of asking someone to find
-# /usr/bin/env in a file picker. Without it this feature is unusable by
-# anyone who is not already comfortable in System Settings.
-if command -v swiftc >/dev/null 2>&1; then
-  echo "  building the dictation app..."
-  "$BIN_DIR/vb" always build >/dev/null 2>&1 \
-    && echo "  ok" || echo "  (skipped; run 'vb always on' later)"
-else
-  echo "  (no Xcode command line tools, so no app bundle; run 'xcode-select"
-  echo "   --install' then 'vb always on' to get the named permission prompt)"
-fi
-
-echo
 echo "  Turn it on with:  vb always on"
 echo "  Then hold the Fn key ANYWHERE and talk. The words land where your"
 echo "  cursor is: Slack, a browser, your editor, anywhere."
