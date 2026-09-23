@@ -164,7 +164,7 @@ else
   echo "  skipped (Apple Silicon only; summarized voice falls back to full replies)"
 fi
 
-say_step "7/8 Hotkeys (hush, interrupt, speed, pause)"
+say_step "7/9 Hotkeys (hush, interrupt, speed, pause)"
 if brew list skhd >/dev/null 2>&1 || brew install koekeishiya/formulae/skhd; then
   SKHDRC="$HOME/.skhdrc"
   touch "$SKHDRC"
@@ -211,12 +211,64 @@ else
   echo "  (skhd optional; typing a prompt also interrupts instantly)"
 fi
 
-say_step "8/8 Health check"
+say_step "8/9 Hold-to-talk dictation (the Fn key, works in EVERY app)"
+# This is the piece most people end up using most, so it is set up by default
+# rather than hidden behind a flag. The model is the one that keeps English
+# technical words as English on mixed speech, which matters more than raw WER
+# for anyone dictating into a terminal.
+PARAKEET="$HOME/.voicebridge/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin"
+if [ -f "$PARAKEET" ]; then
+  echo "  dictation model already here"
+else
+  echo "  fetching the dictation model (~670MB, one time)..."
+  mkdir -p "$HOME/.voicebridge/models"
+  if curl -fSL --progress-bar -o "$PARAKEET" \
+      https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-q8_0.bin; then
+    echo "  ok"
+  else
+    rm -f "$PARAKEET"
+    echo "  download failed; dictation will fall back to whisper (slower)"
+  fi
+fi
+
+# The .app bundle is what makes the permission prompt say "Voicebridge
+# Dictation" with a reason, once, instead of asking someone to find
+# /usr/bin/env in a file picker. Without it this feature is unusable by
+# anyone who is not already comfortable in System Settings.
+if command -v swiftc >/dev/null 2>&1; then
+  echo "  building the dictation app..."
+  "$BIN_DIR/vb" always build >/dev/null 2>&1 \
+    && echo "  ok" || echo "  (skipped; run 'vb always on' later)"
+else
+  echo "  (no Xcode command line tools, so no app bundle; run 'xcode-select"
+  echo "   --install' then 'vb always on' to get the named permission prompt)"
+fi
+
+echo
+echo "  Turn it on with:  vb always on"
+echo "  Then hold the Fn key ANYWHERE and talk. The words land where your"
+echo "  cursor is: Slack, a browser, your editor, anywhere."
+
+say_step "9/9 Health check"
 "$BIN_DIR/vb" doctor || true
 
 cat <<'EOF'
 
-Done. Two one-time macOS permissions remain (System Settings ->
+Done.
+
+TWO things are now available, and most people want the first one:
+
+  1. HOLD-TO-TALK DICTATION, in every app on your Mac.
+        vb always on
+     Then hold Fn and talk, anywhere: Slack, a browser, your editor. The
+     words appear where your cursor is. It starts again after a reboot.
+     It never presses Return, so nothing sends itself.
+     Speaking Hindi or Hinglish?   vb lang hinglish
+
+  2. VOICE FOR CLAUDE CODE, which reads replies aloud and takes spoken
+     prompts. Inside any session:  /voice-on
+
+Two one-time macOS permissions remain (System Settings ->
 Privacy & Security), for YOUR TERMINAL APP:
   * Microphone      (so it can hear you)
   * Accessibility   (so speech can be typed into your session;

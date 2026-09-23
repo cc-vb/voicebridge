@@ -605,7 +605,13 @@ def main(argv) -> int:
     elif cmd == "always":
         # Dictation as a login item, so the key just works without a command.
         from vb import always as _al
-        if rest and rest[0] == "off":
+        if rest and rest[0] == "build":
+            # Build the .app without starting anything. The installer calls
+            # this so the named permission prompt exists before the user is
+            # ever asked for it.
+            app = _al.build_app()
+            print(f"built {app}" if app else "could not build (needs swiftc)")
+        elif rest and rest[0] == "off":
             print(_al.off())
         elif rest and rest[0] in ("status", ""):
             print(_al.status())
