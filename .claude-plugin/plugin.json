@@ -1,8 +1,8 @@
 {
   "name": "voicebridge",
   "displayName": "voicebridge",
-  "version": "2.20.37",
-  "description": "Talk to Claude Code like a teammate: hands-free voice conversations with your live session, on your Mac or from your phone. Local whisper STT + Kokoro neural TTS.",
+  "version": "2.21.0",
+  "description": "Hold a key and talk, in any app on your Mac. Plus hands-free voice for Claude Code, at your desk or from your phone. Local whisper/Parakeet STT + Kokoro neural TTS.",
   "author": {
     "name": "voicebridge",
     "url": "https://github.com/cc-vb"
@@ -10,6 +10,13 @@
   "homepage": "https://github.com/cc-vb/voicebridge",
   "repository": "https://github.com/cc-vb/voicebridge",
   "license": "LicenseRef-voicebridge-source-available",
-  "keywords": ["voice", "speech", "tts", "whisper", "hands-free", "macos"],
+  "keywords": [
+    "voice",
+    "speech",
+    "tts",
+    "whisper",
+    "hands-free",
+    "macos"
+  ],
   "commands": "./commands/"
 }
