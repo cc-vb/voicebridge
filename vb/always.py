@@ -50,14 +50,41 @@ def build_app() -> str:
                         "-o", str(macos / "VoicebridgeDictation")],
                        check=True, capture_output=True, timeout=300)
         shutil.copy(src / "Info.plist", APP / "Contents" / "Info.plist")
-        # Ad-hoc signing gives the bundle a stable identity, so the permission
-        # the user grants survives a rebuild instead of being asked for again.
-        subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(APP)],
-                       capture_output=True, timeout=120)
+        _sign(APP)
         return str(APP)
     except Exception as e:
         core.log(f"dictation app build failed: {e}")
         return ""
+
+
+def _sign(app: Path) -> None:
+    """Sign the bundle so macOS keeps recognising it after a rebuild.
+
+    An ad-hoc signature identifies the app by the hash of its own binary, so
+    rebuilding it revokes Microphone and Accessibility without warning and
+    without changing anything the user can see. Signing against a local
+    certificate makes the identity the certificate instead, which rebuilding
+    does not touch. See vb/signing.py."""
+    from . import signing
+    who = signing.identity()
+    args = ["codesign", "--force", "-s", who or "-", str(app)]
+    r = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        # Falling back matters more than signing well: an unsigned app cannot
+        # hold a permission at all, while an ad-hoc one at least works until
+        # the next rebuild.
+        core.log(f"dictation app signing failed ({who or 'ad-hoc'}): "
+                 f"{r.stderr.strip()[:200]}")
+        if who:
+            subprocess.run(["codesign", "--force", "-s", "-", str(app)],
+                           capture_output=True, timeout=120)
+        return
+    # Say so out loud when the identity is still the binary hash, because the
+    # symptom otherwise is a permission that stops working for no visible
+    # reason several rebuilds later.
+    if "cdhash" in signing.requirement(app):
+        core.log("dictation app is ad-hoc signed: macOS will forget its "
+                 "permissions on the next rebuild")
 
 
 def installed() -> bool:
