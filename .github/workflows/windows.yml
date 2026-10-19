@@ -73,7 +73,11 @@ jobs:
       - name: whisper-cli.exe transcribes a recording
         shell: powershell
         run: |
+          # whisper logs to stderr; Windows PowerShell turns that into an
+          # error record, so judge it by its exit code and output instead.
+          $ErrorActionPreference = "Continue"
           $out = & "$HOME\.voicebridge\whisper\whisper-cli.exe" -m "$HOME\.voicebridge\models\ggml-small.en.bin" -f tests\fixtures\speech-16k.wav -nt -np 2>$null
+          if ($LASTEXITCODE -ne 0) { throw "whisper-cli exit $LASTEXITCODE" }
           Write-Host "heard: $out"
           if ("$out" -notmatch "quick brown fox") { throw "wrong transcript" }
 
