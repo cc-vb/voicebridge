@@ -13,6 +13,8 @@ the directory when it hears a spoken exit phrase.
 /voice-off keeps its old per-session behaviour. This covers the new command.
 """
 
+import sys
+
 import pytest
 
 from vb import core, talkd
@@ -163,6 +165,8 @@ def test_off_still_stops_the_daemon_when_it_was_the_last_one(monkeypatch):
 
 # ---------- the silence hotkey follows voice ---------------------------------
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="skhd is macOS only; Windows uses AutoHotkey")
 def test_hotkey_starts_with_voice(tmp_path, monkeypatch):
     """skhd should not be a login daemon: the key only means something while
     we are speaking."""
@@ -195,6 +199,8 @@ def test_hotkey_noop_without_skhd_installed(monkeypatch):
     assert not talkd.HOTKEY_PID.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="skhd is macOS only; Windows uses AutoHotkey")
 def test_hotkey_stops_the_one_we_started(monkeypatch):
     killed = []
     talkd.HOTKEY_PID.write_text("4242")

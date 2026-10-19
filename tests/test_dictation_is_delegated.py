@@ -47,7 +47,7 @@ def test_a_missing_install_says_how_to_get_it(capsys):
 
 
 def test_the_cli_does_not_import_the_old_modules():
-    src = (ROOT / "bin" / "vb").read_text()
+    src = (ROOT / "bin" / "vb").read_text(encoding="utf-8")
     tree = ast.parse(src)
     bad = []
     for node in ast.walk(tree):

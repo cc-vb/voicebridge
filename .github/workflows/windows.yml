@@ -107,6 +107,7 @@ jobs:
         env:
           VB_WINDOWS_E2E: "1"
         run: |
-          python -m pip install --quiet pytest
+          # qrcode: the phone-link tests draw a real QR code.
+          python -m pip install --quiet pytest qrcode
           python -m pytest -q -rs tests
           if ($LASTEXITCODE -ne 0) { throw "pytest failed" }

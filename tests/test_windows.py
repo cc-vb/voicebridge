@@ -298,8 +298,17 @@ def test_frontmost_and_fleet_do_not_crash():
     assert isinstance(oslayer.other_users_claude(), dict)
 
 
+@pytest.fixture
+def installed_state(monkeypatch):
+    """The real ~/.voicebridge that install.ps1 filled. Other test modules
+    point core.STATE_DIR at temp folders and do not all put it back."""
+    from vb import core
+    monkeypatch.setattr(core, "STATE_DIR", Path.home() / ".voicebridge")
+    return core.STATE_DIR
+
+
 @win_only
-def test_whisper_transcribes_the_fixture():
+def test_whisper_transcribes_the_fixture(installed_state):
     from vb import stt
     if not stt.whisper_bin() or not stt.MODEL.exists():
         if E2E:
@@ -307,12 +316,19 @@ def test_whisper_transcribes_the_fixture():
         pytest.skip("whisper.cpp not installed (run install.ps1)")
     text, conf = stt.transcribe_ex(str(FIXTURE))
     low = text.lower()
-    assert "quick brown fox" in low and "lazy dog" in low, text
+    if "quick brown fox" not in low:
+        # Say why: run the binary the same way and show what it printed.
+        r = subprocess.run([stt.whisper_bin(), "-m", str(stt.MODEL), "-f",
+                            str(FIXTURE), "-nt", "-np"], capture_output=True,
+                           encoding="utf-8", errors="replace")
+        pytest.fail(f"heard {text!r}; whisper rc={r.returncode} "
+                    f"out={r.stdout[-300:]!r} err={r.stderr[-800:]!r}")
+    assert "lazy dog" in low, text
     assert conf > 0.3
 
 
 @win_only
-def test_kokoro_speaks_on_windows(tmp_path):
+def test_kokoro_speaks_on_windows(tmp_path, installed_state):
     # Kokoro used to be unreachable on Windows: the speech worker returned
     # early into SAPI before ever trying it.
     from vb import core
