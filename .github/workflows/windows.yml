@@ -70,6 +70,26 @@ jobs:
           if (-not (Test-Path "$HOME\.claude\commands\voice-on.md")) { throw "slash commands not copied" }
           Write-Host ($s.hooks.Stop | ConvertTo-Json -Depth 6)
 
+      # Claude Code runs hooks through Git Bash on Windows. Run each one the
+      # way it will be run, from the exact command the installer registered.
+      - name: Registered hooks run under Git Bash
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+          $s = Get-Content -Raw "$HOME\.claude\settings.json" | ConvertFrom-Json
+          $bash = "C:\Program Files\Git\bin\bash.exe"
+          $json = '{"session_id":"ci-test","transcript_path":"","cwd":"C:/","hook_event_name":"ci","prompt":"hello"}'
+          foreach ($ev in "SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd") {
+            $cmd = ($s.hooks.$ev | ForEach-Object { $_.hooks } | Where-Object { $_.command -match "voicebridge" } | Select-Object -First 1).command
+            # Through a file: Windows PowerShell mangles embedded quotes in
+            # native arguments, and the command is all quoted paths.
+            $f = "$env:RUNNER_TEMP\hook.sh"
+            [IO.File]::WriteAllText($f, $cmd + "`n")
+            $err = $json | & $bash $f 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0 -or $err -match "Traceback") { throw "$ev hook failed ($LASTEXITCODE): $err" }
+            Write-Host "$ev ok: $cmd"
+          }
+
       - name: whisper-cli.exe transcribes a recording
         shell: powershell
         run: |
