@@ -60,7 +60,18 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from vb import core  # noqa: E402
+from vb import core, oslayer  # noqa: E402
+
+if oslayer.IS_WIN:
+    # Windows writes a piped or redirected stdout in the ANSI code page
+    # (cp1252), and the help text alone has the Mac key glyphs in it, so
+    # `vb --help | more`, and every hook and CI step that captured output,
+    # died with UnicodeEncodeError. UTF-8 is what the readers expect.
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 SELF = str(Path(__file__).resolve())
 
@@ -105,8 +116,6 @@ def _orb_show(quiet: bool = False) -> None:
 
 
 def _orb_hide(quiet: bool = False) -> None:
-    import os
-    import signal
     try:
         from vb import orbnative
         orbnative.hide()
@@ -114,7 +123,8 @@ def _orb_hide(quiet: bool = False) -> None:
         pass
     orb_pid = core.STATE_DIR / "orb.pid"
     try:
-        os.kill(int(orb_pid.read_text().strip()), signal.SIGTERM)
+        if not oslayer.terminate(int(orb_pid.read_text().strip())):
+            raise ProcessLookupError
         orb_pid.unlink()
         if not quiet:
             print("orb hidden")
@@ -361,7 +371,9 @@ def main(argv) -> int:
         repo, path = rest[0], rest[1]
         settings = {}
         if _os.path.exists(path):
-            settings = _json.loads(open(path).read() or "{}")
+            # utf-8 named: Windows would read it as cp1252 and mangle any
+            # non-ASCII already in the user's settings on the way back out.
+            settings = _json.loads(open(path, encoding="utf-8").read() or "{}")
         hooks = settings.setdefault("hooks", {})
         wanted = {"Stop": "on_stop.py", "Notification": "on_notify.py",
                   "UserPromptSubmit": "on_prompt.py",
@@ -373,13 +385,22 @@ def main(argv) -> int:
             if "voicebridge" in _json.dumps(entries):
                 continue
             hookpath = _os.path.join(repo, "hooks", script)
+            py = "python3"
+            if oslayer.IS_WIN:
+                # Not python3: on Windows that name is the Microsoft Store
+                # stub, which exits 9009 without running anything, so every
+                # hook silently did nothing. The interpreter running this is
+                # the one the installer just set up. Forward slashes because
+                # Claude Code runs hooks through Git Bash there.
+                py = '"' + Path(sys.executable).as_posix() + '"'
+                hookpath = Path(hookpath).as_posix()
             entries.append({"matcher": "", "hooks": [{
                 "type": "command",
-                "command": f'python3 "{hookpath}" # voicebridge',
+                "command": f'{py} "{hookpath}" # voicebridge',
                 "timeout": 5}]})
             changed = True
         if changed:
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 _json.dump(settings, f, indent=2)
         print("hooks registered" if changed else "hooks already present")
 
@@ -463,7 +484,7 @@ def main(argv) -> int:
         cf = _sh.which("cloudflared") or next(
             (p for p in ("/opt/homebrew/bin/cloudflared",
                          "/usr/local/bin/cloudflared") if Path(p).exists()), "")
-        port = str(_os.environ.get("VB_CALL_PORT") or (8790 + _os.getuid() % 1000))
+        port = str(_os.environ.get("VB_CALL_PORT") or (8790 + oslayer.uid() % 1000))
         logf = core.STATE_DIR / "tunnel.log"
         # REUSE our live tracked tunnel first: a fresh quick tunnel costs
         # ~30s of waiting (the "QR takes forever" complaint), and reusing the
@@ -483,8 +504,7 @@ def main(argv) -> int:
             # can change the per-user port (8790 -> 8790+uid), and a stale
             # tunnel left aimed at the old port yields a 502 Bad Gateway. Read
             # the running cloudflared's target and remint if it moved.
-            _tcmd = subprocess.run(["ps", "-o", "command=", "-p", str(tp_pid)],
-                                   capture_output=True, text=True).stdout
+            _tcmd = oslayer.proc_cmdline(tp_pid)
             if f"127.0.0.1:{port}" not in _tcmd:
                 raise Exception("tunnel targets a stale port; reminting")
             _log0 = logf.read_text()
@@ -509,8 +529,8 @@ def main(argv) -> int:
                 print(f"\n  PHONE URL: {full}\n  (reusing the live tunnel, "
                       f"same link as before)\n")
                 img = core.qr_image(full)
-                if img and sys.platform == "darwin":
-                    subprocess.run(["open", img], capture_output=True)
+                if img:
+                    oslayer.open_file(img)
                 if not core.print_qr(full):
                     print("  (install `qrcode` for a scannable code)")
                 print("  scan the QR or open the URL, tap Start call")
@@ -569,9 +589,8 @@ def main(argv) -> int:
         # collapse inside Claude Code's tool output, and invert on light
         # themes. Open the image AND print the terminal QR as a fallback.
         img = core.qr_image(full)
-        if img and sys.platform == "darwin":
-            subprocess.run(["open", img], capture_output=True)
-            print("  (a QR window just opened on your Mac, scan that)")
+        if img and oslayer.open_file(img):
+            print("  (a QR window just opened, scan that)")
         if not core.print_qr(full):
             print("  (install `qrcode` for a scannable code: "
                   "pip3 install qrcode)")
@@ -1000,9 +1019,8 @@ def main(argv) -> int:
                 full = url.rstrip("/") + ("/?k=" + secret if secret else "/")
                 print(f"\n  PHONE URL: {full}\n")
                 img = core.qr_image(full)
-                if img and sys.platform == "darwin":
-                    subprocess.run(["open", img], capture_output=True)
-                    print("  (a QR window just opened on your Mac, scan that)")
+                if img and oslayer.open_file(img):
+                    print("  (a QR window just opened, scan that)")
                 if not core.print_qr(full):
                     print("  (install `qrcode` for a scannable code: "
                           "pip3 install qrcode)")
@@ -1015,7 +1033,7 @@ def main(argv) -> int:
                 print(f"using saved permanent link ({saved})")
                 show_link(saved)
                 return 0
-            port = str(_os.environ.get("VB_CALL_PORT") or (8790 + _os.getuid() % 1000))
+            port = str(_os.environ.get("VB_CALL_PORT") or (8790 + oslayer.uid() % 1000))
             cf = _sh.which("cloudflared") or next(
                 (p for p in ("/opt/homebrew/bin/cloudflared",
                              "/usr/local/bin/cloudflared")
@@ -1151,7 +1169,7 @@ def main(argv) -> int:
                 mic.unlink()
             except FileNotFoundError:
                 pass
-            subprocess.run(["pkill", "-x", "say"], capture_output=True)
+            oslayer.stop_say()
             print("mic: OFF")
         else:
             print(f"mic: {'ON' if mic.exists() else 'OFF'}")
@@ -1397,13 +1415,24 @@ def main(argv) -> int:
         except Exception:
             pass
         deps = _stt.have_deps()
-        check("whisper-cli", bool(deps["whisper"]), "brew install whisper-cpp")
-        check("sox / rec", bool(deps["rec"]), "brew install sox")
-        check("ffmpeg", bool(_stt._find("ffmpeg")), "brew install ffmpeg")
-        check("whisper model", bool(deps["model"]),
-              "run install.sh (downloads ggml-small.en.bin)")
-        check("say (macOS TTS)", _os.path.exists("/usr/bin/say"),
-              "macOS only")
+        if oslayer.IS_WIN:
+            # The installer is the fix for all four; brew hints mean nothing
+            # here, and sox is not used (vb/winrec.py records instead).
+            check("whisper-cli", bool(deps["whisper"]), "run install.ps1 again")
+            check("recorder (sounddevice)", bool(deps["rec"]),
+                  "python -m pip install --user sounddevice")
+            check("ffmpeg", bool(_stt._find("ffmpeg")),
+                  "winget install Gyan.FFmpeg")
+            check("whisper model", bool(deps["model"]),
+                  "run install.ps1 again (downloads ggml-small.en.bin)")
+        else:
+            check("whisper-cli", bool(deps["whisper"]), "brew install whisper-cpp")
+            check("sox / rec", bool(deps["rec"]), "brew install sox")
+            check("ffmpeg", bool(_stt._find("ffmpeg")), "brew install ffmpeg")
+            check("whisper model", bool(deps["model"]),
+                  "run install.sh (downloads ggml-small.en.bin)")
+            check("say (macOS TTS)", _os.path.exists("/usr/bin/say"),
+                  "macOS only")
         from vb import selfheal as _sh0
         # Plugin installs put commands under the plugin dir (/voicebridge:...)
         # and hooks in the plugin's hooks.json, not ~/.claude, so a healthy
@@ -1426,13 +1455,16 @@ def main(argv) -> int:
         check("vb on PATH", _sh0._vb_path_ok(),
               "run `vb selfheal` (re-links ~/.local/bin/vb) or fix your PATH")
         # Accessibility: can osascript send keystrokes from this context?
-        r = subprocess.run(
-            ["osascript", "-e",
-             'tell application "System Events" to keystroke ""'],
-            capture_output=True, text=True)
-        check("Accessibility (typing)", r.returncode == 0,
-              "System Settings -> Privacy & Security -> Accessibility: "
-              "enable your terminal app")
+        # Windows has no such permission; SendKeys works from any process at
+        # the same integrity level, so there is nothing to check there.
+        if not oslayer.IS_WIN:
+            r = subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to keystroke ""'],
+                capture_output=True, text=True)
+            check("Accessibility (typing)", r.returncode == 0,
+                  "System Settings -> Privacy & Security -> Accessibility: "
+                  "enable your terminal app")
         # Microphone: record ~1.5s and check the actual LEVEL, not just that
         # a file appeared. A muted mic / wrong input device / missing
         # permission all still write a silent file, the #1 "it doesn't hear
@@ -1443,15 +1475,18 @@ def main(argv) -> int:
         if deps["rec"]:
             print("  (say something for a second for the mic check...)")
             rr = subprocess.run(
-                [deps["rec"], "-q", "-c", "1", "-r", "16000", wav,
-                 "trim", "0", "1.5"],
+                oslayer.record_cmd(deps["rec"], wav, 1.5) if oslayer.IS_WIN
+                else [deps["rec"], "-q", "-c", "1", "-r", "16000", wav,
+                      "trim", "0", "1.5"],
                 capture_output=True, timeout=10)
             if rr.returncode == 0:
                 from vb import stt as _st
                 level = _st.loudness(wav)
         check("Microphone (records)", deps["rec"] and level >= 0,
-              "System Settings -> Privacy & Security -> Microphone: "
-              "enable your terminal app")
+              ("Settings -> Privacy & security -> Microphone: allow desktop "
+               "apps" if oslayer.IS_WIN else
+               "System Settings -> Privacy & Security -> Microphone: "
+               "enable your terminal app"))
         check(f"Microphone (hears sound, level={level:.3f})", level >= 0.004,
               "recording SILENCE. Check: mic not muted, correct Input device "
               "in System Settings -> Sound, and terminal has Mic permission")
@@ -1680,8 +1715,10 @@ def main(argv) -> int:
             _os.remove(wav)
         except Exception:
             pass
-        rr = subprocess.run([_st._find("rec"), "-q", "-c", "1", "-r", "16000",
-                             wav, "trim", "0", "4"], capture_output=True)
+        rr = subprocess.run(
+            oslayer.record_cmd("", wav, 4) if oslayer.IS_WIN
+            else [_st._find("rec"), "-q", "-c", "1", "-r", "16000",
+                  wav, "trim", "0", "4"], capture_output=True)
         lvl = _st.loudness(wav)
         text, conf = _st.transcribe_ex(wav)
         print(f"\n  1. recorded        : {'ok' if rr.returncode == 0 else 'FAILED (mic permission?)'}")
@@ -1693,9 +1730,12 @@ def main(argv) -> int:
         print(f"  5. would be sent   : {ok}" + ("" if ok else f"  (dropped: {why})"))
         print(f"  6. voice engine    : {core.get_engine()} "
               f"(kokoro up: {core.kokoro_up()})")
-        acc = subprocess.run(["osascript", "-e",
-            'tell application \"System Events\" to keystroke \"\"'],
-            capture_output=True)
+        if oslayer.IS_WIN:
+            acc = subprocess.CompletedProcess([], 0)   # no such permission
+        else:
+            acc = subprocess.run(["osascript", "-e",
+                'tell application \"System Events\" to keystroke \"\"'],
+                capture_output=True)
         print(f"  7. can type (Accessibility): {'yes' if acc.returncode == 0 else 'NO , grant Accessibility to your terminal'}")
         print("\nVerdict:")
         if lvl < 0.004:
@@ -1731,15 +1771,19 @@ def main(argv) -> int:
         def beep(sound):
             if not cue:
                 return
-            subprocess.Popen(["afplay", sound], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+            sound = oslayer.cue_sound(sound)
+            if sound:
+                subprocess.Popen(oslayer.play_cmd(sound),
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
 
         if not stt.whisper_bin() or not stt.MODEL.exists():
             print("STT not ready. Run: vb stt   (model may still be "
                   "downloading)")
             return 1
         # Barge-in: hush Claude the instant you choose to talk.
-        subprocess.run(["pkill", "-x", "say"], capture_output=True)
+        oslayer.stop_say()
         if delay:
             print(f"focus your target window... {delay}s")
             import time
@@ -1747,9 +1791,12 @@ def main(argv) -> int:
         wav = str(core.STATE_DIR / "rec.wav")
         # Always cue the start so you know when to talk (and don't clip word 1).
         import time as _t
-        subprocess.Popen(["afplay", "/System/Library/Sounds/Tink.aiff"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+        _tink = oslayer.cue_sound("/System/Library/Sounds/Tink.aiff")
+        if _tink:
+            subprocess.Popen(oslayer.play_cmd(_tink),
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             start_new_session=True)
         _t.sleep(0.4)
         print("listening now (speak, then pause)...")
         if not stt.record(wav):
@@ -1783,6 +1830,6 @@ if __name__ == "__main__":
         sys.exit(main(sys.argv[1:]))
     except KeyboardInterrupt:
         # Never dump a traceback on Ctrl-C; hush any speech and exit clean.
-        subprocess.run(["pkill", "-x", "say"], capture_output=True)
+        oslayer.stop_say()
         print("\n(interrupted)")
         sys.exit(130)

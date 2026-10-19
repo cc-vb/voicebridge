@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 
-from . import core, inject, stt
+from . import core, inject, oslayer, stt
 from .converse import _is_exit, _beep, START_TINK, STOP_POP, THINK
 
 STATE = core.STATE_DIR / "talk"
@@ -309,23 +309,15 @@ def owner_pid() -> int:
     """The pid of the Claude Code process this code is running under, or 0.
     Only meaningful from inside a hook (a descendant of that process)."""
     pid = os.getpid()
+    # One process snapshot for the whole walk, not one `ps` per hop.
+    table = {p: (pp, name) for p, pp, name in oslayer.processes()}
     for _ in range(12):
-        try:
-            out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)],
-                                 capture_output=True, text=True,
-                                 timeout=3).stdout.strip()
-        except Exception:
+        if pid not in table:
             return 0
-        if not out:
-            return 0
-        parts = out.split(None, 1)
-        comm = parts[1].strip() if len(parts) > 1 else ""
-        if os.path.basename(comm) == "claude":
+        ppid, comm = table[pid]
+        if oslayer.is_claude(comm):
             return pid
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            return 0
+        pid = ppid
         if pid <= 1:
             return 0
     return 0
@@ -338,11 +330,10 @@ def _is_claude_pid(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        out = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)],
-                             capture_output=True, text=True, timeout=3).stdout
+        name = oslayer.proc_name(pid)
     except Exception:
         return True   # can't tell -> assume alive; never tear down on a doubt
-    return os.path.basename(out.strip()) == "claude"
+    return oslayer.is_claude(name)
 
 
 def _pid_start(pid: int) -> str:
@@ -350,12 +341,7 @@ def _pid_start(pid: int) -> str:
     pid apart from the process that originally held it. '' if unknown."""
     if pid <= 0:
         return ""
-    try:
-        return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
-                              capture_output=True, text=True,
-                              timeout=3).stdout.strip()
-    except Exception:
-        return ""
+    return oslayer.proc_start(pid)
 
 
 def _owner_of(sid: str):
@@ -386,9 +372,8 @@ def owner_live(sid: str, require_claude: bool = True) -> bool:
         if not _is_claude_pid(pid):
             return False
     else:
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        # NOT os.kill(pid, 0): on Windows that terminates the process.
+        if not oslayer.alive(pid):
             return False
     if start and _pid_start(pid) != start:
         return False
@@ -399,33 +384,17 @@ def live_claude_pids() -> set:
     """Every running Claude Code process, in one `ps`. Callers asking about a
     dozen sessions at a time (the phone roster, polled every few seconds) get
     one process listing instead of one per session."""
-    pids = set()
-    try:
-        out = subprocess.run(["ps", "-axo", "pid=,comm="], capture_output=True,
-                             text=True, timeout=3).stdout
-    except Exception:
-        return pids
-    for line in out.splitlines():
-        parts = line.split(None, 1)
-        if len(parts) == 2 and os.path.basename(parts[1].strip()) == "claude":
-            try:
-                pids.add(int(parts[0]))
-            except ValueError:
-                pass
-    return pids
+    return {p for p, _, name in oslayer.processes() if oslayer.is_claude(name)}
 
 
 def _any_claude_running() -> bool:
     """Is ANY Claude Code session open on this machine? The fallback for
     sessions voiced before their owner was recorded: if there is no Claude at
     all, an open mic cannot belong to anything."""
-    try:
-        out = subprocess.run(["ps", "-axo", "comm="], capture_output=True,
-                             text=True, timeout=3).stdout
-    except Exception:
-        return True
-    return any(os.path.basename(ln.strip()) == "claude"
-               for ln in out.splitlines())
+    procs = oslayer.processes()
+    if not procs:
+        return True          # could not list: never tear down on a doubt
+    return any(oslayer.is_claude(name) for _, _, name in procs)
 
 
 def _record_owner(sid: str, pid: int) -> None:
@@ -457,12 +426,7 @@ def tty_for_sid(sid: str) -> str:
     if not owner_live(sid):
         return ""
     pid, _ = _owner_of(sid)
-    try:
-        t = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)],
-                           capture_output=True, text=True, timeout=3).stdout.strip()
-        return ("/dev/" + t) if t and t not in ("??", "?") else ""
-    except Exception:
-        return ""
+    return oslayer.proc_tty(pid)
 
 
 def known_owners() -> dict:
@@ -647,11 +611,7 @@ HOTKEY_PID = STATE / "skhd.pid"
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
+    return oslayer.alive(pid)
 
 
 def hotkey_up() -> None:
@@ -660,13 +620,14 @@ def hotkey_up() -> None:
     An skhd the user runs themselves (for their own bindings) is left alone:
     we only ever stop one we started, tracked by HOTKEY_PID."""
     skhd = shutil.which("skhd")
-    if not skhd:
+    if not skhd or not oslayer.IS_MAC:
+        # skhd is macOS only. Windows users bind the same keys with
+        # AutoHotkey (WINDOWS.md), or just start typing, which interrupts.
         return
     # OUR user's skhd only: on a shared Mac, another account's skhd made this
     # check pass, so ours never started and every hotkey silently did nothing
     # (their instance reads THEIR config, not ours).
-    if subprocess.run(["pgrep", "-U", str(os.getuid()), "-x", "skhd"],
-                      capture_output=True).returncode == 0:
+    if oslayer.any_matching("skhd", exact_name=True):
         return
     try:
         p = subprocess.Popen([skhd], stdout=subprocess.DEVNULL,
@@ -683,10 +644,8 @@ def hotkey_down() -> None:
     except Exception:
         return
     if _pid_alive(pid):
-        try:
-            os.kill(pid, 15)
-        except Exception as e:
-            core.log(f"hotkey_down failed: {e}")
+        if not oslayer.terminate(pid):
+            core.log("hotkey_down: could not stop skhd")
     try:
         HOTKEY_PID.unlink()
     except FileNotFoundError:
@@ -817,17 +776,17 @@ def _kill_recorder() -> None:
     leave the mic live."""
     for wav in (STATE / "talkd.wav", STATE / "talkd_cont.wav",
                 STATE / "barge.wav"):
-        subprocess.run(["pkill", "-U", str(os.getuid()), "-f", str(wav)],
-                       capture_output=True)
+        oslayer.kill_matching(str(wav))
 
 
 def _daemon_pids() -> list:
     # Only THIS user's daemons: another account's voicebridge (separate home
     # + state) is a different install we can't and shouldn't touch.
-    r = subprocess.run(["pgrep", "-U", str(os.getuid()),
-                        "-f", "vb talkd __run__"],
-                       capture_output=True, text=True)
-    return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+    # Windows: the vb path is quoted when the user name has a space in it
+    # ("C:\Users\First Last\..."), which splits "vb talkd" with a quote, so
+    # match on the part that is never quoted.
+    return oslayer.pids_matching("talkd __run__" if oslayer.IS_WIN
+                                 else "vb talkd __run__")
 
 
 def _kill_all_daemons(keep: int = 0) -> None:
@@ -835,22 +794,15 @@ def _kill_all_daemons(keep: int = 0) -> None:
     earlier runs otherwise survive restarts and cause double-voice. Escalate
     to SIGKILL: a daemon blocked in a subprocess (recording/speaking) soaks
     SIGTERM, so plain terminate leaves zombies that keep listening."""
-    import signal
     for pid in _daemon_pids():
         if pid == keep or pid == os.getpid():
             continue
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except Exception:
-            pass
+        oslayer.terminate(pid)
     time.sleep(0.3)
     for pid in _daemon_pids():
         if pid == keep or pid == os.getpid():
             continue
-        try:
-            os.kill(pid, signal.SIGKILL)   # force , it ignored SIGTERM
-        except Exception:
-            pass
+        oslayer.terminate(pid, force=True)   # it ignored the polite one
     _kill_recorder()   # never leave an orphaned recorder holding the mic
 
 
@@ -905,14 +857,16 @@ def stop_daemon() -> None:
         PID.unlink()
     except FileNotFoundError:
         pass
-    subprocess.run(["pkill", "-x", "say"], capture_output=True)
+    if oslayer.IS_WIN:
+        oslayer.stop_all_speech()   # SAPI speech is a tagged powershell there
+    else:
+        oslayer.kill_matching("say", exact_name=True)
     # The recorder is a plain child of the daemon, so killing the daemon
     # orphans it rather than stopping it: it keeps the input device until it
     # hits its own trim limit, up to 30 seconds. We just told the user the mic
     # was released. Match on our own wav so an unrelated sox recording of the
     # user's survives.
-    subprocess.run(["pkill", "-f", str(STATE / "talkd.wav")],
-                   capture_output=True)
+    oslayer.kill_matching(str(STATE / "talkd.wav"))
     _wipe_recordings()   # the mic is off; the recordings of the room go too
     hotkey_down()
 
@@ -1417,12 +1371,13 @@ def _speak_interruptible(text: str) -> str:
 def _any_speech_playing() -> bool:
     """True while ANY speech is playing: `say` from anywhere, or the current
     engine player tracked in speech.pid (kokoro/afplay)."""
-    if subprocess.run(["pgrep", "-x", "say"],
-                      capture_output=True).returncode == 0:
+    # Windows has no `say`; the SAPI fallback runs as a powershell tagged
+    # VBSPEAK, which is what stop_all_speech already looks for.
+    if oslayer.any_matching("VBSPEAK" if oslayer.IS_WIN else "say",
+                            exact_name=not oslayer.IS_WIN):
         return True
     try:
-        os.kill(int(core.SPEECH_PID.read_text().strip()), 0)
-        return True
+        return oslayer.alive(int(core.SPEECH_PID.read_text().strip()))
     except Exception:
         return False
 

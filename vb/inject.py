@@ -15,6 +15,8 @@ from . import core, oslayer
 
 
 def _pbpaste() -> str:
+    if not oslayer.IS_MAC:
+        return oslayer.clipboard_get()
     try:
         return subprocess.run(["pbpaste"], capture_output=True,
                               text=True).stdout
@@ -23,6 +25,10 @@ def _pbpaste() -> str:
 
 
 def _pbcopy(text: str) -> None:
+    if not oslayer.IS_MAC:
+        if not oslayer.clipboard_set(text):
+            core.log("clipboard set failed")
+        return
     try:
         subprocess.run(["pbcopy"], input=text, text=True)
     except Exception as e:
@@ -222,6 +228,8 @@ def press_enter(expect_app: str = "") -> bool:
 
 def frontmost_app() -> str:
     """Name of the app that will receive the paste; logged for diagnosis."""
+    if not oslayer.IS_MAC:
+        return oslayer.frontmost_app()
     try:
         r = subprocess.run(
             ["osascript", "-e",
@@ -299,7 +307,23 @@ def paste_text(text: str, send: bool = False, expect_app: str = "",
     if not text:
         return False
     if not oslayer.IS_MAC:      # Windows/Linux go through the OS layer
-        return oslayer.paste_text(text, send)   # real success, not blind True
+        # The focus guard still applies. Without it a Windows paste went to
+        # whatever had the cursor, which is the speech-in-a-DM failure the Mac
+        # path below exists to prevent. frontmost_app is the foreground
+        # window's executable there ('WindowsTerminal.exe'), the same thing a
+        # binding records, so the names compare like for like. Linux has no
+        # cheap way to ask and returns '', which passes, as before.
+        front = frontmost_app()
+        if expect_app and front and \
+                front.strip().casefold() != expect_app.strip().casefold():
+            core.log(f"paste: refusing, {front} is in front, not {expect_app}")
+            return False
+        saved = _pbpaste()
+        ok = oslayer.paste_text(text, send)   # real success, not blind True
+        if saved:
+            time.sleep(0.2)   # let the paste land before the clipboard changes
+            _pbcopy(saved)
+        return ok
     front = frontmost_app()
     target = (expect_app or "").strip()
     # With no app and no tty there was no guard at all, only the docstring:

@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 
-from . import core, inject, stt
+from . import core, inject, oslayer, stt
 from .talkd import ACTIVE, _read_json
 
 TG_DIR = core.STATE_DIR / "telegram"
@@ -246,8 +246,7 @@ def run_daemon() -> int:
 
 def _alive() -> bool:
     try:
-        os.kill(int(PID.read_text().strip()), 0)
-        return True
+        return oslayer.alive(int(PID.read_text().strip()))
     except Exception:
         return False
 
@@ -271,7 +270,7 @@ def on() -> str:
 
 def off() -> str:
     try:
-        os.kill(int(PID.read_text().strip()), 15)
+        oslayer.terminate(int(PID.read_text().strip()))
     except Exception:
         pass
     try:

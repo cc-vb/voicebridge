@@ -12,7 +12,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import core
+from . import core, oslayer
 
 MODEL_DIR = core.STATE_DIR / "models"
 # English-only models are more accurate for English; the multilingual model
@@ -170,6 +170,14 @@ def _find(name: str) -> str:
     p = shutil.which(name)
     if p:
         return p
+    # Windows: install.ps1 unpacks the whole whisper.cpp zip into one folder
+    # under the state dir rather than onto PATH, because whisper-cli.exe needs
+    # its DLLs (ggml, whisper, SDL2) beside it and a PATH edit only takes
+    # effect in terminals opened afterwards.
+    if oslayer.IS_WIN:
+        cand = core.STATE_DIR / "whisper" / (name + ".exe")
+        if cand.exists():
+            return str(cand)
     for d in _BREW_BINS:
         cand = os.path.join(d, name)
         if os.path.exists(cand):
@@ -194,7 +202,7 @@ def whisper_bin() -> str:
 # Per-uid default so two accounts on one Mac don't collide on the whisper port
 # (any HTTP reply there reads as "up"). VB_STT_PORT wins; the server is launched
 # with --port WHISPER_PORT, so server and client always agree.
-WHISPER_PORT = int(os.environ.get("VB_STT_PORT") or (7000 + os.getuid() % 1000))
+WHISPER_PORT = int(os.environ.get("VB_STT_PORT") or (7000 + oslayer.uid() % 1000))
 
 
 def whisper_server_bin() -> str:
@@ -202,6 +210,19 @@ def whisper_server_bin() -> str:
 
 
 def whisper_up() -> bool:
+    if oslayer.IS_WIN:
+        # curl's `-o /dev/null` names a file that does not exist on Windows.
+        # Any HTTP answer, including an error status, means it is listening.
+        import urllib.error
+        import urllib.request
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{WHISPER_PORT}/",
+                                   timeout=2)
+            return True
+        except urllib.error.HTTPError:
+            return True
+        except Exception:
+            return False
     try:
         r = subprocess.run(
             ["curl", "-s", "-m", "2", "-o", "/dev/null", "-w", "%{http_code}",
@@ -229,8 +250,7 @@ def _server_matches() -> bool:
     want_model, want_lang = stt_lang_mode()
     try:
         pid = int((core.STATE_DIR / "stt.pid").read_text().strip())
-        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
-                             capture_output=True, text=True, timeout=10).stdout
+        cmd = oslayer.proc_cmdline(pid)
     except Exception:
         return False
     return want_model.name in cmd and f"-l {want_lang}" in cmd
@@ -240,14 +260,21 @@ def _stop_whisper_server() -> None:
     """Stop the one we started, and anything else holding the port."""
     try:
         pid = int((core.STATE_DIR / "stt.pid").read_text().strip())
-        os.kill(pid, 15)
+        oslayer.terminate(pid)
     except Exception:
         pass
-    try:
-        subprocess.run(["pkill", "-f", f"whisper-server.*--port {WHISPER_PORT}"],
-                       capture_output=True, timeout=10)
-    except Exception:
-        pass
+    if oslayer.IS_WIN:
+        # No regex there; the port alone identifies ours.
+        for p, cmd in oslayer.cmdlines():
+            if "whisper-server" in cmd and f"--port {WHISPER_PORT}" in cmd:
+                oslayer.terminate(p)
+    else:
+        try:
+            subprocess.run(["pkill", "-f",
+                            f"whisper-server.*--port {WHISPER_PORT}"],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
     for _ in range(20):
         if not whisper_up():
             return
@@ -343,7 +370,8 @@ def _transcribe_server(wav: str) -> "tuple[str, float] | None":
 def have_deps() -> dict:
     return {
         "whisper": whisper_bin(),
-        "rec": _find("rec"),
+        "rec": ("sounddevice" if oslayer.IS_WIN and
+                oslayer.recorder_available("") else _find("rec")),
         "model": str(MODEL) if MODEL.exists() else "",
     }
 
@@ -381,7 +409,6 @@ def _hold_mic_lock_while(proc) -> None:
     take the lock must never stop a recording, it only means the indicator
     falls back to hiding, which is the safe direction.
     """
-    import fcntl
     import threading
 
     def keep():
@@ -390,9 +417,7 @@ def _hold_mic_lock_while(proc) -> None:
             f = open(_MIC_LOCK, "w")
         except Exception:
             return
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except Exception:
+        if not oslayer.try_lock(f):
             f.close()          # somebody else is recording; not ours to claim
             return
         try:
@@ -400,7 +425,7 @@ def _hold_mic_lock_while(proc) -> None:
                 time.sleep(0.1)
         finally:
             try:
-                fcntl.flock(f, fcntl.LOCK_UN)
+                oslayer.unlock(f)
             finally:
                 f.close()
 
@@ -415,18 +440,13 @@ def record(wav: str, max_secs: int = 30,
     seconds of quiet. Whisper wants 16kHz mono, so we record that directly.
     """
     rec = _find("rec")
-    if not rec:
-        core.log("record: sox `rec` not found")
+    if not oslayer.recorder_available(rec):
+        core.log("record: no recorder (sox `rec`, or sounddevice on Windows)")
         return False
     # Start on the very first faint sound (0.05s @ 0.3%) so the opening word
     # isn't eaten by speech detection; stop after `silence_stop` of quiet.
     # `norm` levels it up so you don't have to be loud.
-    cmd = [
-        rec, "-q", "-c", "1", "-r", "16000", "-b", "16", wav,
-        "trim", "0", str(max_secs),
-        "silence", "1", "0.05", "0.3%", "1", str(silence_stop), "1.5%",
-        "norm", "-1",
-    ]
+    cmd = oslayer.record_cmd(rec, wav, max_secs, silence_stop, norm=True)
     try:
         p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
@@ -446,16 +466,12 @@ def record_start(wav: str, max_secs: int = 30,
     a silent wait short when Claude's reply lands.
     """
     rec = _find("rec")
-    if not rec:
-        core.log("record_start: sox `rec` not found")
+    if not oslayer.recorder_available(rec):
+        core.log("record_start: no recorder (sox `rec`, or sounddevice)")
         return None
     # No `norm` here: it buffers the whole file until the end, which breaks
     # mid-recording did-speech-start checks that poll the wav's size.
-    cmd = [
-        rec, "-q", "-c", "1", "-r", "16000", "-b", "16", wav,
-        "trim", "0", str(max_secs),
-        "silence", "1", "0.05", "0.3%", "1", str(silence_stop), "1.5%",
-    ]
+    cmd = oslayer.record_cmd(rec, wav, max_secs, silence_stop)
     try:
         p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
@@ -479,11 +495,10 @@ def record_hold(wav: str, max_secs: int = 120):
     So: no silence effect at all. It records from the instant it starts until
     the caller kills it, which is the moment you let go."""
     rec = _find("rec")
-    if not rec:
-        core.log("record_hold: sox `rec` not found")
+    if not oslayer.recorder_available(rec):
+        core.log("record_hold: no recorder (sox `rec`, or sounddevice)")
         return None
-    cmd = [rec, "-q", "-c", "1", "-r", "16000", "-b", "16", wav,
-           "trim", "0", str(max_secs)]
+    cmd = oslayer.record_cmd(rec, wav, max_secs)
     try:
         # sox's stderr is kept, not discarded. When a recording comes back
         # empty, sox has almost always said why ("can't open input device",
@@ -649,7 +664,11 @@ def transcribe_ex(wav: str) -> "tuple[str, float]":
            "--prompt", whisper_prompt(),   # same vocabulary biasing as the server
            "-ojf", "-of", base]   # -ojf: full JSON includes token probabilities
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        # UTF-8 named, not text=True: whisper prints UTF-8 everywhere, and
+        # text=True decodes with the locale's code page on Windows (cp1252),
+        # which turns every Hindi transcript into mojibake. Same on a Mac.
+        out = subprocess.run(cmd, capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=120)
     except Exception as e:
         core.log(f"transcribe failed: {e}")
         return "", 0.0
@@ -661,7 +680,7 @@ def transcribe_ex(wav: str) -> "tuple[str, float]":
     conf = 0.0
     jpath = base + ".json"
     try:
-        with open(jpath) as f:
+        with open(jpath, encoding="utf-8") as f:
             data = json.load(f)
         probs = [t.get("p", 0.0)
                  for seg in data.get("transcription", [])
@@ -684,11 +703,33 @@ def loudness(wav: str) -> float:
     the mic is loud; background conversation and whispers are quiet."""
     sox = _find("sox")
     if not sox:
-        return -1.0
+        return _loudness_py(wav)
     try:
         r = subprocess.run([sox, wav, "-n", "stat"], capture_output=True,
                            text=True, timeout=30)
         m = re.search(r"RMS\s+amplitude:\s+([0-9.]+)", r.stderr)
         return float(m.group(1)) if m else -1.0
+    except Exception:
+        return -1.0
+
+
+def _loudness_py(wav: str) -> float:
+    """sox's "RMS amplitude" without sox: the RMS of the samples over full
+    scale. Windows has no sox (vb/winrec.py records instead), and returning
+    -1 there failed every mic check and every loudness gate on a machine
+    whose microphone worked. Our recordings are 16-bit PCM, which is all
+    this reads; anything else is -1, as a missing sox used to be."""
+    import array
+    import wave
+    try:
+        with wave.open(wav, "rb") as w:
+            if w.getsampwidth() != 2:
+                return -1.0
+            raw = w.readframes(w.getnframes())
+        a = array.array("h")
+        a.frombytes(raw[: len(raw) - len(raw) % 2])
+        if not a:
+            return 0.0
+        return (sum(x * x for x in a) / len(a)) ** 0.5 / 32768.0
     except Exception:
         return -1.0

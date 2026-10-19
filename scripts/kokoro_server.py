@@ -23,7 +23,19 @@ VOICES = os.path.join(HOME, ".voicebridge", "models", "voices-v1.0.bin")
 # port nobody looks at. It did: core.py uses 6000 + uid % 1000 while this
 # defaulted to a fixed 8798, so a manually started server was invisible to the
 # product and sat there answering nobody.
-PORT = int(os.environ.get("VB_TTS_PORT") or (6000 + os.getuid() % 1000))
+# Windows has no getuid; this is vb.oslayer.uid() spelled out, because the
+# venv this runs in cannot import vb.
+
+
+def _uid() -> int:
+    if hasattr(os, "getuid"):
+        return os.getuid()
+    import zlib
+    name = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+    return zlib.crc32(name.lower().encode()) & 0xFFFF
+
+
+PORT = int(os.environ.get("VB_TTS_PORT") or (6000 + _uid() % 1000))
 
 def _load():
     """Kokoro on the fastest backend this Mac actually has.

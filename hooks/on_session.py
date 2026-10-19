@@ -90,6 +90,18 @@ def _auto_update() -> None:
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
         stamp.write_text(str(time.time()))
         # Only if clean; --ff-only so it can never create a merge/conflict.
+        if os.name == "nt":
+            # No bash to lean on: `bash` there may be WSL's, which cannot see
+            # this path. Same two steps, the status check in-line (it is
+            # tens of milliseconds), the pull in the background as below.
+            dirty = subprocess.run(["git", "-C", str(repo), "status",
+                                    "--porcelain"], capture_output=True,
+                                   text=True, timeout=3).stdout.strip()
+            if not dirty:
+                subprocess.Popen(["git", "-C", str(repo), "pull", "--ff-only"],
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            return
         subprocess.Popen(
             ["bash", "-c",
              f'cd "{repo}" && [ -z "$(git status --porcelain)" ] && '

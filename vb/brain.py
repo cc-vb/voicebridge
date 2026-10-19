@@ -25,7 +25,7 @@ import subprocess
 import time
 import urllib.request
 
-from . import core
+from . import core, oslayer
 
 MODEL_DIR = core.STATE_DIR / "models"
 
@@ -46,7 +46,7 @@ MODEL_PATH = MODEL_DIR / MODEL_NAME
 
 # Per-uid so two accounts on one Mac never fight over a port (kokoro is 6000+,
 # the old mlx summarizer 6100+, whisper 7000+, the phone relay 8790+).
-PORT = int(os.environ.get("VB_BRAIN_PORT") or (6200 + os.getuid() % 1000))
+PORT = int(os.environ.get("VB_BRAIN_PORT") or (6200 + oslayer.uid() % 1000))
 
 # A spoken loop cannot wait. These are ceilings, not targets: a warm 4B answers
 # a classification in well under a second on Apple Silicon.

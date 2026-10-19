@@ -296,30 +296,32 @@ def _live_cwds() -> dict:
     process named `claude`; lsof gives its working directory). This is the
     real 'can I talk to it?' signal: closed sessions leave transcripts behind
     but no process."""
-    import subprocess as _sp
+    from . import oslayer
     cwds = {}
     try:
-        # ps, not pgrep: Claude Code rewrites its process identity in a way
-        # pgrep cannot match on macOS (verified: ps sees comm "claude",
-        # pgrep -x/-f "claude" both return nothing).
-        out = _sp.run(["ps", "-axo", "pid=,comm="], capture_output=True,
-                      text=True).stdout
-        pids = [ln.split(None, 1)[0] for ln in out.splitlines()
-                if ln.strip() and ln.split(None, 1)[-1].strip()
-                .split("/")[-1] == "claude"]
+        # The process table, not pgrep: Claude Code rewrites its process
+        # identity in a way pgrep cannot match on macOS (verified: ps sees
+        # comm "claude", pgrep -x/-f "claude" both return nothing). On Windows
+        # it is claude.exe; is_claude takes both.
+        pids = [p for p, _, name in oslayer.processes()
+                if oslayer.is_claude(name)]
         for pid in pids[:16]:
-            r = _sp.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
-                        capture_output=True, text=True, timeout=3)
-            for ln in r.stdout.splitlines():
-                if ln.startswith("n"):
-                    cwds[ln[1:]] = cwds.get(ln[1:], 0) + 1
+            cwd = oslayer.proc_cwd(pid)
+            if cwd:
+                cwds[cwd] = cwds.get(cwd, 0) + 1
     except Exception:
         pass
     return cwds
 
 
 def _munge(cwd: str) -> str:
-    """A cwd as Claude Code names its project dir (/Users/x/y -> -Users-x-y)."""
+    """A cwd as Claude Code names its project dir (/Users/x/y -> -Users-x-y).
+
+    On Windows the drive colon and backslashes go too (C:\\Users\\x becomes
+    C--Users-x); without that no live Windows session ever matched its
+    transcript folder and every one read as closed."""
+    if os.name == "nt":
+        return "".join(c if c.isascii() and c.isalnum() else "-" for c in cwd)
     return cwd.replace("/", "-").replace(".", "-")
 
 
