@@ -176,12 +176,10 @@ def stop_all_speech() -> None:
         # every powershell on the machine. The old `taskkill /F /IM
         # powershell.exe` force-killed unrelated user work (build scripts,
         # terminals, even the launcher). Exclude this stopper's own pid.
-        ps = ("Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" "
-              "| Where-Object { $_.CommandLine -like '*VBSPEAK*' "
-              "-and $_.ProcessId -ne $PID } "
-              "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
-        subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Read in-process now (cmdlines), not by starting a PowerShell to run
+        # a CIM query: that took most of a second, on the path that has to
+        # silence speech the moment you start talking.
+        kill_matching("VBSPEAK")
     else:
         _pk("aplay")
         _pk("espeak-ng")   # the espeak fallback speaks directly, also stop it
@@ -533,25 +531,18 @@ def proc_tty(pid: int) -> str:
 def cmdlines() -> list:
     """[(pid, full command line)] for every process we can see.
 
-    The slow one on Windows (a PowerShell CIM query, 0.3 to 1s), so it is
-    only used where matching on arguments is the point: finding OUR
-    recorder by its wav path, our whisper server by its port."""
+    Windows reads each command line out of the process's PEB rather than
+    asking PowerShell's CIM, which took 0.3 to 1s and a whole PowerShell
+    start per call; talkd asks "is speech still playing?" four times a
+    second while it waits to open the mic. Processes we may not read
+    (another user's, protected ones) are left out, which is what "ours"
+    means here anyway."""
     if IS_WIN:
-        ps = ("Get-CimInstance Win32_Process | ForEach-Object "
-              "{ \"$($_.ProcessId)`t$($_.CommandLine)\" }")
-        try:
-            txt = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                                 capture_output=True, text=True,
-                                 timeout=15).stdout
-        except Exception:
-            return []
         out = []
-        for line in txt.splitlines():
-            pid_s, _, cmd = line.partition("\t")
-            try:
-                out.append((int(pid_s), cmd))
-            except ValueError:
-                pass
+        for pid, _, _ in processes():
+            cmd = _peb_string(pid, 0x70) if pid > 4 else ""
+            if cmd:
+                out.append((pid, cmd))
         return out
     try:
         txt = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True,
@@ -577,10 +568,7 @@ def proc_cmdline(pid: int) -> str:
                                   timeout=3).stdout.strip()
         except Exception:
             return ""
-    for p, cmd in cmdlines():
-        if p == pid:
-            return cmd
-    return ""
+    return _peb_string(pid, 0x70)
 
 
 def terminate(pid: int, force: bool = False) -> bool:
@@ -963,6 +951,17 @@ def proc_cwd(pid: int) -> str:
             if ln.startswith("n"):
                 return ln[1:]
         return ""
+    path = _peb_string(pid, 0x38)    # CurrentDirectory.DosPath
+    # Windows keeps a trailing backslash on it ("C:\x\"); POSIX doesn't.
+    return path[:-1] if len(path) > 3 and path.endswith("\\") else path
+
+
+def _peb_string(pid: int, offset: int) -> str:
+    """A UNICODE_STRING out of another process's RTL_USER_PROCESS_PARAMETERS
+    (x64 offsets: 0x38 CurrentDirectory, 0x70 CommandLine). '' when the
+    process is gone, protected or another user's, which callers treat as
+    "not ours"."""
+    import struct
     try:
         nt = ctypes.WinDLL("ntdll")
         h = _k32.OpenProcess(0x0400 | 0x0010, False, pid)  # QUERY_INFO|VM_READ
@@ -977,6 +976,8 @@ def proc_cwd(pid: int) -> str:
                                             None) != 0:
                 return ""
             peb = pbi[1]
+            if not peb:
+                return ""
 
             def _read(addr, n):
                 buf = ctypes.create_string_buffer(n)
@@ -987,16 +988,12 @@ def proc_cwd(pid: int) -> str:
                     raise OSError("short read")
                 return buf.raw
 
-            import struct
             params = struct.unpack("<Q", _read(peb + 0x20, 8))[0]
-            # CurrentDirectory.DosPath is a UNICODE_STRING at +0x38.
             ln, _mx, _pad, buf = struct.unpack(
-                "<HHIQ", _read(params + 0x38, 16))
+                "<HHIQ", _read(params + offset, 16))
             if not ln or not buf:
                 return ""
-            path = _read(buf, ln).decode("utf-16-le")
-            # Windows keeps a trailing backslash on it ("C:\x\"); POSIX doesn't.
-            return path[:-1] if len(path) > 3 and path.endswith("\\") else path
+            return _read(buf, ln).decode("utf-16-le", "replace")
         finally:
             _k32.CloseHandle(h)
     except Exception:
@@ -1074,3 +1071,20 @@ def open_file(path: str) -> bool:
     except Exception:
         pass
     return False
+
+
+def detached() -> dict:
+    """Popen arguments for a helper that must outlive the terminal it was
+    started from (talkd, the speech worker, the Kokoro and whisper servers).
+
+    POSIX: its own session, as every caller always passed. Windows ignores
+    start_new_session, so those helpers stayed attached to the terminal's
+    console: pressing Ctrl+C in Claude Code sent CTRL_C_EVENT to all of
+    them, and closing the window killed them. A new process group with a
+    hidden console of its own (CREATE_NO_WINDOW, not DETACHED_PROCESS, so
+    the PowerShell and whisper it starts in turn get no console window
+    flashing up either) is the Windows equivalent."""
+    if IS_WIN:
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW}
+    return {"start_new_session": True}

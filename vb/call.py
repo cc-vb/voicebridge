@@ -7119,7 +7119,7 @@ def on() -> str:
     env = dict(os.environ)
     p = subprocess.Popen([sys.executable, vb, "call", "__run__"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True, env=env)
+                         **oslayer.detached(), env=env)
     PID.write_text(str(p.pid))
     # Verify it actually came up: a silent bind failure (port in use) used to
     # print "relay ON" and leave the phone hitting a corpse through the tunnel.

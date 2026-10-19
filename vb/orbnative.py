@@ -57,7 +57,7 @@ def show() -> bool:
         return False
     try:
         p = subprocess.Popen([exe], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+                             stderr=subprocess.DEVNULL, **oslayer.detached())
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
         PID.write_text(str(p.pid))
         return True

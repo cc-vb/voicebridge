@@ -71,7 +71,7 @@ def _beep(sound: str) -> None:
         return
     try:
         subprocess.Popen(oslayer.play_cmd(sound), stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+                         stderr=subprocess.DEVNULL, **oslayer.detached())
     except Exception:
         pass
 

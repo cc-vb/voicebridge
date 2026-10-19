@@ -133,7 +133,7 @@ def start(wait_s: float = 0.0) -> bool:
              "--n-gpu-layers", "99",        # Metal: put it all on the GPU
              "--parallel", "1", "--no-webui"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
         core.log(f"brain starting on :{PORT}")
     except Exception as e:
         core.log(f"brain start failed: {e}")

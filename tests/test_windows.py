@@ -101,6 +101,27 @@ def test_proc_cwd_reads_another_process(tmp_path):
         p.wait()
 
 
+def test_command_lines_find_and_stop_ours():
+    # How talkd finds its recorder (by wav path) and hush finds the Windows
+    # voice (by its VBSPEAK tag). Windows reads these from each process's
+    # PEB, so check the text that comes back, not just that something did.
+    marker = f"vb-test-marker-{os.getpid()}"
+    p = subprocess.Popen([sys.executable, "-c",
+                          "import sys, time; time.sleep(60)", marker])
+    try:
+        time.sleep(0.5)
+        assert marker in oslayer.proc_cmdline(p.pid)
+        assert p.pid in oslayer.pids_matching(marker)
+        assert oslayer.any_matching(marker)
+        assert oslayer.kill_matching(marker) >= 1
+        assert p.wait(timeout=10) is not None
+        assert not oslayer.any_matching(marker)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+
+
 def test_pause_and_resume_a_process_tree(tmp_path):
     # hold() pauses a reply mid-sentence. The speech pid is a worker whose
     # CHILD makes the sound, so the pause has to reach the child too.
@@ -134,6 +155,27 @@ def test_pause_and_resume_a_process_tree(tmp_path):
             p.wait(timeout=10)
         except Exception:
             p.kill()
+
+
+def test_a_detached_helper_outlives_the_process_that_started_it(tmp_path):
+    # talkd and the voice servers are started by short-lived hooks and must
+    # keep running after them, on their own console group on Windows.
+    pidf = tmp_path / "child.pid"
+    parent = ("import subprocess, sys\n"
+              "sys.path.insert(0, sys.argv[2])\n"
+              "from vb import oslayer\n"
+              "c = subprocess.Popen([sys.executable, '-c', "
+              "'import time; time.sleep(60)'], **oslayer.detached())\n"
+              "open(sys.argv[1], 'w').write(str(c.pid))\n")
+    root = str(Path(__file__).resolve().parent.parent)
+    subprocess.run([sys.executable, "-c", parent, str(pidf), root],
+                   check=True, timeout=30)
+    child = int(pidf.read_text())
+    try:
+        time.sleep(0.3)
+        assert oslayer.alive(child), "the helper died with its parent"
+    finally:
+        oslayer.terminate(child, force=True)
 
 
 def test_mic_lock_is_exclusive(tmp_path):

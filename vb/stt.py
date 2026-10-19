@@ -302,7 +302,7 @@ def ensure_whisper_server(wait_s: float = 20.0) -> bool:
             [srv, "-m", str(model), "-l", lang,
              "--port", str(WHISPER_PORT), "-nt"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
         (core.STATE_DIR / "stt.pid").write_text(str(p.pid))
     except Exception as e:
         core.log(f"whisper server autostart failed: {e}")

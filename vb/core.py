@@ -1421,7 +1421,7 @@ def cue_tick() -> None:
     try:
         subprocess.Popen(oslayer.play_cmd(snd),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+                         **oslayer.detached())
     except Exception:
         pass
 
@@ -1535,7 +1535,7 @@ def ensure_kokoro_server(wait_s: float = 10.0) -> bool:
         p = subprocess.Popen([str(venv_py), str(server)],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL,
-                             start_new_session=True,
+                             **oslayer.detached(),
                              # bind the SAME per-uid port the client will use
                              env={**os.environ, "VB_TTS_PORT": str(KOKORO_PORT)})
         (STATE_DIR / "tts.pid").write_text(str(p.pid))
@@ -1708,7 +1708,7 @@ def start_speech(text: str):
         p = subprocess.Popen(
             [_sys.executable, vb, "__speak__"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
     except Exception as e:
         log(f"start_speech failed: {e}")
         return None

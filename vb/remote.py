@@ -262,7 +262,7 @@ def on() -> str:
         os.path.abspath(__file__))), "bin", "vb")
     p = subprocess.Popen([sys.executable, vb, "remote", "__run__"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+                         **oslayer.detached())
     PID.write_text(str(p.pid))
     return (f"remote bridge ON (pid {p.pid}). Message your bot from your "
             f"phone. Keep this Mac awake and the session focused.")

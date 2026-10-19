@@ -631,7 +631,7 @@ def hotkey_up() -> None:
         return
     try:
         p = subprocess.Popen([skhd], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+                             stderr=subprocess.DEVNULL, **oslayer.detached())
         HOTKEY_PID.write_text(str(p.pid))
     except Exception as e:
         core.log(f"hotkey_up failed: {e}")
@@ -812,7 +812,7 @@ def _start_daemon() -> None:
         os.path.abspath(__file__))), "bin", "vb")
     p = subprocess.Popen([sys.executable, vb, "talkd", "__run__"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+                         **oslayer.detached())
     PID.write_text(str(p.pid))
     VER.write_text(_code_version())   # stamp the code this daemon is running
 

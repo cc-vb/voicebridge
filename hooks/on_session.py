@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from vb import core  # noqa: E402
+from vb import core, oslayer  # noqa: E402
 
 
 def _kick_update_check() -> None:
@@ -24,7 +24,7 @@ def _kick_update_check() -> None:
              "import sys;sys.path.insert(0,%r);from vb import core;"
              "core.check_for_update()" % str(Path(__file__).resolve().parent.parent)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
     except Exception:
         pass
 
@@ -41,7 +41,7 @@ def _kick_selfheal() -> None:
              "import sys;sys.path.insert(0,%r);from vb import selfheal;"
              "selfheal.heal(True)" % str(Path(__file__).resolve().parent.parent)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
     except Exception:
         pass
 
@@ -107,7 +107,7 @@ def _auto_update() -> None:
              f'cd "{repo}" && [ -z "$(git status --porcelain)" ] && '
              f'git pull --ff-only >/dev/null 2>&1'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
     except Exception:
         pass
 

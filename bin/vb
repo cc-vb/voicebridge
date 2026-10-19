@@ -106,7 +106,7 @@ def _orb_show(quiet: bool = False) -> None:
     try:
         p = subprocess.Popen([sys.executable, str(script)],
                              stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+                             stderr=subprocess.DEVNULL, **oslayer.detached())
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
         orb_pid.write_text(str(p.pid))
         if not quiet:
@@ -153,7 +153,7 @@ def start_watcher(path: str, narrate: bool) -> str:
         args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **oslayer.detached(),
     )
     core.STATE_DIR.mkdir(parents=True, exist_ok=True)
     core.WATCH_PID.write_text(str(p.pid))
@@ -322,7 +322,7 @@ def main(argv) -> int:
                 p = subprocess.Popen([str(venv_py), str(server)],
                                      stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL,
-                                     start_new_session=True)
+                                     **oslayer.detached())
                 pidf.write_text(str(p.pid))
                 print(f"kokoro server starting (pid {p.pid}, first load ~5s)")
         elif sub == "off":
@@ -548,7 +548,7 @@ def main(argv) -> int:
         with open(logf, "w") as lf:
             p = subprocess.Popen([cf, "tunnel", "--url",
                                   f"http://127.0.0.1:{port}"],
-                                 stdout=lf, stderr=lf, start_new_session=True)
+                                 stdout=lf, stderr=lf, **oslayer.detached())
         (core.STATE_DIR / "tunnel.pid").write_text(str(p.pid))
         url = ""
         for _ in range(60):
@@ -1776,7 +1776,7 @@ def main(argv) -> int:
                 subprocess.Popen(oslayer.play_cmd(sound),
                                  stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
+                                 **oslayer.detached())
 
         if not stt.whisper_bin() or not stt.MODEL.exists():
             print("STT not ready. Run: vb stt   (model may still be "
@@ -1796,7 +1796,7 @@ def main(argv) -> int:
             subprocess.Popen(oslayer.play_cmd(_tink),
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+                             **oslayer.detached())
         _t.sleep(0.4)
         print("listening now (speak, then pause)...")
         if not stt.record(wav):
