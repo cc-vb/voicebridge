@@ -1,55 +1,119 @@
-# voicebridge on Windows (beta, needs a tester)
+# voicebridge on Windows
 
-The core is now cross-platform (`vb/oslayer.py` abstracts every OS-specific
-call). Windows uses built-in SAPI for the fallback voice and SendKeys for
-typing into the session; Kokoro (the good voice) and whisper.cpp run the
-same as on Mac. **This path is built but not yet verified on a real Windows
-machine, help testing is welcome.**
+Windows 10 and 11, x64. The install and everything that does not need a
+microphone or speakers is tested on a clean Windows machine by CI
+([`.github/workflows/windows.yml`](.github/workflows/windows.yml)). The parts
+that need hardware are checked by a one-minute script you run yourself
+([below](#check-it-on-your-pc)).
 
 ## Install
+
+In PowerShell (a normal one, not as administrator):
 
 ```powershell
 irm https://raw.githubusercontent.com/cc-vb/voicebridge/main/install.ps1 | iex
 ```
-or from a clone: `powershell -ExecutionPolicy Bypass -File install.ps1`
 
-The installer sets up: ffmpeg + Python (via winget), the whisper model,
-a `vb` command shim, Kokoro voice, hooks, and the slash commands.
+or from a clone: `powershell -ExecutionPolicy Bypass -File install.ps1`.
+It asks no questions and is safe to run again. It sets up:
 
-## Two manual pieces
+| Step | What | Where |
+|---|---|---|
+| Python | finds Python 3.9+ (installs 3.12 with winget if there is none) | |
+| Code | `git clone` (or a zip when git is missing) | `%USERPROFILE%\voicebridge` |
+| Recorder | `pip install --user sounddevice` | |
+| Speech to text | whisper.cpp b5454 Windows build, SHA256-pinned | `%USERPROFILE%\.voicebridge\whisper` |
+| Model | `ggml-small.en.bin`, ~466MB | `%USERPROFILE%\.voicebridge\models` |
+| `vb` command | `vb.cmd`, folder added to your user PATH | `%USERPROFILE%\.voicebridge\bin` |
+| Voice | Kokoro in its own venv, ~400MB (skip with `$env:VB_KOKORO="0"`) | `%USERPROFILE%\.voicebridge\kokoro-venv` |
+| Claude Code | hooks in `settings.json`, slash commands | `%USERPROFILE%\.claude` |
 
-1. **Recording**: install a recorder on PATH. Easiest is sox
-   (`scoop install sox` or `choco install sox`), which `vb` already knows
-   how to drive. Grant your terminal Microphone permission (Windows
-   Settings -> Privacy & security -> Microphone).
-2. **whisper.cpp**: put `whisper-cli.exe` on PATH (winget, or build from
-   ggerganov/whisper.cpp). `vb stt` tells you if it's found.
-3. **Interrupt hotkey** (optional): skhd is macOS-only. On Windows use
-   [AutoHotkey](https://www.autohotkey.com/) with a one-line script:
-   ```ahk
-   ^!#z:: Run, vb stop      ; Ctrl+Alt+Win+Z = stop
-   ^!#x:: Run, vb hush      ; Ctrl+Alt+Win+X = silence
-   F9::  Run, vb faster     ; F9 = speed up
-   F7::  Run, vb slower     ; F7 = slow down
-   ```
-   Or just start typing, that always interrupts.
+Then:
 
-## What's shared vs platform-specific
+1. **Microphone:** Settings > Privacy & security > Microphone, turn on
+   "Let desktop apps access your microphone".
+2. Open a **new** terminal (PATH changes only reach new ones) and run
+   `vb doctor`.
+3. In any Claude Code session: `/voice-on`, and talk.
+
+## Check it on your PC
+
+```powershell
+powershell -ExecutionPolicy Bypass -File $HOME\voicebridge\scripts\windows-smoke.ps1
+```
+
+It checks Python, `vb` on PATH, whisper, the model, your microphone, records
+3 seconds, transcribes them, speaks a line and pastes into Notepad, and
+prints PASS or FAIL with the fix for each step. If something fails, paste the
+output into an issue.
+
+## What is different from the Mac
 
 | Piece | Mac | Windows |
 |---|---|---|
-| STT | whisper.cpp | whisper.cpp (same) |
-| Voice (Kokoro) | local server | local server (same) |
+| Recording | sox `rec` | `vb/winrec.py` (sounddevice), same silence rules |
+| Speech to text | whisper.cpp | whisper.cpp, same models |
+| Voice | Kokoro | Kokoro, same |
 | Fallback voice | `say` | SAPI (`System.Speech`) |
-| Type into session | osascript paste | SendKeys `^v` |
-| Interrupt key send | osascript Esc | SendKeys `{ESC}` |
-| Play audio | afplay | `System.Media.SoundPlayer` |
-| Hotkey daemon | skhd | AutoHotkey |
+| Typing into the session | paste by AppleScript, or straight into the Terminal tab | clipboard paste (`Ctrl+V` by SendKeys), Unicode kept |
+| Playing audio | afplay | `System.Media.SoundPlayer` |
+| Pausing a reply (`vb hold`) | SIGSTOP | suspends the player process tree |
+| Hotkeys | skhd | AutoHotkey (below) |
 
-## Known gaps (contributions welcome)
+Why no sox: Windows has no `rec`, no dependable winget package for sox, and
+its device naming would need special cases everywhere. sounddevice ships
+PortAudio inside its wheel, so one `pip install` is the whole dependency.
 
-- App-binding (voice only pastes into the bound app) is macOS-only so far;
-  on Windows the paste goes to the focused window, keep it focused.
-- The `vb phone` QR/tunnel path is untested on Windows (cloudflared has a
-  Windows build; should work).
-- No `vb doctor` Windows-specific checks yet.
+## Hotkeys
+
+skhd is macOS only. With [AutoHotkey](https://www.autohotkey.com/) v2:
+
+```ahk
+^!#z:: Run "vb stop"      ; Ctrl+Alt+Win+Z: silence and stop Claude
+^!#x:: Run "vb hush"      ; Ctrl+Alt+Win+X: silence
+F9::  Run "vb faster"
+F7::  Run "vb slower"
+```
+
+Or just start typing: that always interrupts.
+
+## What CI proves on every push to the Windows branch
+
+- `irm ... | iex` installs end to end on a clean `windows-latest`, under
+  Windows PowerShell 5.1, with no input, and a second run changes nothing
+- `vb` resolves on PATH in a new shell and `vb --help` and `vb stt` work
+- the hooks are registered with the real Python (not the `python3` Store
+  stub) and the slash commands are copied
+- `whisper-cli.exe` transcribes a recorded sentence correctly
+- the recorder writes a valid, correctly gated WAV (fed from a file: CI
+  machines have no microphone)
+- the Windows voice writes a non-empty WAV, with a typographic apostrophe
+  in the text
+- the clipboard round-trips Hindi and typographic quotes unchanged
+- the whole pytest suite passes on Windows, including Kokoro synthesising
+  speech and the process checks (a liveness check never kills, pausing
+  reaches the child that plays the sound, another process's working
+  directory reads back correctly)
+
+## What only a person can check
+
+Run the smoke script above for these:
+
+- a real microphone: device, permission, level
+- hearing the voice through real speakers
+- a paste landing in a real focused window
+- the AutoHotkey bindings
+
+## Known gaps
+
+- **Session targeting.** On a Mac a prompt can go straight into one
+  Terminal tab by its tty, without bringing the window forward. Windows has
+  no equivalent, so it pastes into the bound app's window and refuses if a
+  different app is in front. Keep the terminal you voiced in focused.
+- **`vb session` (the Bun channel) is macOS only**: it plays audio with
+  afplay. `/voice-on`, which is the normal path, does not use it.
+- **The floating orb is macOS only** (a Swift app).
+- **Spoken summaries need Ollama on Windows.** The Mac uses Apple's model
+  or MLX first; on Windows only the Ollama backend applies, and without it
+  replies are read in full (summaries are off by default anyway).
+- **ARM64 Windows is untested.** The whisper build is x64.
