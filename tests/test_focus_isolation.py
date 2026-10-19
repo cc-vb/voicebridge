@@ -99,7 +99,7 @@ class Spy:
 def spy(monkeypatch):
     s = Spy()
     monkeypatch.setattr(inject, "_osa", s)
-    monkeypatch.setattr(inject, "_pbcopy", lambda text: None)
+    monkeypatch.setattr(inject, "_pbcopy", lambda text: True)   # it worked
     monkeypatch.setattr(inject, "_pbpaste", lambda: "")
     # Windows' keystrokes: recorded, never sent into the developer's window.
     monkeypatch.setattr(inject, "_send_keys", lambda keys: s("keys " + keys))
