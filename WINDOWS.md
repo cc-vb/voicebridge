@@ -83,7 +83,9 @@ Or just start typing: that always interrupts.
   Windows PowerShell 5.1, with no input, and a second run changes nothing
 - `vb` resolves on PATH in a new shell and `vb --help` and `vb stt` work
 - the hooks are registered with the real Python (not the `python3` Store
-  stub) and the slash commands are copied
+  stub), and each one runs cleanly under Git Bash from the exact command
+  written into `settings.json`, which is how Claude Code runs them; the
+  slash commands are copied
 - `whisper-cli.exe` transcribes a recorded sentence correctly
 - the recorder writes a valid, correctly gated WAV (fed from a file: CI
   machines have no microphone)
@@ -93,7 +95,8 @@ Or just start typing: that always interrupts.
 - the whole pytest suite passes on Windows, including Kokoro synthesising
   speech and the process checks (a liveness check never kills, pausing
   reaches the child that plays the sound, another process's working
-  directory reads back correctly)
+  directory and command line read back correctly, and a background helper
+  outlives the hook that started it)
 
 ## What only a person can check
 

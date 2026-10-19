@@ -157,8 +157,10 @@ Open 2-3 Claude sessions in different project folders first.
   should get through. Tune with `vb sens relaxed|normal|strict`.
 
 ## 13. Windows (needs a Windows machine , mynk03)
-- Not testable on macOS. See WINDOWS.md: run `install.ps1`, then the same
-  tests 1-12. Report what breaks.
+- CI (`.github/workflows/windows.yml`) covers the install and everything
+  that needs no hardware. On a real PC: run `install.ps1`, then
+  `scripts\windows-smoke.ps1` (mic, speakers, paste), then the same tests
+  1-12. Report what breaks.
 
 ---
 

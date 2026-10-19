@@ -122,8 +122,9 @@ you code by conversation instead. See [ACCESSIBILITY.md](ACCESSIBILITY.md).
 - **Smart listening**: thinking-pauses don't split your prompt, background
   chatter and foreign-language media are filtered out, and it never hears
   its own voice (echo guard).
-- **Cross-platform**: macOS today; Windows/Linux support is built behind an
-  OS layer (see WINDOWS.md), pending a tester.
+- **Cross-platform**: macOS, and Windows 10/11 (installer and everything
+  short of the microphone and speakers tested on a clean Windows machine by
+  CI; see WINDOWS.md). Linux is built behind the same OS layer, untested.
 
 Full command guide any time: `vb help`.
 
@@ -206,7 +207,8 @@ namespace prefix).
 
 ## Install (fresh Mac)
 
-macOS only for now (uses `say`, `osascript`, and CoreAudio via sox).
+This is the Mac install. On Windows, run the one line in
+[WINDOWS.md](WINDOWS.md) instead.
 
 ```bash
 git clone https://github.com/cc-vb/voicebridge ~/voicebridge
