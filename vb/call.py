@@ -40,7 +40,7 @@ if not os.path.exists(FFMPEG):
 # PER-USER port: two macOS users on one Mac must NOT share one relay, or the
 # second user's `vb phone` finds the first user's relay on the shared port
 # and bridges into their sessions. Derive a distinct default port per uid.
-PORT = int(os.environ.get("VB_CALL_PORT") or (8790 + os.getuid() % 1000))
+PORT = int(os.environ.get("VB_CALL_PORT") or (8790 + oslayer.uid() % 1000))
 TIMEOUT = float(os.environ.get("VB_CALL_TIMEOUT", "90"))
 DRYRUN = bool(os.environ.get("VB_CALL_DRYRUN"))
 
@@ -7086,8 +7086,7 @@ def run_daemon() -> int:
 
 def _alive() -> bool:
     try:
-        os.kill(int(PID.read_text().strip()), 0)
-        return True
+        return oslayer.alive(int(PID.read_text().strip()))
     except Exception:
         return False
 
@@ -7120,7 +7119,7 @@ def on() -> str:
     env = dict(os.environ)
     p = subprocess.Popen([sys.executable, vb, "call", "__run__"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True, env=env)
+                         **oslayer.detached(), env=env)
     PID.write_text(str(p.pid))
     # Verify it actually came up: a silent bind failure (port in use) used to
     # print "relay ON" and leave the phone hitting a corpse through the tunnel.
@@ -7163,30 +7162,20 @@ def reap_tunnels(keep: int = 0) -> int:
     Only the pid in tunnel.pid was ever killed, so each `vb phone` orphaned the
     tunnel before it: publicly reachable URLs into this Mac that nothing would
     ever close, still live days later. Returns how many were stopped."""
-    import signal
-
     def _ours() -> list:
-        try:
-            out = subprocess.run(["ps", "-axo", "pid=,args="],
-                                 capture_output=True, text=True,
-                                 timeout=5).stdout
-        except Exception:
-            return []
+        out = "\n".join(f"{p} {a}" for p, a in oslayer.cmdlines())
         return [p for p in tunnel_pids(out, PORT)
                 if p not in (keep, os.getpid())]
 
     victims = _ours()
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    for force in (False, True):
         # cloudflared drains connections on SIGTERM and can sit there for a
         # while. "The link is closed" has to be true the moment we say it, so
         # anything still serving after the grace period is killed outright.
         if not _ours():
             break
         for pid in _ours():
-            try:
-                os.kill(pid, sig)
-            except Exception:
-                pass
+            oslayer.terminate(pid, force=force)
         time.sleep(0.4)
     n = len(victims) - len(_ours())
     if n:
@@ -7196,7 +7185,7 @@ def reap_tunnels(keep: int = 0) -> int:
 
 def off() -> str:
     try:
-        os.kill(int(PID.read_text().strip()), 15)
+        oslayer.terminate(int(PID.read_text().strip()))
     except Exception:
         pass
     try:
@@ -7208,7 +7197,7 @@ def off() -> str:
     n = reap_tunnels()
     tp = core.STATE_DIR / "tunnel.pid"
     try:
-        os.kill(int(tp.read_text().strip()), 15)
+        oslayer.terminate(int(tp.read_text().strip()))
     except Exception:
         pass
     try:

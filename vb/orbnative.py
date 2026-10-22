@@ -8,11 +8,10 @@ device is ours, so it cannot sit showing "idle" while a mic is open.
 """
 import os
 import shutil
-import signal
 import subprocess
 from pathlib import Path
 
-from . import core
+from . import core, oslayer
 
 SRC = Path(__file__).resolve().parent.parent / "native" / "orb.swift"
 BIN = core.STATE_DIR / "bin" / "vb-orb"
@@ -42,8 +41,7 @@ def build(force: bool = False) -> str:
 
 def running() -> bool:
     try:
-        os.kill(int(PID.read_text().strip()), 0)
-        return True
+        return oslayer.alive(int(PID.read_text().strip()))
     except Exception:
         return False
 
@@ -59,7 +57,7 @@ def show() -> bool:
         return False
     try:
         p = subprocess.Popen([exe], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+                             stderr=subprocess.DEVNULL, **oslayer.detached())
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
         PID.write_text(str(p.pid))
         return True
@@ -70,7 +68,7 @@ def show() -> bool:
 
 def hide() -> None:
     try:
-        os.kill(int(PID.read_text().strip()), signal.SIGTERM)
+        oslayer.terminate(int(PID.read_text().strip()))
     except Exception:
         pass
     try:

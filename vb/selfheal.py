@@ -17,7 +17,7 @@ import os
 import shutil
 from pathlib import Path
 
-from . import core
+from . import core, oslayer
 
 REPO = Path(__file__).resolve().parent.parent
 SELF_VB = REPO / "bin" / "vb"
@@ -72,11 +72,10 @@ def _fix_vb_symlink(apply: bool) -> str:
 def _pid_dead(pid: int) -> bool:
     if pid <= 0:
         return True
-    try:
-        os.kill(pid, 0)
-        return False
-    except Exception:
-        return True
+    # oslayer.alive, NOT os.kill(pid, 0): on Windows that call is
+    # TerminateProcess, so the check that reaps stale pid files would kill
+    # every live daemon it looked at.
+    return not oslayer.alive(pid)
 
 
 def _reap_stale_pids(apply: bool) -> list:

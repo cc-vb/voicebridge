@@ -58,7 +58,7 @@ _OLLAMA_MODEL = os.environ.get("VB_SUMMARIZE_MODEL_OLLAMA") or "qwen2.5:0.5b"
 # venv) so the user never runs pip. Served warm on a per-uid port like the
 # Kokoro/whisper servers.
 MLX_VENV = core.STATE_DIR / "mlx-venv"
-_MLX_PORT = int(os.environ.get("VB_MLX_PORT") or (6100 + os.getuid() % 1000))
+_MLX_PORT = int(os.environ.get("VB_MLX_PORT") or (6100 + oslayer.uid() % 1000))
 
 # Summarized-output mode is OPT-IN: presence of this flag == on. Full is the
 # spoken default. An embedder (Friday) never sets this, so it always gets full.
@@ -178,7 +178,7 @@ def start_mlx_server() -> None:
             [str(MLX_VENV / "bin" / "python"), "-m", "mlx_lm.server",
              "--model", _MLX_MODEL, "--port", str(_MLX_PORT)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
     except Exception as e:
         core.log(f"mlx server start failed: {e}")
         return

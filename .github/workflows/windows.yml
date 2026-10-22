@@ -1,0 +1,133 @@
+# Proves voicebridge installs and works on Windows, on a clean runner.
+#
+# Push-to-branch and manual only, never on every PR: it downloads ~850MB of
+# models and takes ~10 minutes. What it cannot prove (a real microphone,
+# real speakers, pasting into a focused app) is what scripts/windows-smoke.ps1
+# is for, on a real PC.
+name: windows
+
+on:
+  push:
+    branches: [feat/windows]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The documented one-liner, fetched from this exact commit, run by
+      # Windows PowerShell 5.1 (what a stock Windows 10/11 has). VB_REF and
+      # VB_REPO_URL point the clone at this branch instead of main.
+      - name: Install with irm | iex (non-interactive)
+        shell: powershell
+        env:
+          VB_REPO_URL: https://github.com/${{ github.repository }}
+          VB_REF: ${{ github.ref_name }}
+        run: |
+          irm "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.ps1" | iex
+
+      - name: Installer is safe to run again
+        shell: powershell
+        env:
+          VB_REPO_URL: https://github.com/${{ github.repository }}
+          VB_REF: ${{ github.ref_name }}
+        run: |
+          irm "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.ps1" | iex
+
+      # A new terminal reads PATH from the registry, not from this runner's
+      # environment, so rebuild it the same way before looking for vb.
+      - name: vb is on PATH in a new terminal
+        shell: powershell
+        run: |
+          $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+          $vb = (Get-Command vb -ErrorAction Stop).Source
+          Write-Host "vb -> $vb"
+          vb --help
+          if ($LASTEXITCODE -ne 0) { throw "vb --help exit $LASTEXITCODE" }
+          vb stt
+          $ready = (vb stt) -match "ready\s*:\s*True"
+          if (-not $ready) { throw "vb stt is not ready" }
+
+      - name: Hooks and slash commands registered
+        shell: powershell
+        run: |
+          $s = Get-Content -Raw "$HOME\.claude\settings.json" | ConvertFrom-Json
+          foreach ($ev in "Stop", "Notification", "UserPromptSubmit", "SessionEnd", "SessionStart") {
+            $cmd = ($s.hooks.$ev | ConvertTo-Json -Depth 6)
+            if ($cmd -notmatch "voicebridge") { throw "no voicebridge hook for $ev" }
+            if ($cmd -match 'python3 ') { throw "$ev hook runs python3, the Store stub on Windows" }
+          }
+          if (-not (Test-Path "$HOME\.claude\commands\voice-on.md")) { throw "slash commands not copied" }
+          Write-Host ($s.hooks.Stop | ConvertTo-Json -Depth 6)
+
+      # Claude Code runs hooks through Git Bash on Windows. Run each one the
+      # way it will be run, from the exact command the installer registered.
+      - name: Registered hooks run under Git Bash
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+          $s = Get-Content -Raw "$HOME\.claude\settings.json" | ConvertFrom-Json
+          $bash = "C:\Program Files\Git\bin\bash.exe"
+          $json = '{"session_id":"ci-test","transcript_path":"","cwd":"C:/","hook_event_name":"ci","prompt":"hello"}'
+          foreach ($ev in "SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd") {
+            $cmd = ($s.hooks.$ev | ForEach-Object { $_.hooks } | Where-Object { $_.command -match "voicebridge" } | Select-Object -First 1).command
+            # Through a file: Windows PowerShell mangles embedded quotes in
+            # native arguments, and the command is all quoted paths.
+            $f = "$env:RUNNER_TEMP\hook.sh"
+            [IO.File]::WriteAllText($f, $cmd + "`n")
+            $err = $json | & $bash $f 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0 -or $err -match "Traceback") { throw "$ev hook failed ($LASTEXITCODE): $err" }
+            Write-Host "$ev ok: $cmd"
+          }
+
+      - name: whisper-cli.exe transcribes a recording
+        shell: powershell
+        run: |
+          # whisper logs to stderr; Windows PowerShell turns that into an
+          # error record, so judge it by its exit code and output instead.
+          $ErrorActionPreference = "Continue"
+          $out = & "$HOME\.voicebridge\whisper\whisper-cli.exe" -m "$HOME\.voicebridge\models\ggml-small.en.bin" -f tests\fixtures\speech-16k.wav -nt -np 2>$null
+          if ($LASTEXITCODE -ne 0) { throw "whisper-cli exit $LASTEXITCODE" }
+          Write-Host "heard: $out"
+          if ("$out" -notmatch "quick brown fox") { throw "wrong transcript" }
+
+      - name: Recorder writes a valid take (file in place of the mic)
+        shell: powershell
+        run: |
+          python vb\winrec.py "$env:RUNNER_TEMP\take.wav" --max 30 --silence 1.0 --from-file tests\fixtures\speech-16k.wav
+          if ($LASTEXITCODE -ne 0) { throw "winrec exit $LASTEXITCODE" }
+          python -c "import wave,sys; w=wave.open(sys.argv[1]); s=w.getnframes()/w.getframerate(); print('take seconds', s); sys.exit(0 if s > 2 else 1)" "$env:RUNNER_TEMP\take.wav"
+          if ($LASTEXITCODE -ne 0) { throw "take too short" }
+
+      - name: Windows voice writes a wav
+        shell: powershell
+        run: |
+          python -c "import sys; sys.path.insert(0, '.'); from vb import oslayer; ok = oslayer.tts_to_wav('Hello from voicebridge, it’s working.', sys.argv[1], '175', ''); print('sapi ok', ok); sys.exit(0 if ok else 1)" "$env:RUNNER_TEMP\sapi.wav"
+          if ($LASTEXITCODE -ne 0) { throw "SAPI wrote nothing" }
+          (Get-Item "$env:RUNNER_TEMP\sapi.wav").Length
+
+      - name: Clipboard keeps Unicode
+        shell: powershell
+        run: |
+          python -c "import sys; sys.path.insert(0, '.'); from vb import oslayer; t = 'voicebridge नमस्ते it’s'; oslayer.clipboard_set(t); g = oslayer.clipboard_get(); print(repr(g)); sys.exit(0 if g == t else 1)"
+          if ($LASTEXITCODE -ne 0) { throw "clipboard round trip changed the text" }
+
+      - name: pytest (whole suite, on Windows)
+        shell: powershell
+        env:
+          VB_WINDOWS_E2E: "1"
+        run: |
+          # qrcode: the phone-link tests draw a real QR code.
+          python -m pip install --quiet pytest qrcode
+          python -m pytest -q -rs tests
+          if ($LASTEXITCODE -ne 0) { throw "pytest failed" }

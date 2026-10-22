@@ -78,26 +78,8 @@ def other_users() -> dict:
     Reporting "3 sessions under nikhilbajaj, which I can't see into" is honest
     and useful; pretending they do not exist is neither, and pretending to read
     them would be a privacy breach dressed up as a feature."""
-    import getpass
-    me = getpass.getuser()
-    out = {}
-    try:
-        r = subprocess.run(["ps", "-axo", "user=,command="],
-                           capture_output=True, text=True, timeout=5)
-        for line in (r.stdout or "").splitlines():
-            parts = line.strip().split(None, 1)
-            if len(parts) != 2:
-                continue
-            user, cmd = parts
-            if user == me:
-                continue
-            # the interactive CLI, not our own helpers or greps
-            first = cmd.split()[0].rsplit("/", 1)[-1] if cmd.split() else ""
-            if first == "claude":
-                out[user] = out.get(user, 0) + 1
-    except Exception:
-        pass
-    return out
+    from . import oslayer
+    return oslayer.other_users_claude()
 
 
 def _norm_status(s: str) -> str:

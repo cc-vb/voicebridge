@@ -13,10 +13,11 @@ import hashlib
 import json
 import os
 import re
-import signal
 import subprocess
 import time
 from pathlib import Path
+
+from . import oslayer
 
 STATE_DIR = Path(os.path.expanduser("~/.voicebridge"))
 ENABLED_FLAG = STATE_DIR / "enabled"
@@ -403,11 +404,24 @@ def speech_held() -> bool:
     newer replies over a deliberate pause."""
     try:
         pid = int(SPEECH_PID.read_text().strip())
-        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
-                              capture_output=True, text=True).stdout.strip()
-        return stat.startswith("T")
     except Exception:
         return False
+    if oslayer.IS_WIN:
+        return _held_pid() == pid and oslayer.alive(pid)
+    return oslayer.proc_stopped(pid)
+
+
+# Windows has no "T" process state to read a pause back from, so hold()
+# records which speech pid it froze. Checked against the live SPEECH_PID, so
+# a marker left by a reply that has since been replaced reads as not held.
+HELD = STATE_DIR / "speech.held"
+
+
+def _held_pid() -> int:
+    try:
+        return int(HELD.read_text().strip())
+    except Exception:
+        return 0
 
 
 def is_voiced(session_id: str) -> bool:
@@ -438,6 +452,9 @@ def mic_active() -> bool:
         except Exception:
             return True      # cannot tell: assume owned, the safer error
     if MIC_FLAG.exists():
+        if oslayer.IS_WIN:
+            # Either slash: the MCP config may spell the path either way.
+            return oslayer.any_matching("voicemode.ts")
         r = subprocess.run(["pgrep", "-f", "channel/voicemode.ts"],
                            capture_output=True)
         return r.returncode == 0
@@ -1230,7 +1247,7 @@ SPEECH_PID = STATE_DIR / "speech.pid"  # pid of the current speech player
 # Per-uid default so two accounts on one Mac don't share a TTS server (user B
 # would otherwise route synthesis through user A's process on a fixed port).
 # An explicit VB_TTS_PORT still wins; server and client both read this.
-KOKORO_PORT = int(os.environ.get("VB_TTS_PORT") or (6000 + os.getuid() % 1000))
+KOKORO_PORT = int(os.environ.get("VB_TTS_PORT") or (6000 + oslayer.uid() % 1000))
 _KOKORO_VOICE_RE = re.compile(r"^[a-z]{2}_[a-z]+$")
 # Kokoro refuses outside 0.5-2.0 ("Speed should be between 0.5 and 2.0")
 # and returns no audio at all, so that is the ceiling for synthesis. Past
@@ -1379,8 +1396,7 @@ def _kokoro_wav(text: str, out: str = "", voice: str = "",
 def speech_active() -> bool:
     """True while a reply is actually playing through the speakers."""
     try:
-        os.kill(int(SPEECH_PID.read_text().strip()), 0)
-        return True
+        return oslayer.alive(int(SPEECH_PID.read_text().strip()))
     except Exception:
         return False
 
@@ -1399,10 +1415,13 @@ def cue_tick() -> None:
 
     speak() hushes whatever is playing, so using it to confirm a speed
     change mid-reply would kill the reply you were adjusting."""
+    snd = oslayer.chime_path()
+    if not snd:
+        return
     try:
-        subprocess.Popen(["afplay", "/System/Library/Sounds/Tink.aiff"],
+        subprocess.Popen(oslayer.play_cmd(snd),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+                         **oslayer.detached())
     except Exception:
         pass
 
@@ -1427,16 +1446,22 @@ def hold() -> str:
     than a flag file, so it cannot get out of step with reality."""
     try:
         pid = int(SPEECH_PID.read_text().strip())
-        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
-                              capture_output=True, text=True).stdout.strip()
-        if not stat:
-            return "nothing is speaking"
-        paused = stat.startswith("T")
-        os.killpg(pid, signal.SIGCONT if paused else signal.SIGSTOP)
-        return "resumed" if paused else "held"
     except Exception:
+        return "nothing is speaking"
+    if not oslayer.alive(pid):
+        return "nothing is speaking"
+    paused = speech_held()
+    if not oslayer.set_paused(pid, not paused):
         # Speech finished between the read and the signal: nothing to do.
         return "nothing is speaking"
+    try:
+        if paused:
+            HELD.unlink()
+        else:
+            HELD.write_text(str(pid))
+    except OSError:
+        pass
+    return "resumed" if paused else "held"
 
 
 def rewind_speech(delta: int) -> str:
@@ -1466,14 +1491,22 @@ def rewind_speech(delta: int) -> str:
 def hush() -> None:
     """Stop whatever speech is playing (any engine), including the chunked
     speaker's afplay children (killed via the process group)."""
-    subprocess.run(["pkill", "-x", "say"], capture_output=True)
+    if oslayer.IS_WIN:
+        oslayer.stop_all_speech()          # the tagged SAPI powershell
+    else:
+        subprocess.run(["pkill", "-x", "say"], capture_output=True)
     try:
         pid = int(SPEECH_PID.read_text().strip())
-        try:
-            os.killpg(pid, 15)   # wrapper started its own session: pgid == pid
-        except Exception:
-            os.kill(pid, 15)
+        # A held (frozen) reply has to be woken before it can die on
+        # Windows; a suspended process ignores TerminateProcess's cleanup.
+        if oslayer.IS_WIN and _held_pid() == pid:
+            oslayer.set_paused(pid, False)
+        oslayer.terminate_tree(pid)   # own session on POSIX: pgid == pid
     except Exception:
+        pass
+    try:
+        HELD.unlink()
+    except OSError:
         pass
 
 
@@ -1493,7 +1526,7 @@ def ensure_kokoro_server(wait_s: float = 10.0) -> bool:
     Keeps the voice consistent instead of silently falling back to say."""
     if kokoro_up():
         return True
-    venv_py = STATE_DIR / "kokoro-venv" / "bin" / "python"
+    venv_py = Path(oslayer.venv_python(STATE_DIR / "kokoro-venv"))
     server = Path(__file__).resolve().parent.parent / "scripts" / \
         "kokoro_server.py"
     if not venv_py.exists() or not server.exists():
@@ -1502,7 +1535,7 @@ def ensure_kokoro_server(wait_s: float = 10.0) -> bool:
         p = subprocess.Popen([str(venv_py), str(server)],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL,
-                             start_new_session=True,
+                             **oslayer.detached(),
                              # bind the SAME per-uid port the client will use
                              env={**os.environ, "VB_TTS_PORT": str(KOKORO_PORT)})
         (STATE_DIR / "tts.pid").write_text(str(p.pid))
@@ -1544,23 +1577,12 @@ def speak_chunks_blocking(text: str) -> None:
     # markup itself: "asterisk asterisk" for **bold**, backticks for `code`,
     # hash for headers, dashes for bullets, which is jarring for code replies.
     text = _strip_for_speech(text)
-    from . import oslayer
-    if not oslayer.IS_MAC:
-        # The chunked afplay/say pipeline below is macOS-only; the bare `say`
-        # calls in it would raise FileNotFoundError and kill this worker off-Mac
-        # (no audio at all). Route non-Mac through the OS layer instead. The
-        # chunk prefetch/rewind niceties stay Mac-only for now.
-        try:
-            wav = str(STATE_DIR / "speech-os.wav")
-            rate = get_rate()
-            if oslayer.tts_to_wav(text, wav, rate, ""):
-                subprocess.run(oslayer.play_cmd(wav), stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL)
-            else:
-                oslayer.tts_speak_blocking(text, rate, "")
-        except Exception as e:
-            log(f"os-layer speak failed: {e}")
-        return
+    # The chunked pipeline below used to be macOS-only, and off a Mac this
+    # function returned early into the system voice. That meant a Windows
+    # install, whose installer sets Kokoro as the default engine, never once
+    # used Kokoro: every reply came out in SAPI's robot voice. The pipeline's
+    # only Mac-specific parts were the player (afplay) and the fallback voice
+    # (say), and both now go through oslayer, so every platform takes it.
     # Kokoro's voices are English-only. Detect from the TEXT itself: any
     # Devanagari means this reply needs the macOS Hindi voice, regardless
     # of settings, so auto-detected Hindi conversations just work.
@@ -1601,7 +1623,7 @@ def speak_chunks_blocking(text: str) -> None:
                 except Exception:
                     pass
                 player = subprocess.Popen(
-                    ["afplay", cur],
+                    oslayer.play_cmd(cur),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 nxt, nxt_rate = "", ""
                 if i + 1 < len(chunks):
@@ -1629,9 +1651,7 @@ def speak_chunks_blocking(text: str) -> None:
                     v = get_voice()
                     if _KOKORO_VOICE_RE.match(v or ""):
                         v = ""
-                    sc = ["say", "-r", get_rate()] + (["-v", v] if v else [])
-                    subprocess.run(sc + [rest], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL)
+                    oslayer.tts_speak_blocking(rest, get_rate(), v)
                     return
                 cur = nxt
                 i += 1
@@ -1641,11 +1661,7 @@ def speak_chunks_blocking(text: str) -> None:
         # A kokoro voice name means nothing to say; use the language's
         # natural macOS voice instead (e.g. Lekha for Hindi).
         voice = "Lekha" if is_hindi_text else voice_for_lang(get_lang())
-    cmd = ["say", "-r", get_rate()]
-    if voice:
-        cmd += ["-v", voice]
-    cmd.append(text)
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    oslayer.tts_speak_blocking(text, get_rate(), voice)
 
 
 def start_speech(text: str):
@@ -1692,7 +1708,7 @@ def start_speech(text: str):
         p = subprocess.Popen(
             [_sys.executable, vb, "__speak__"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
     except Exception as e:
         log(f"start_speech failed: {e}")
         return None
@@ -1815,11 +1831,7 @@ def watcher_alive() -> bool:
         pid = int(WATCH_PID.read_text().strip())
     except Exception:
         return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
+    return oslayer.alive(pid)
 
 
 def read_hook_input() -> dict:

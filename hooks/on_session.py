@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from vb import core  # noqa: E402
+from vb import core, oslayer  # noqa: E402
 
 
 def _kick_update_check() -> None:
@@ -24,7 +24,7 @@ def _kick_update_check() -> None:
              "import sys;sys.path.insert(0,%r);from vb import core;"
              "core.check_for_update()" % str(Path(__file__).resolve().parent.parent)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
     except Exception:
         pass
 
@@ -41,7 +41,7 @@ def _kick_selfheal() -> None:
              "import sys;sys.path.insert(0,%r);from vb import selfheal;"
              "selfheal.heal(True)" % str(Path(__file__).resolve().parent.parent)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
     except Exception:
         pass
 
@@ -90,12 +90,24 @@ def _auto_update() -> None:
         core.STATE_DIR.mkdir(parents=True, exist_ok=True)
         stamp.write_text(str(time.time()))
         # Only if clean; --ff-only so it can never create a merge/conflict.
+        if os.name == "nt":
+            # No bash to lean on: `bash` there may be WSL's, which cannot see
+            # this path. Same two steps, the status check in-line (it is
+            # tens of milliseconds), the pull in the background as below.
+            dirty = subprocess.run(["git", "-C", str(repo), "status",
+                                    "--porcelain"], capture_output=True,
+                                   text=True, timeout=3).stdout.strip()
+            if not dirty:
+                subprocess.Popen(["git", "-C", str(repo), "pull", "--ff-only"],
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            return
         subprocess.Popen(
             ["bash", "-c",
              f'cd "{repo}" && [ -z "$(git status --porcelain)" ] && '
              f'git pull --ff-only >/dev/null 2>&1'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            **oslayer.detached())
     except Exception:
         pass
 

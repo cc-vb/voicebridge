@@ -87,7 +87,10 @@ def test_traversal_name_still_lands_inside_the_upload_directory():
     tmp = Path(tempfile.mkdtemp())
     _fresh(tmp)
     info = call._save_upload(PNG, "../../../../tmp/pwned.png", "image/png")
-    assert str(call.UPLOAD_DIR) in os.path.realpath(info["path"])
+    # realpath on both sides: Windows hands out the temp dir in its 8.3 short
+    # form (RUNNER~1) and realpath expands it, so the raw string never matched.
+    assert os.path.realpath(str(call.UPLOAD_DIR)) in \
+        os.path.realpath(info["path"])
 
 
 def test_uploads_are_not_world_readable():

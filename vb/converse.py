@@ -65,9 +65,13 @@ def _beep(sound: str) -> None:
     from . import core
     if core.call_live():
         return   # a phone call owns the audio; no cues to an empty room
+    from . import oslayer
+    sound = oslayer.cue_sound(sound)
+    if not sound:
+        return
     try:
-        subprocess.Popen(["afplay", sound], stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+        subprocess.Popen(oslayer.play_cmd(sound), stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, **oslayer.detached())
     except Exception:
         pass
 

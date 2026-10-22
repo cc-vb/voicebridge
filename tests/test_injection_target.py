@@ -17,7 +17,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pytest  # noqa: E402
+
 from vb import inject  # noqa: E402
+
+# A Terminal tab addressed by its tty is a macOS mechanism; Windows has no
+# ttys and refuses a named one (covered by the unreachable-tty test).
+mac_tabs = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="addresses a Terminal tab by tty, which exists only on macOS")
 
 
 def _stub(monkey: dict):
@@ -33,7 +41,8 @@ def _stub(monkey: dict):
         done.append(("select", tty)) or monkey.get("select_ok", True))
     inject._osa = lambda script: done.append(("osa", script[:40]))
     inject._pbpaste = lambda: ""
-    inject._pbcopy = lambda t: done.append(("copy", t))
+    inject._pbcopy = lambda t: done.append(("copy", t)) or True
+    inject._send_keys = lambda keys: done.append(("osa", keys))
     return done
 
 
@@ -48,6 +57,7 @@ def test_a_paste_with_no_named_target_never_reaches_a_chat_window():
     assert inject.paste_text("cancel the migration", send=True) is False
 
 
+@mac_tabs
 def test_a_named_tty_is_used_and_the_frontmost_app_is_irrelevant():
     """Being in Slack must not matter: the tab is addressed directly."""
     done = _stub({"front": "Slack"})
@@ -75,6 +85,7 @@ def test_escape_with_no_target_is_refused():
     assert not [d for d in done if d[0] == "osa"], done
 
 
+@mac_tabs
 def test_escape_selects_the_exact_tab_before_sending():
     """Checking the app name let Escape land in a second window of the same
     terminal. The tab is raised first, then restored."""

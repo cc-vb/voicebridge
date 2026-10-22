@@ -9,9 +9,17 @@ Both come from the same assumption, that whatever is frontmost is the right
 target. It isn't.
 """
 
+import sys
+
 import pytest
 
 from vb import core, inject, talkd
+
+# The Mac delivers by AppleScript; these assert on those scripts.
+mac_mechanism = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="asserts on the AppleScript the Mac path sends; Windows sends "
+           "SendKeys and its refusals are covered by the tests that run")
 
 
 @pytest.fixture(autouse=True)
@@ -91,8 +99,10 @@ class Spy:
 def spy(monkeypatch):
     s = Spy()
     monkeypatch.setattr(inject, "_osa", s)
-    monkeypatch.setattr(inject, "_pbcopy", lambda text: None)
+    monkeypatch.setattr(inject, "_pbcopy", lambda text: True)   # it worked
     monkeypatch.setattr(inject, "_pbpaste", lambda: "")
+    # Windows' keystrokes: recorded, never sent into the developer's window.
+    monkeypatch.setattr(inject, "_send_keys", lambda keys: s("keys " + keys))
     return s
 
 
@@ -104,6 +114,7 @@ def test_paste_refused_when_a_meeting_is_frontmost(monkeypatch, spy):
     assert spy.scripts == []
 
 
+@mac_mechanism
 def test_paste_delivered_to_the_bound_app(monkeypatch, spy):
     monkeypatch.setattr(inject, "frontmost_app", lambda: "Ghostty")
     assert inject.paste_text("run the tests", send=True,

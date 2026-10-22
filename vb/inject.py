@@ -15,6 +15,8 @@ from . import core, oslayer
 
 
 def _pbpaste() -> str:
+    if not oslayer.IS_MAC:
+        return oslayer.clipboard_get()
     try:
         return subprocess.run(["pbpaste"], capture_output=True,
                               text=True).stdout
@@ -22,11 +24,53 @@ def _pbpaste() -> str:
         return ""
 
 
-def _pbcopy(text: str) -> None:
+def _pbcopy(text: str) -> bool:
+    if not oslayer.IS_MAC:
+        if not oslayer.clipboard_set(text):
+            core.log("clipboard set failed")
+            return False
+        return True
     try:
         subprocess.run(["pbcopy"], input=text, text=True)
+        return True
     except Exception as e:
         core.log(f"pbcopy failed: {e}")
+        return False
+
+
+def _send_keys(keys: str) -> None:
+    """Windows keystrokes (SendKeys syntax), in one place so tests can stub it
+    and nothing types into the developer's own window during a test run."""
+    oslayer._win_sendkeys(keys)
+
+
+def _win_guard(what: str, expect_app: str, target_tty: str = "",
+               unbound_ok_in_terminal: bool = False) -> bool:
+    """The Mac rules for where a keystroke may land, as far as Windows can
+    apply them. Returns whether it may be sent.
+
+    Two differences, both towards refusing. There are no ttys, so a named tty
+    can't be addressed and is refused rather than turned into "whatever is in
+    front" (the Mac rule for an unreachable tty). And a window of another app
+    is not raised to receive it: Windows stops a background process from
+    taking the foreground, so instead of a half-working raise we refuse, and
+    the user keeps the terminal they voiced in focused."""
+    if (target_tty or "").strip():
+        core.log(f"{what}: refusing, Windows has no tty to address "
+                 f"({target_tty})")
+        return False
+    front = frontmost_app()
+    target = (expect_app or "").strip()
+    if not target:
+        if unbound_ok_in_terminal and _is_terminal(front):
+            return True
+        core.log(f"{what}: refusing, nothing was named and "
+                 f"{front or 'that'} is not a terminal")
+        return False
+    if front and front.strip().casefold() != target.casefold():
+        core.log(f"{what}: refusing, {front} is in front, not {target}")
+        return False
+    return True
 
 
 def _osa(script: str) -> None:
@@ -43,7 +87,10 @@ def _osa(script: str) -> None:
 # especially a browser or a chat window, is refused: that is how speech ends up
 # in a DM.
 _TERMINALS = ("terminal", "iterm", "ghostty", "alacritty", "kitty", "wezterm",
-              "warp", "hyper", "tabby", "rio")
+              "warp", "hyper", "tabby", "rio",
+              # Windows, by executable: Windows Terminal is covered by
+              # "terminal"; these are the classic console hosts and Git Bash.
+              "powershell", "pwsh", "cmd.exe", "conhost", "mintty")
 
 
 def _is_terminal(app: str) -> bool:
@@ -93,6 +140,11 @@ def press_escape(expect_app: str = "", target_tty: str = "") -> bool:
 
     Returns whether it was delivered, so a caller can say "I couldn't stop it"
     instead of reporting success it did not have."""
+    if oslayer.IS_WIN:
+        if not _win_guard("escape", expect_app, target_tty):
+            return False
+        _send_keys("{ESC}")
+        return True
     if not oslayer.IS_MAC:
         oslayer.press_escape()
         return True
@@ -170,7 +222,9 @@ def press_shift_tab(expect_app: str = "") -> bool:
         # Was a hard no-op off-Mac (mode never cycled); send Shift+Tab via the
         # OS layer instead.
         if oslayer.IS_WIN:
-            oslayer._win_sendkeys("+{TAB}")
+            if expect_app and not _win_guard("shift-tab", expect_app):
+                return False
+            _send_keys("+{TAB}")
         else:
             oslayer._xdotool("key", "shift+Tab")
         return True
@@ -199,7 +253,9 @@ def press_enter(expect_app: str = "") -> bool:
         # used to run FIRST and always fail (osascript absent), so the phone's
         # "yes" never delivered Return. Deliver via the OS layer, best-effort.
         if oslayer.IS_WIN:
-            oslayer._win_sendkeys("{ENTER}")
+            if expect_app and not _win_guard("enter", expect_app):
+                return False
+            _send_keys("{ENTER}")
         else:
             oslayer._xdotool("key", "Return")
         return True
@@ -222,6 +278,8 @@ def press_enter(expect_app: str = "") -> bool:
 
 def frontmost_app() -> str:
     """Name of the app that will receive the paste; logged for diagnosis."""
+    if not oslayer.IS_MAC:
+        return oslayer.frontmost_app()
     try:
         r = subprocess.run(
             ["osascript", "-e",
@@ -298,7 +356,25 @@ def paste_text(text: str, send: bool = False, expect_app: str = "",
     a DM, or a terminal and run it. Returns True if the text was delivered."""
     if not text:
         return False
-    if not oslayer.IS_MAC:      # Windows/Linux go through the OS layer
+    if oslayer.IS_WIN:
+        # The focus guard applies here too. Without it a Windows paste went to
+        # whatever had the cursor, which is the speech-in-a-DM failure the Mac
+        # path below exists to prevent. frontmost_app is the foreground
+        # window's executable there ('WindowsTerminal.exe'), the same thing a
+        # binding records, so the names compare like for like.
+        if not _win_guard("paste", expect_app, target_tty,
+                          unbound_ok_in_terminal=True):
+            return False
+        saved = _pbpaste()
+        if not _pbcopy(text):
+            return False
+        time.sleep(0.05)
+        _send_keys("^v" + ("{ENTER}" if send else ""))
+        if saved:
+            time.sleep(0.2)   # let the paste land before the clipboard changes
+            _pbcopy(saved)
+        return True
+    if not oslayer.IS_MAC:      # Linux goes through the OS layer
         return oslayer.paste_text(text, send)   # real success, not blind True
     front = frontmost_app()
     target = (expect_app or "").strip()
